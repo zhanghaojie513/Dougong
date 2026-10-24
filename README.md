@@ -194,6 +194,14 @@ Dougong 当前**不是**：
 
 项目尚处于 API 快速演进期。提交 Issue 或 Pull Request 前，建议先阅读 [实施状态](docs/status.md) 和 [架构文档](docs/architecture.md)，并为行为变化补充确定性的失败路径测试。
 
+### 命名约定
+
+项目名一律写作 **Dougong**，不使用 DouGong、dou gong 等变体：
+
+- NuGet 包与命名空间：`Dougong.*`（如 `Dougong.Kernel`）
+- CLI 命令与 dotnet tool：小写 `dougong`
+- 仓库、目录、URL 中的项目名：`Dougong`
+
 ## 致谢与参考
 
 Dougong 是独立开源项目，以下项目提供了公开思想或技术参考：

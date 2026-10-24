@@ -185,6 +185,14 @@ The companion desktop client will be developed as a separate Dougong Desktop hos
 
 The project is in a period of rapid API evolution. Before opening an issue or pull request, please read the [status board](docs/status.md) and the [architecture doc](docs/architecture.md), and add deterministic failure-path tests for any behavior change.
 
+### Naming convention
+
+The project name is always written **Dougong** — never DouGong or "dou gong":
+
+- NuGet packages and namespaces: `Dougong.*` (e.g. `Dougong.Kernel`)
+- CLI command and dotnet tool: lowercase `dougong`
+- Project name in repositories, directories and URLs: `Dougong`
+
 ## Acknowledgements
 
 Dougong is an independent open-source project. The following projects provided public ideas or technical references:
