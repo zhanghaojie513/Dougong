@@ -35,6 +35,7 @@ public static class WireFormatChecks
         failures += Check("fragmented-arguments-are-concatenated", Fragmented);
         failures += Check("empty-choices-frame-is-ignored", EmptyChoices);
         failures += Check("reasoning-content-is-echoed", Reasoning);
+        failures += Check("other-reasoning-field-names-are-dropped", OtherReasoningFieldsDropped);
         failures += await CheckAsync("runtime-history-carries-tool-result-text", RuntimeToolResultTextAsync);
 
         Console.WriteLine(failures == 0
@@ -314,6 +315,40 @@ public static class WireFormatChecks
         if (props is null || !props.TryGetValue("reasoning_content", out var value))
             return "reasoning_content 未随调用带出";
         return value?.ToString() == "think more" ? null : $"思考内容不符：{value}";
+    }
+
+    // G12 的特征化探针：思考内容放在 reasoning（而非 reasoning_content）时，
+    // 当前实现会**静默丢弃**——不抛异常、不报错，只是什么都没有。
+    //
+    // 这条检查断言的是"缺陷确实存在且确实静默"。它的价值在于：
+    // ① 让文档里"会静默丢失"这句话有实测支撑，而不是读代码的推断；
+    // ② 将来真加了方言开关，这条会失败，逼着把文档一起改掉，
+    //    不至于让文档继续宣称一个已经修好的缺陷。
+    private static string? OtherReasoningFieldsDropped()
+    {
+        var decoder = new OpenAiChatCompletionsFormat().CreateDecoder();
+        var updates = new List<ChatResponseUpdate>();
+
+        // 只差字段名：reasoning 而不是 reasoning_content。
+        decoder.Decode("""{"choices":[{"delta":{"reasoning":"think "}}]}""", updates);
+        decoder.Decode("""{"choices":[{"delta":{"reasoning":"more"}}]}""", updates);
+        decoder.Decode("""{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read","arguments":"{}"}}]}}]}""", updates);
+        decoder.Decode("""{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}""", updates);
+
+        var flushed = decoder.Flush();
+        if (flushed.Count != 1) return $"应下发 1 个调用更新，实际 {flushed.Count}";
+
+        var props = flushed[0].AdditionalProperties;
+        var carried = props is not null && props.TryGetValue("reasoning_content", out var value)
+            ? value?.ToString()
+            : null;
+
+        if (!string.IsNullOrEmpty(carried))
+            return $"实现已能识别 'reasoning' 字段（带出 '{carried}'）——"
+                + "G12 已修，请同步更新 plan.md/architecture.md 并把本检查改为验证方言开关";
+
+        // 静默：没有任何更新携带思考内容，也没有异常。
+        return null;
     }
 
     // 工具结果回填后，协议层必须能读到内容。

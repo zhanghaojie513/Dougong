@@ -302,6 +302,10 @@ public sealed record AgentToolResult(JsonElement Content, JsonElement? Details =
 - `ChatClientFactory`：按命名配置（provider / endpoint / model / key 来源）建 `IChatClient`；官方与社区 M.E.AI 连接器即插即用；DeepSeek 走 OpenAI 兼容端点。
 - **协议是显式维度**（M1 已实现）：同一 provider 可能同时提供 chat-completions、`/responses` 与 Anthropic `/v1/messages`，三者的工具声明形状、工具调用形状、参数片段字段、终结信号位置、system 提示位置都不同，因此各自独立实现、独立校验，共用同一份 HTTP 传输。工具结果回填与"文本与工具调用是否同一条消息"属于协议层责任，必须由确定性帧回放证明，不能只靠一次真实调用通过。
 - 密钥只从环境变量或宿主凭据通道读取，不进入配置文件与日志；配置对象只记录"从哪里取密钥"。
+- **协议内的字段名差异暂无开关**（G12/G13，见 `plan.md`）。已踩过的方言差异目前写成"协议本身的行为"：`reasoning_content` 在运行时与 format 里共七处硬编码，输出上限在 Anthropic format 里硬编码 4096、在 OpenAI 两个 format 里从不发送。`ChatOptions` 只被读了工具声明，温度/`stop`/预算等字段没有出口。
+  **这意味着接一家把思考放 `reasoning` 或 `reasoning_text` 的 provider 会静默丢失思考内容**——不报错，只是下一轮上下文里少了东西；若对方是思考模式要求回传，则退化为 400 且错误信息通常不含字段名。
+  **为什么先不加开关**：这与 §4.4 拒绝"预先冻结资源键格式"是同一判据——没有具体 provider 要接时，加字段就是死代码。判据与触发条件写在 `plan.md` G12/G13。
+  **为什么不建 42 家 provider 矩阵**：`goal.md` §3 将其列为反目标。本层站在 M.E.AI 上复用社区连接器；`ChatProviderConfig.MessagesPath` 这类字段只解决"同一协议内的路径/字段差异"，量级与矩阵完全不同。
 - **用量/成本记账（M1 已实现聚合，OTel 导出属 M2）**：`UsageRecordingChatClient` 作为装饰器包住任意 `IChatClient`，记录输入/输出/总量、耗时与成败；`UsageLedger` 按会话与自然日聚合。用量必须走 M.E.AI 的标准 `UsageContent`——自定义附加属性对框架的聚合与中间件不可见，账目会静默丢失。本层只汇总 token 与调用次数，**不猜单价**：金额依赖 provider 价目表，由宿主换算。provider 未报告时必须与"零消耗"区分（`UnreportedCalls` 与可空总量），否则一个"共 0 tokens"的汇总会让人以为不花钱。失败与取消也要记账并保留耗时：取消前可能已消耗输入 token。
 - 逃生舱：`Dougong.Ai.Pi`（适配 pi.net 的 Pi.Ai，42 厂商 + OAuth 场景，M4 按需）。
 

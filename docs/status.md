@@ -385,6 +385,11 @@
     （**缺数据源**：`IAgentRuntime` 没有 plan 事件，而 ACP 的 plan 是每次全量替换，
     靠工具序列去猜"看起来像计划的"会把推测伪装成计划，属于 P3 反面）；
     OTel exporter（宿主自行接 meter provider）。
+  - **协议内字段名差异无开关**（G12/G13）：`reasoning_content` 在运行时与 format 里
+    共七处硬编码，输出上限在 Anthropic format 硬编码 4096、OpenAI 两个 format 从不发送；
+    `ChatOptions` 只被读了工具声明。接一家把思考放 `reasoning` 的 provider 会
+    **静默丢失思考内容**（不报错，只是下一轮上下文少东西），这是这批缺口里唯一
+    "出错但看不出来"的。判据见 `plan.md` G12/G13。
 - [ ] M2 L1 默认候选待审；受限自动启用需用户选择，来源/作用域/撤销/隐私双数据流和最小留出评测齐备。
 - [ ] M3 API/行为兼容、作者模板和卸载测试稳定化；完整 Skill 进化和评测优化按验证结果后续建设。
 
