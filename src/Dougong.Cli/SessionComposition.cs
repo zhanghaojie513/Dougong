@@ -148,16 +148,28 @@ public sealed class SessionComposition
         {
             try
             {
-                var options = new ModelContextProtocol.Client.StdioClientTransportOptions
-                {
-                    Name = spec.Name,
-                    Command = spec.Command,
-                    Arguments = [.. spec.Arguments],
-                    // 不继承宿主环境：与 shell 工具同理，密钥不能交给远端进程。
-                    InheritEnvironmentVariables = false,
-                };
-
-                var transport = new ModelContextProtocol.Client.StdioClientTransport(options, null);
+                ModelContextProtocol.Client.IClientTransport transport = spec.IsHttp
+                    ? new ModelContextProtocol.Client.HttpClientTransport(
+                        new ModelContextProtocol.Client.HttpClientTransportOptions
+                        {
+                            Name = spec.Name,
+                            Endpoint = spec.Endpoint!,
+                            // Streamable HTTP 是当前标准；SSE 已废弃，不提供开关。
+                            TransportMode = ModelContextProtocol.Client.HttpTransportMode.StreamableHttp,
+                            ConnectionTimeout = TimeSpan.FromSeconds(60),
+                        },
+                        null)
+                    : new ModelContextProtocol.Client.StdioClientTransport(
+                        new ModelContextProtocol.Client.StdioClientTransportOptions
+                        {
+                            Name = spec.Name,
+                            Command = spec.Command
+                                ?? throw new InvalidOperationException("stdio server 缺少 command。"),
+                            Arguments = [.. spec.Arguments],
+                            // 不继承宿主环境：与 shell 工具同理，密钥不能交给远端进程。
+                            InheritEnvironmentVariables = false,
+                        },
+                        null);
                 var client = await ModelContextProtocol.Client.McpClient.CreateAsync(
                     transport, null, null, cancellationToken).ConfigureAwait(false);
                 clients.Add(client);
@@ -200,9 +212,18 @@ public sealed class SessionComposition
     }
 
     /// <summary>解析 <c>DOUGONG_MCP_SERVERS</c>：分号分隔，每个形如 <c>name=command args</c>。</summary>
-    public static IReadOnlyList<McpServerSpec> ParseMcpServers()
+    public static IReadOnlyList<McpServerSpec> ParseMcpServers() =>
+        ParseServers(Environment.GetEnvironmentVariable("DOUGONG_MCP_SERVERS"));
+
+    /// <summary>
+    /// 解析一段 server 配置文本。
+    /// </summary>
+    /// <remarks>
+    /// 独立成可传入文本的方法，让检查项能验证解析规则而不依赖进程环境变量。
+    /// 直接读环境变量的写法无法被测试——改环境会影响并行执行的其他用例。
+    /// </remarks>
+    public static IReadOnlyList<McpServerSpec> ParseServers(string? raw)
     {
-        var raw = Environment.GetEnvironmentVariable("DOUGONG_MCP_SERVERS");
         if (string.IsNullOrWhiteSpace(raw)) return [];
 
         var results = new List<McpServerSpec>();
@@ -215,10 +236,22 @@ public sealed class SessionComposition
             var commandLine = entry[(separator + 1)..].Trim();
             if (name.Length == 0 || commandLine.Length == 0) continue;
 
+            // 三种形态，靠值的前缀区分，保持 `name=command args` 的老写法不变：
+            //   name=/path/to/server args        → stdio
+            //   name=http://host/mcp             → Streamable HTTP
+            //   name=https://host/mcp            → Streamable HTTP（TLS）
+            if (commandLine.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || commandLine.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                if (Uri.TryCreate(commandLine, UriKind.Absolute, out var endpoint))
+                    results.Add(new McpServerSpec(name, null, [], endpoint));
+                continue;
+            }
+
             var parts = commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             if (parts.Length == 0) continue;
 
-            results.Add(new McpServerSpec(name, parts[0], parts[1..]));
+            results.Add(new McpServerSpec(name, parts[0], parts[1..], null));
         }
 
         return results;
@@ -292,8 +325,13 @@ public static class AcpComposition
 }
 
 /// <summary>一个 MCP server 的启动规格。</summary>
+/// <param name="Command">stdio 形态的可执行文件；HTTP 形态为 null。</param>
+/// <param name="Endpoint">HTTP 形态的端点；stdio 形态为 null。</param>
 public sealed record McpServerSpec(
-    string Name, string Command, IReadOnlyList<string> Arguments);
+    string Name, string? Command, IReadOnlyList<string> Arguments, Uri? Endpoint)
+{
+    public bool IsHttp => Endpoint is not null;
+}
 
 /// <summary>从连接器上取用于记账标签的模型名与协议名。</summary>
 /// <remarks>

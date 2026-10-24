@@ -21,7 +21,9 @@ namespace Dougong.Cli;
 /// <item><c>DOUGONG_SESSION_DIR</c> 可选，默认 ~/.dougong/sessions</item>
 /// <item><c>DOUGONG_SHELL</c> 可选：设为 <c>1</c> 时启用 <c>shell</c> 工具（默认关闭）</item>
 /// <item><c>DOUGONG_CONTEXT_WINDOW</c> 可选：模型上下文窗口大小；设置后启用历史压缩（默认关闭）</item>
-/// <item><c>DOUGONG_MCP_SERVERS</c> 可选：MCP server 列表，形如 <c>name=command args;name2=...</c>（默认不连）</item>
+/// <item><c>DOUGONG_MCP_SERVERS</c> 可选：MCP server 列表（默认不连）。三种形态：
+/// <c>name=/path/server args</c>（stdio）、<c>name=http://host/mcp</c>、
+/// <c>name=https://host/mcp</c>（Streamable HTTP）</item>
 /// </list>
 /// 会话参数：
 /// <list type="bullet">

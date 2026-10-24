@@ -343,8 +343,23 @@
     高基数维度会让后端时间序列数量爆炸。会话级归属属于日志，不属于指标。
   - 真实端点验证：DeepSeek 一次调用产出
     `calls=1, duration=2171ms, input_tokens=35, output_tokens=13`，与账本一致。
-  - **未实现**：MCP resources/prompts、HTTP transport、断线重连、ACP；
-    OTel exporter（宿主自行接 `OpenTelemetry` 的 meter provider，SDK 不代劳）。
+  - **MCP resources/prompts 已实现**（`McpResourceCatalog`）：列出资源与模板、
+    读取资源、列出与展开 Prompt。三个设计要点：
+    ① 资源与 Prompt **不走 dispatcher**——它们没有副作用，混进工具管线只会让审批变成噪音；
+    ② 读取失败返回可恢复结果而非抛错，调用方转述原因而不是让会话崩掉；
+    ③ 超大内容截断必须显式标记（`Truncated`），静默截断会让模型以为看到了全部。
+  - 资源/Prompt 的 `list_changed` 通知会让目录版本号递增，宿主据此判断缓存是否过期
+    （不主动重拉，避免无事发生时也打远端）。
+  - **MCP HTTP transport 已实现**：配置支持三种形态，靠值前缀区分且向后兼容——
+    `name=/path/server args`（stdio）、`name=http://host/mcp`、`name=https://host/mcp`。
+    用 Streamable HTTP（SSE 已废弃，不提供开关）。
+  - **ACP 客户端能力方法已显式拒绝**：`fs/*` 与 `terminal/*` 返回 -32601 并说明
+    "Dougong 有意不声明——读写统一走 dispatcher、命令执行统一走 shell 工具"。
+    笼统的"不受支持"会让对端误以为是实现缺陷，而不是能力协商的结果。
+  - **未实现**：MCP 断线重连（当前断连即失败，不自动重试——
+    远端操作是否已发生未知，重试会重复副作用）；ACP 的 `plan` 与 `elicitation`
+    （**缺数据源**：`IAgentRuntime` 没有 plan 事件，elicitation 需要客户端能力，
+    做了也只是空壳）；OTel exporter（宿主自行接 meter provider）。
 - [ ] M2 L1 默认候选待审；受限自动启用需用户选择，来源/作用域/撤销/隐私双数据流和最小留出评测齐备。
 - [ ] M3 API/行为兼容、作者模板和卸载测试稳定化；完整 Skill 进化和评测优化按验证结果后续建设。
 
@@ -422,6 +437,11 @@
   9 项自检通过（含反证）；等待审批期间不持锁，避免慢审批阻塞工作区。
 - 2026-10-24：M1 提交屏障：`IAgentStore` 契约与 JSONL 实现，四个提交落点串起
   "先提交意图、再产生副作用"；6 项自检通过，并用移除屏障的反证确认测试有效。
+- 2026-10-24：M2 剩余协议面：MCP resources/prompts（可恢复失败、截断标记）、
+  HTTP transport（三形态配置）、ACP 客户端能力方法显式拒绝。10 项验收含四个反证。
+  如实记录两项未做：MCP 断线重连（重试会重复副作用）、
+  ACP plan/elicitation（运行时没有数据源，做了是空壳）。
+
 - 2026-10-24：入口能力对齐：抽出 SessionComposition/AcpComposition，
   REPL 与 ACP 走同一装配。5 项一致性验收（含反证 3 项）。
   修掉压缩在会话层不持久、MCP 资源不释放两个真缺陷。

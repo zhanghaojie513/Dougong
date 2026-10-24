@@ -29,6 +29,9 @@ public sealed class McpToolRegistry : IDisposable, IAsyncDisposable
     private readonly object _sync = new();
     private readonly List<IDisposable> _registrations = [];
     private IAsyncDisposable? _notificationRegistration;
+    private IAsyncDisposable? _resourceNotification;
+    private IAsyncDisposable? _promptNotification;
+    private int _resourceCatalogRevision;
     private bool _disposed;
 
     private McpToolRegistry(IToolDispatcher dispatcher, McpClient client, string serverName)
@@ -56,14 +59,41 @@ public sealed class McpToolRegistry : IDisposable, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(client);
 
         var registry = new McpToolRegistry(dispatcher, client, serverName);
+
         // 通知处理器返回 ValueTask；刷新是 async Task，因此包一层。
         registry._notificationRegistration = client.RegisterNotificationHandler(
             NotificationMethods.ToolListChangedNotification,
             (_, _) => new ValueTask(registry.RefreshAsync(CancellationToken.None)));
 
+        // 资源与 Prompt 的变化不影响工具注册，但要让宿主知道目录已过期。
+        // 这里只递增版本号，不主动重拉——重拉由宿主按需触发，避免无事发生时也打远端。
+        registry._resourceNotification = client.RegisterNotificationHandler(
+            NotificationMethods.ResourceListChangedNotification,
+            (_, _) => { registry.InvalidateResourceCatalog(); return ValueTask.CompletedTask; });
+        registry._promptNotification = client.RegisterNotificationHandler(
+            NotificationMethods.PromptListChangedNotification,
+            (_, _) => { registry.InvalidateResourceCatalog(); return ValueTask.CompletedTask; });
+
         await registry.RefreshAsync(cancellationToken).ConfigureAwait(false);
         return registry;
     }
+
+    /// <summary>
+    /// 本 server 的资源与 Prompt 目录。
+    /// </summary>
+    /// <remarks>
+    /// 与工具分开：资源是读取、Prompt 是模板，都没有副作用，
+    /// 不需要走 dispatcher 的审批。混进工具管线只会让审批变成噪音。
+    /// </remarks>
+    public McpResourceCatalog ResourceCatalog => new(_client, _serverName);
+
+    /// <summary>
+    /// 资源或 Prompt 目录的版本号。远端发变更通知时递增，
+    /// 宿主据此判断缓存的目录是否过期。
+    /// </summary>
+    public int ResourceCatalogRevision => Volatile.Read(ref _resourceCatalogRevision);
+
+    private void InvalidateResourceCatalog() => Interlocked.Increment(ref _resourceCatalogRevision);
 
     /// <summary>当前已注册的工具数。</summary>
     public int ToolCount
@@ -178,10 +208,16 @@ public sealed class McpToolRegistry : IDisposable, IAsyncDisposable
 
         // 通知订阅是 IAsyncDisposable：这里同步释放会阻塞，但 Dispose 是同步契约。
         // 用 fire-and-forget 并在异常时静默——注销失败不影响已释放的工具。
-        if (_notificationRegistration is { } subscription)
+        foreach (var subscription in new[]
         {
-            _notificationRegistration = null;
-            _ = DisposeSubscriptionAsync(subscription);
+            _notificationRegistration, _resourceNotification, _promptNotification,
+        })
+        {
+            if (subscription is not null) _ = DisposeSubscriptionAsync(subscription);
         }
+
+        _notificationRegistration = null;
+        _resourceNotification = null;
+        _promptNotification = null;
     }
 }

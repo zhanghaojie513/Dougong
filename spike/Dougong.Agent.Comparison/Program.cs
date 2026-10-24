@@ -81,6 +81,9 @@ public static class Program
         if (args.FirstOrDefault() == "parity")
             return await EntryParityChecks.RunAsync();
 
+        if (args.FirstOrDefault() == "surface")
+            return await ProtocolSurfaceChecks.RunAsync();
+
         // 供端到端测试使用的最小 stdio MCP server。
         if (args.FirstOrDefault() == "mcp-server")
             return await McpTestServer.RunAsync();

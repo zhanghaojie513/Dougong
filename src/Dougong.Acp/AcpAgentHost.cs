@@ -195,6 +195,34 @@ public sealed class AcpAgentHost
                 await HandleCloseSessionAsync(message, cancellationToken).ConfigureAwait(false);
                 break;
 
+            // 客户端能力类方法：我们没在 initialize 里声明对应能力，客户端本不该调用。
+            // 收到就明确拒绝并说明原因，而不是笼统的"不支持"——
+            // 否则对端会以为是实现缺陷，而不是能力协商的结果。
+            case "fs/read_text_file":
+            case "fs/write_text_file":
+                await SendErrorAsync(message.Id, -32601,
+                    $"'{message.Method}' 需要 Agent 声明 fs 能力；Dougong 有意不声明——"
+                    + "工具读写统一走自己的 dispatcher，避免绕过审批与路径守卫。",
+                    cancellationToken).ConfigureAwait(false);
+                break;
+
+            case "terminal/create":
+            case "terminal/output":
+            case "terminal/release":
+            case "terminal/wait_for_exit":
+            case "terminal/kill":
+                await SendErrorAsync(message.Id, -32601,
+                    $"'{message.Method}' 需要 Agent 声明 terminal 能力；Dougong 有意不声明——"
+                    + "命令执行统一走 shell 工具，由 dispatcher 协调资源与审批。",
+                    cancellationToken).ConfigureAwait(false);
+                break;
+
+            case "elicitation/create":
+                await SendErrorAsync(message.Id, -32602,
+                    "Dougong 未声明 elicitation 能力，不能接受结构化补充输入请求。",
+                    cancellationToken).ConfigureAwait(false);
+                break;
+
             default:
                 await SendErrorAsync(message.Id, -32601,
                     $"方法 '{message.Method}' 不受支持。", cancellationToken).ConfigureAwait(false);
