@@ -8,12 +8,19 @@
 - 实际工程为 6 个产品项目 + 1 个测试项目 + 5 个样例工程 + 1 个对比探针工程。Agent 已有契约与最小 dispatcher；Ai/Mcp/Acp 仍为空工程；CLI 仍为占位。Telemetry 未建。
 - 已修复本轮审核问题：排空超时后拒绝再激活与卸载；`UnloadAsync` 在停用后重新核验失败标志与最终状态；`LoadAsync` 取消/失败回滚残留条目；激活、取消、服务排空、事件排空与清理各自有独立预算；`Context.DisposeAsync` 走内核协调器，不能绕过隔离；`ResolveAll` 返回全部提供方；清理顺序按实际依赖边计算；普通退订立即从事件总线移除并可回收；事件先排空再清理；状态提交在锁内原子完成，新增登记/移除增量与共享诊断 DTO。
 - .NET SDK 10.0.402 可用；完整解决方案 Release 构建通过（0 警告、0 错误），156 项内核行为测试全部通过（0 跳过）。
-- 首个提交 `5c1bbe5` 及后续切片均已推送至 [GitHub 仓库](https://github.com/zhanghaojie513/Doudong)。
+- 首个提交 `5c1bbe5` 及后续切片均已推送至 [GitHub 仓库](https://github.com/zhanghaojie513/Dougong)。
 - [前沿调查](vision/frontier-roadmap.md)与[未来迭代路线](vision/iteration-roadmap.md)已建立；后者面向 M3 之后，不作为当前 M0 已完成的证据。
 - M0 期间的实现缺陷、测试缺陷与判断错误已整理到[开发历程素材](journey/m0-dev-journey.md)，M1 的同类素材见 [m1-dev-journey.md](journey/m1-dev-journey.md)；这两份文件不是验收依据。
 - 本文只回答"做到了哪一步"。**要达成什么**见 [goal.md](goal.md)，**什么算做完**见
   [quality-gates.md](quality-gates.md)，**下一步做什么**见 [plan.md](plan.md)。
   勾选任一项前，先确认它过了 [quality-gates.md](quality-gates.md) 的六道门。
+
+## 仓库可见性（2026-10-24 起私有）
+
+- 仓库已转为 **private**。转私有时 0 star / 0 fork / 0 watch，无外部依赖受影响。
+- **重新开源的触发条件（已定，不靠记忆）**：首个 `Dougong.*` 包发布到 nuget.org 时。备选触发：M3 插件 API 稳定化启动。两者取先到者；触发后执行 `gh repo edit zhanghaojie513/Dougong --visibility public --accept-visibility-change-consequences`。
+- 公开资产已就绪：双语 README（中英切换）、docs 归类索引、CI 门禁、release 已标 pre-release。重新开源即 launch，无需额外准备。
+- 私有期间注意事项：Actions 按分钟计费（Windows runner 2 倍率，单次约 2 计费分钟，月度免费额度充足）；README 徽章与仓库链接对外不可见属预期，无需修复；提交纪律不放松——CI 门禁与失败路径测试照常，将来公开的历史就是门面。
 
 ## 评审修订清单
 
