@@ -78,7 +78,16 @@ public sealed class KernelStateCommitTests
             .AsTask().WaitAsync(Timeout);
         await kernel.UnloadAsync(handle.Id).AsTask().WaitAsync(Timeout);
 
-        await Task.Delay(100);
+        // 用轮询等状态而不猜时长：Task.Delay(100) 是时间假设，不是同步。
+        // 全量套件并行跑时 100ms 不够，读取器还没消费增量就断言，
+        // 于是 added 为空、报 "Collection: []"（实测过的一次假红）。
+        var deadline = DateTime.UtcNow + Timeout;
+        while (DateTime.UtcNow < deadline
+               && !(added.Contains(handle.Id) && removed.Contains(handle.Id)))
+        {
+            await Task.Delay(10);
+        }
+
         Assert.Contains(handle.Id, added);
         Assert.Contains(handle.Id, removed);
 
