@@ -25,7 +25,7 @@ public sealed class AcpAgentHost
 
     private readonly Stream _input;
     private readonly Stream _output;
-    private readonly Func<AcpSessionContext, AcpSessionRuntime> _runtimeFactory;
+    private readonly AcpSessionRuntimeFactory _runtimeFactory;
     private readonly Func<string, string?>? _storeResolver;
     private readonly IReadOnlyList<string> _listRoots;
     private readonly TextWriter _log;
@@ -41,7 +41,7 @@ public sealed class AcpAgentHost
     public AcpAgentHost(
         Stream input,
         Stream output,
-        Func<AcpSessionContext, AcpSessionRuntime> runtimeFactory,
+        AcpSessionRuntimeFactory runtimeFactory,
         TextWriter? log = null,
         Func<string, string?>? storeResolver = null,
         IReadOnlyList<string>? listRoots = null)
@@ -280,8 +280,9 @@ public sealed class AcpAgentHost
 
         // 一次工厂调用产出一对 runtime + dispatcher：
         // 若分别构造，审批器会挂在另一个实例上，工具执行根本不会经过它。
-        var pair = _runtimeFactory(context);
-        var session = new AcpSession(sessionId, cwd, pair.Runtime, this, _log);
+        var pair = await _runtimeFactory(context).ConfigureAwait(false);
+        var session = new AcpSession(
+            sessionId, cwd, pair.Runtime, this, _log, sessionResources: pair.SessionResources);
 
         lock (_sessions) _sessions[sessionId] = session;
 
@@ -390,9 +391,10 @@ public sealed class AcpAgentHost
 
         var context = new AcpSessionContext(
             sessionId, cwd, recovered?.HistoryForResume, _storeResolver?.Invoke(sessionId));
-        var pair = _runtimeFactory(context);
+        var pair = await _runtimeFactory(context).ConfigureAwait(false);
         var session = new AcpSession(
-            sessionId, cwd, pair.Runtime, this, _log, recovered?.HistoryForResume);
+            sessionId, cwd, pair.Runtime, this, _log, recovered?.HistoryForResume,
+            pair.SessionResources);
 
         lock (_sessions) _sessions[sessionId] = session;
 
@@ -466,7 +468,8 @@ public sealed class AcpAgentHost
             if (!_sessions.Remove(sessionId, out session)) session = null;
         }
 
-        session?.Cancel();
+        // 先取消再释放：顺序颠倒会让正在跑的轮次失去取消通道。
+        if (session is not null) await session.ReleaseAsync().ConfigureAwait(false);
         await SendResultAsync(message.Id, new JsonObject(), cancellationToken).ConfigureAwait(false);
     }
 

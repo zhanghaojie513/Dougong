@@ -33,7 +33,26 @@ public sealed record AcpSessionContext(
 /// 两者必须由**同一次**工厂调用产出：dispatcher 里挂着审批器与资源闸门，
 /// 若 runtime 与 dispatcher 分别构造，工具执行会绕过审批。
 /// </remarks>
-public sealed record AcpSessionRuntime(IAgentRuntime Runtime, IToolDispatcher Dispatcher);
+public sealed record AcpSessionRuntime(IAgentRuntime Runtime, IToolDispatcher Dispatcher)
+{
+    /// <summary>
+    /// 随会话建立、需要随会话释放的资源（MCP 注册器与客户端）。
+    /// </summary>
+    /// <remarks>
+    /// 不释放会让子进程与注册长期挂着：会话开得越多，泄漏越多，
+    /// 而症状只是"进程不肯退出"，极难归因。
+    /// </remarks>
+    public IReadOnlyList<IAsyncDisposable> SessionResources { get; init; } = [];
+}
+
+/// <summary>
+/// 异步的会话工厂。
+/// </summary>
+/// <remarks>
+/// 用异步工厂而不是同步的：装配过程要连接 MCP server（子进程启动 + 握手），
+/// 那本质上是异步的。强行同步会让首次会话创建阻塞线程池线程。
+/// </remarks>
+public delegate Task<AcpSessionRuntime> AcpSessionRuntimeFactory(AcpSessionContext context);
 
 /// <summary>
 /// 一个 ACP 会话：把 <see cref="AgentEvent"/> 翻译为 <c>session/update</c>，
@@ -54,8 +73,10 @@ internal sealed class AcpSession
         IAgentRuntime runtime,
         AcpAgentHost host,
         TextWriter log,
-        IReadOnlyList<AgentMessage>? restoredHistory = null)
+        IReadOnlyList<AgentMessage>? restoredHistory = null,
+        IReadOnlyList<IAsyncDisposable>? sessionResources = null)
     {
+        _sessionResources = sessionResources ?? [];
         SessionId = sessionId;
         Workspace = workspace;
         _runtime = runtime;
@@ -65,6 +86,7 @@ internal sealed class AcpSession
     }
 
     private readonly IAgentRuntime _runtime;
+    private readonly IReadOnlyList<IAsyncDisposable> _sessionResources;
     private readonly AcpAgentHost _host;
     private readonly TextWriter _log;
 
@@ -118,10 +140,58 @@ internal sealed class AcpSession
     }
 
     /// <summary>当前已承载的历史条数，供诊断与检查项使用。</summary>
-    public int HistoryCount => _history.Count;
+    public int HistoryCount
+    {
+        get { lock (_history) return _history.Count; }
+    }
+
+    /// <summary>
+    /// 按压缩结果裁剪会话历史。
+    /// </summary>
+    /// <remarks>
+    /// 只裁中间的若干条，保留头部（系统指令）与尾部（最近上下文）。
+    /// 压缩器报的是"被压缩的条数"，这里按同样数量从中间移除，
+    /// 使下一轮传给运行时的历史与运行时的 baseline 保持一致。
+    /// <para>
+    /// 不精确映射压缩器的 FirstIndex/LastIndex：那两个索引是相对于**运行时**
+    /// 收到的历史，而会话历史可能因恢复而更长。按条数裁中间是保守做法，
+    /// 宁可少裁也不要裁错——裁错会丢掉工具配对。
+    /// </para>
+    /// </remarks>
+    private void TrimHistory(int removed)
+    {
+        if (removed <= 0) return;
+
+        lock (_history)
+        {
+            // 至少保留 2 条头 + 2 条尾，避免把配对或系统指令裁掉。
+            var available = _history.Count - 4;
+            var actual = Math.Min(removed, Math.Max(0, available));
+            if (actual == 0) return;
+
+            _history.RemoveRange(2, actual);
+        }
+    }
 
     /// <summary>取消当前轮次。并发调用安全。</summary>
     public void Cancel() => _cancel.Cancel();
+
+    /// <summary>
+    /// 释放随会话建立的资源（MCP 注册器与客户端子进程）。
+    /// </summary>
+    /// <remarks>
+    /// 顺序是"先取消、再释放"：先释放会让正在跑的轮次失去取消通道。
+    /// 单个资源释放失败不阻止其余释放，但要如实记录。
+    /// </remarks>
+    public async Task ReleaseAsync()
+    {
+        Cancel();
+        foreach (var resource in _sessionResources)
+        {
+            try { await resource.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { _log.WriteLine($"[acp] 释放会话资源失败：{ex.Message}"); }
+        }
+    }
 
     /// <summary>
     /// 跑一轮对话，把所有事件翻译成通知，最后返回 stopReason。
@@ -139,9 +209,12 @@ internal sealed class AcpSession
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, _cancel.Token);
 
+        IReadOnlyList<AgentMessage> snapshot;
+        lock (_history) snapshot = [.. _history];
+
         var request = new AgentRunRequest(
             SessionId, "turn-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            [.. _history], prompt);
+            snapshot, prompt);
 
         var assistantText = new System.Text.StringBuilder();
 
@@ -195,16 +268,25 @@ internal sealed class AcpSession
                         break;
 
                     case AgentEvent.ContextCompacted compacted:
-                        // 压缩是宿主关心的事，但对客户端也要可见：历史被有损改写了。
+                        // 压缩必须同步反映到会话历史，否则下一轮又把完整历史传回去，
+                        // 压缩白做——这是真实缺陷：运行时的 baseline 被压了，
+                        // 但会话这一层的 _history 不知道。
+                        if (compacted.Applied)
+                            TrimHistory(compacted.RemovedMessages);
+
+                        // 对客户端也要可见：历史被有损改写了。
                         _log.WriteLine(
                             $"[acp] 会话 {SessionId} 压缩：{compacted.RemovedMessages} 条，"
                             + $"applied={compacted.Applied}");
                         break;
 
                     case AgentEvent.RunFinished finished:
-                        _history.Add(new AgentMessage(AgentRole.User, prompt));
-                        if (assistantText.Length > 0)
-                            _history.Add(new AgentMessage(AgentRole.Assistant, assistantText.ToString()));
+                        lock (_history)
+                        {
+                            _history.Add(new AgentMessage(AgentRole.User, prompt));
+                            if (assistantText.Length > 0)
+                                _history.Add(new AgentMessage(AgentRole.Assistant, assistantText.ToString()));
+                        }
 
                         return finished.Outcome switch
                         {

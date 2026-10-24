@@ -97,7 +97,7 @@ public static class AcpChecks
                 context =>
                 {
                     if (runtime is not null)
-                        return new AcpSessionRuntime(runtime, new ToolDispatcher());
+                        return Task.FromResult(new AcpSessionRuntime(runtime, new ToolDispatcher()));
 
                     var dispatcher = new ToolDispatcher(
                         new AcpApprover(() => host!, context.SessionId,
@@ -111,8 +111,8 @@ public static class AcpChecks
 
                     if (tool is not null) dispatcher.Register(tool);
 
-                    return new AcpSessionRuntime(
-                        new LoopAgentRuntime(client!, dispatcher), dispatcher);
+                    return Task.FromResult(new AcpSessionRuntime(
+                        new LoopAgentRuntime(client!, dispatcher), dispatcher));
                 },
                 new StringWriter(),
                 storeResolver: sessionPathFor,
@@ -525,8 +525,8 @@ public static class AcpChecks
             _ =>
             {
                 var dispatcher = new ToolDispatcher();
-                return new AcpSessionRuntime(
-                    new LoopAgentRuntime(new FixedClient("hi"), dispatcher), dispatcher);
+                return Task.FromResult(new AcpSessionRuntime(
+                    new LoopAgentRuntime(new FixedClient("hi"), dispatcher), dispatcher));
             });
 
         // 让 host 读到一条完整请求后停止。

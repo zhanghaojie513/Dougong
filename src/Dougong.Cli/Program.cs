@@ -162,75 +162,23 @@ public static class Program
 
         await using var store = await JsonlAgentStore.OpenAsync(sessionPath, sessionId)
             .ConfigureAwait(false);
-        // 用量记账：装饰器包在连接器外面，不改变任何调用语义。
+        // 用量记账：装饰器由共用装配包在连接器外面，不改变任何调用语义。
         // 账目随会话保存，`/usage` 可查；这里不猜单价，只汇总 token 与调用次数。
         var ledger = new UsageLedger();
-        using var client = new UsageRecordingChatClient(
-            ChatClientFactory.Create(config), ledger, sessionId,
-            config.Name, config.Model, config.Protocol);
-        var dispatcher = new ToolDispatcher(
-            new ConsoleApprover(),
-            new ToolResourceGate(),
-            sessionId, "turn-1", workspace,
-            TimeSpan.FromMinutes(5),
-            new WorkspacePathGuard(workspace),
-            // 审批决定与运行终态随会话落盘：恢复时才能回答"这个调用当初经过审批了吗"。
-            store);
+        // 与 ACP 模式共用同一套装配：能力集合必须一致。
+        var composition = SessionComposition.FromEnvironment(
+            sessionId, workspace, ChatClientFactory.Create(config), store, new ConsoleApprover());
 
-        // 默认只给工作区内文件读写。shell 权限最大，必须显式开启：
-        // 它按 Execute 处理并取工作区独占锁，但无法把命令限制在工作区内。
-        dispatcher.Register(new ReadFileTool(workspace));
-        dispatcher.Register(new WriteFileTool(workspace));
+        var dispatcher = composition.CreateDispatcher();
 
-        if (shellEnabled) dispatcher.Register(new ShellTool(workspace));
+        var (mcpRegistries, mcpClients) = await composition
+            .ConnectMcpAsync(dispatcher, Console.Out)
+            .ConfigureAwait(false);
 
-        // MCP server 默认不连：远端工具权限未知，必须显式开启。
-        // 格式：DOUGONG_MCP_SERVERS="name=command args;name2=command args"
-        var mcpClients = new List<ModelContextProtocol.Client.McpClient>();
-        var mcpRegistries = new List<McpToolRegistry>();
-        foreach (var (name, command, arguments) in ParseMcpServers())
-        {
-            try
-            {
-                var options = new ModelContextProtocol.Client.StdioClientTransportOptions
-                {
-                    Name = name,
-                    Command = command,
-                    Arguments = [.. arguments],
-                    // 不继承宿主环境：与 shell 工具同理，密钥不能交给远端进程。
-                    InheritEnvironmentVariables = false,
-                };
+        if (composition.McpServers.Count == 0)
+            Console.WriteLine("MCP：未配置（DOUGONG_MCP_SERVERS 开启）");
 
-                var transport = new ModelContextProtocol.Client.StdioClientTransport(options, null);
-                var mcpClient = await ModelContextProtocol.Client.McpClient.CreateAsync(
-                    transport, null, null, CancellationToken.None);
-                mcpClients.Add(mcpClient);
-
-                // 用注册器而不是逐个 Register：它订阅 list_changed 并在远端变更时刷新。
-                var registry = await McpToolRegistry.ConnectAsync(
-                    dispatcher, name, mcpClient, CancellationToken.None);
-                mcpRegistries.Add(registry);
-
-                Console.WriteLine($"MCP '{name}'：已桥接 {registry.ToolCount} 个工具（订阅变更通知）");
-            }
-            catch (Exception ex)
-            {
-                // 连不上不阻止启动，但必须说清楚——静默跳过会让用户以为工具已就绪。
-                Console.Error.WriteLine($"MCP '{name}' 连接失败：{ex.GetType().Name}: {ex.Message}");
-            }
-        }
-
-        var runtime = contextWindow > 0
-            ? new LoopAgentRuntime(
-                client, dispatcher, store,
-                new ContextLimits
-                {
-                    ContextWindowTokens = contextWindow,
-                    MaxOutputTokens = 4_096,
-                },
-                new SlidingWindowCompactor(preservedHead: 2, preservedTail: 6),
-                (transcript, ct) => SummarizeAsync(client, transcript, ct))
-            : new LoopAgentRuntime(client, dispatcher, store);
+        var runtime = composition.CreateRuntime(dispatcher, ledger);
         var messages = new List<AgentMessage>(history);
         var turn = 0;
 
@@ -467,11 +415,14 @@ public static class Program
         // host 与工厂互相依赖：工厂里要创建审批器，而审批器要能向 host 发请求。
         // 用延迟绑定打破这个循环，而不是引入可变字段。
         AcpAgentHost? host = null;
+        var sessionResources =
+            new List<(IReadOnlyList<McpToolRegistry> Registries,
+                IReadOnlyList<ModelContextProtocol.Client.McpClient> Clients)>();
 
         host = new AcpAgentHost(
             Console.OpenStandardInput(),
             Console.OpenStandardOutput(),
-            context =>
+            async context =>
             {
                 var sessionDir = Environment.GetEnvironmentVariable("DOUGONG_SESSION_DIR")
                     ?? Path.Combine(
@@ -481,27 +432,15 @@ public static class Program
                 // 恢复时复用原路径：换新文件会表现为"恢复了但历史没接上"。
                 var storePath = context.StorePath
                     ?? Path.Combine(sessionDir, $"{context.SessionId}.jsonl");
-                var store = TryOpenSessionStoreAt(storePath, context.SessionId);
 
                 // 审批走协议：客户端弹窗选择，而不是控制台交互。
                 IToolApprover approver = host is null
                     ? new DenyAllApprover("ACP host 尚未就绪，按拒绝处理。")
                     : new AcpApprover(() => host!, context.SessionId);
 
-                var dispatcher = new ToolDispatcher(
-                    approver,
-                    new ToolResourceGate(),
-                    context.SessionId, "turn-1", context.Workspace,
-                    TimeSpan.FromMinutes(5),
-                    new WorkspacePathGuard(context.Workspace),
-                    store);
-
-                // 与 CLI 的 REPL 保持同一套最小工具集。
-                dispatcher.Register(new ReadFileTool(context.Workspace));
-                dispatcher.Register(new WriteFileTool(context.Workspace));
-
-                var runtime = new LoopAgentRuntime(client, dispatcher, store);
-                return new AcpSessionRuntime(runtime, dispatcher);
+                // 装配集中在 AcpComposition，测试直接复用同一路径。
+                return await AcpComposition.ComposeAsync(
+                    context, client, approver, storePath, Console.Error);
             },
             storeResolver: sessionId =>
             {
@@ -592,123 +531,10 @@ public static class Program
         }
     }
 
-    /// <summary>
-    /// 解析 <c>DOUGONG_MCP_SERVERS</c>：分号分隔多个 server，每个形如 <c>name=command 参数1 参数2</c>。
-    /// </summary>
-    private static IEnumerable<(string Name, string Command, IReadOnlyList<string> Arguments)>
-        ParseMcpServers()
-    {
-        var raw = Environment.GetEnvironmentVariable("DOUGONG_MCP_SERVERS");
-        if (string.IsNullOrWhiteSpace(raw)) yield break;
-
-        foreach (var entry in raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var separator = entry.IndexOf('=');
-            if (separator <= 0) continue;
-
-            var name = entry[..separator].Trim();
-            var commandLine = entry[(separator + 1)..].Trim();
-            if (name.Length == 0 || commandLine.Length == 0) continue;
-
-            var parts = commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (parts.Length == 0) continue;
-
-            yield return (name, parts[0], parts[1..]);
-        }
-    }
-
-    /// <summary>
-    /// 用同一个连接器生成摘要。摘要失败不抛给调用方——
-    /// 压缩是优化，不能成为新的失败点；失败会由循环降级为"保留原历史"。
-    /// </summary>
-    private static async ValueTask<string> SummarizeAsync(
-        IChatClient client, string transcript, CancellationToken cancellationToken)
-    {
-        var messages = new List<ChatMessage>
-        {
-            new(ChatRole.System,
-                "把下面的对话历史压缩成要点，保留任务目标、已做的决定、失败过的尝试与未完成事项。"
-                + "不要编造未出现的内容。只输出摘要正文。"),
-            new(ChatRole.User, transcript),
-        };
-
-        var builder = new StringBuilder();
-        await foreach (var update in client.GetStreamingResponseAsync(
-            messages, cancellationToken: cancellationToken))
-        {
-            if (update.Text is { Length: > 0 } chunk) builder.Append(chunk);
-        }
-
-        return builder.ToString();
-    }
-
     private static string Truncate(string text) =>
         text.Length <= 120 ? text : text[..120] + "…";
 
-    /// <summary>读取工作区内文件。</summary>
-    private sealed class ReadFileTool(string workspace) : IAgentTool
-    {
-        public ToolDescriptor Descriptor { get; } = new(
-            "read_file", "read_file", "1.0.0", "读取工作区内的文本文件",
-            JsonDocument.Parse(
-                """{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}""")
-                .RootElement.Clone());
 
-        public ToolPermission DescribePermission(JsonElement arguments) =>
-            new(ToolAccess.Read, true,
-                [arguments.TryGetProperty("path", out var p) ? p.GetString() ?? "" : ""], [], []);
-
-        public ToolExecutionPlan DescribeExecution(JsonElement arguments) => ToolExecutionPlan.Serial;
-
-        public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) =>
-            [arguments.GetProperty("path").GetString() ?? ""];
-
-        public async ValueTask<AgentToolResult> ExecuteAsync(
-            ToolInvocation invocation, CancellationToken cancellationToken)
-        {
-            var path = ResolvePath(workspace, invocation.Arguments.GetProperty("path").GetString()!);
-            var content = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
-
-            using var document = JsonDocument.Parse(
-                JsonSerializer.Serialize(new { path, content }));
-            return new AgentToolResult(document.RootElement.Clone());
-        }
-    }
-
-    /// <summary>写入工作区内文件；声明为工作区独占。</summary>
-    private sealed class WriteFileTool(string workspace) : IAgentTool
-    {
-        public ToolDescriptor Descriptor { get; } = new(
-            "write_file", "write_file", "1.0.0", "写入工作区内的文本文件",
-            JsonDocument.Parse(
-                """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}""")
-                .RootElement.Clone());
-
-        public ToolPermission DescribePermission(JsonElement arguments) =>
-            new(ToolAccess.Write, true,
-                [arguments.TryGetProperty("path", out var p) ? p.GetString() ?? "" : ""], [], []);
-
-        public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
-            new(ToolConcurrency.WorkspaceExclusive);
-
-        public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) =>
-            [arguments.GetProperty("path").GetString() ?? ""];
-
-        public async ValueTask<AgentToolResult> ExecuteAsync(
-            ToolInvocation invocation, CancellationToken cancellationToken)
-        {
-            var path = ResolvePath(workspace, invocation.Arguments.GetProperty("path").GetString()!);
-            var content = invocation.Arguments.GetProperty("content").GetString() ?? "";
-
-            var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-            await File.WriteAllTextAsync(path, content, cancellationToken).ConfigureAwait(false);
-
-            using var document = JsonDocument.Parse(
-                JsonSerializer.Serialize(new { path, bytes = content.Length }));
-            return new AgentToolResult(document.RootElement.Clone());
-        }
-    }
 
     private static string ResolvePath(string workspace, string path) =>
         Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(workspace, path));
