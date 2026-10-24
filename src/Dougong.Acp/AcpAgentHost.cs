@@ -26,6 +26,8 @@ public sealed class AcpAgentHost
     private readonly Stream _input;
     private readonly Stream _output;
     private readonly Func<AcpSessionContext, AcpSessionRuntime> _runtimeFactory;
+    private readonly Func<string, string?>? _storeResolver;
+    private readonly IReadOnlyList<string> _listRoots;
     private readonly TextWriter _log;
     private readonly Dictionary<string, AcpSession> _sessions = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -40,7 +42,9 @@ public sealed class AcpAgentHost
         Stream input,
         Stream output,
         Func<AcpSessionContext, AcpSessionRuntime> runtimeFactory,
-        TextWriter? log = null)
+        TextWriter? log = null,
+        Func<string, string?>? storeResolver = null,
+        IReadOnlyList<string>? listRoots = null)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -49,6 +53,8 @@ public sealed class AcpAgentHost
         _input = input;
         _output = output;
         _runtimeFactory = runtimeFactory;
+        _storeResolver = storeResolver;
+        _listRoots = listRoots ?? [];
         _log = log ?? Console.Error;
     }
 
@@ -173,13 +179,20 @@ public sealed class AcpAgentHost
                 break;
 
             case "session/load":
+                await HandleLoadSessionAsync(message, replay: true, cancellationToken).ConfigureAwait(false);
+                break;
+
             case "session/resume":
+                // resume 与 load 的唯一实质差异：不重放历史。
+                await HandleLoadSessionAsync(message, replay: false, cancellationToken).ConfigureAwait(false);
+                break;
+
             case "session/list":
+                await HandleListSessionsAsync(message, cancellationToken).ConfigureAwait(false);
+                break;
+
             case "session/close":
-                // 首版明确声明不支持，而不是静默成功。
-                await SendErrorAsync(message.Id, -32601,
-                    $"方法 '{message.Method}' 在 Dougong 的 ACP 首版中未实现；"
-                    + "请使用 session/new + session/prompt。", cancellationToken).ConfigureAwait(false);
+                await HandleCloseSessionAsync(message, cancellationToken).ConfigureAwait(false);
                 break;
 
             default:
@@ -220,8 +233,8 @@ public sealed class AcpAgentHost
             ["protocolVersion"] = SupportedProtocolVersion,
             ["agentCapabilities"] = new JsonObject
             {
-                // 首版不声明 loadSession：没实现的能力不能声明。
-                ["loadSession"] = false,
+                // loadSession 声明为 true 必须真的能重放历史，见 ReplayHistoryAsync。
+                ["loadSession"] = true,
                 ["promptCapabilities"] = new JsonObject
                 {
                     ["image"] = false,
@@ -232,6 +245,12 @@ public sealed class AcpAgentHost
                 {
                     ["http"] = false,
                     ["sse"] = false,
+                },
+                ["sessionCapabilities"] = new JsonObject
+                {
+                    ["list"] = new JsonObject(),
+                    ["resume"] = new JsonObject(),
+                    ["close"] = new JsonObject(),
                 },
             },
             ["agentInfo"] = new JsonObject
@@ -302,6 +321,153 @@ public sealed class AcpAgentHost
         {
             ["stopReason"] = outcome,
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// <c>session/load</c>（重放）与 <c>session/resume</c>（不重放）的共用实现。
+    /// </summary>
+    /// <remarks>
+    /// 两者都必须把已提交的历史接回会话上下文，否则"恢复"只是拿到了一个
+    /// 空会话加一个旧 ID——后续轮次会从零开始，模型不记得之前发生过什么。
+    /// <para>
+    /// 历史来源是 JSONL 真相源（<see cref="SessionRecovery"/>），不是客户端提供的。
+    /// </para>
+    /// </remarks>
+    private async Task HandleLoadSessionAsync(
+        AcpMessage message, bool replay, CancellationToken cancellationToken)
+    {
+        var sessionId = ReadString(message.Params, "sessionId");
+        var cwd = ReadString(message.Params, "cwd");
+
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            await SendErrorAsync(message.Id, -32602, "session/load 需要 sessionId。", cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(cwd) || !Path.IsPathRooted(cwd))
+        {
+            await SendErrorAsync(message.Id, -32602, "session/load 需要绝对的 cwd。", cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        // 会话已在本进程里活跃：直接复用，避免同一 ID 出现两个实例。
+        if (FindSession(sessionId) is { } existing)
+        {
+            if (replay) await existing.ReplayHistoryAsync(cancellationToken).ConfigureAwait(false);
+            await SendResultAsync(message.Id, SessionLoadResult(), cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        // 从 JSONL 恢复历史；日志不存在时按"没有历史"继续，而不是报错——
+        // 客户端可能只是想接着一个空会话往下走。
+        RecoveredSession? recovered = null;
+        if (_storeResolver is not null && _storeResolver(sessionId) is { } storePath
+            && File.Exists(storePath))
+        {
+            try
+            {
+                await using var store = await JsonlAgentStore.OpenAsync(storePath, sessionId, cancellationToken)
+                    .ConfigureAwait(false);
+                recovered = await SessionRecovery.ReplayAsync(store, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _log.WriteLine($"[acp] 恢复会话 '{sessionId}' 失败：{ex.Message}");
+            }
+        }
+
+        if (recovered?.DescribeBlockingReason() is { } blocking)
+        {
+            // 有结果未知的调用时必须拒绝：不能假装历史是完整的。
+            await SendErrorAsync(message.Id, -32000,
+                $"会话 '{sessionId}' 无法恢复：{blocking}", cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var context = new AcpSessionContext(
+            sessionId, cwd, recovered?.HistoryForResume, _storeResolver?.Invoke(sessionId));
+        var pair = _runtimeFactory(context);
+        var session = new AcpSession(
+            sessionId, cwd, pair.Runtime, this, _log, recovered?.HistoryForResume);
+
+        lock (_sessions) _sessions[sessionId] = session;
+
+        // load 必须先重放整段历史再响应；resume 不重放。
+        if (replay) await session.ReplayHistoryAsync(cancellationToken).ConfigureAwait(false);
+
+        await SendResultAsync(message.Id, SessionLoadResult(), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static JsonObject SessionLoadResult() => new()
+    {
+        ["modes"] = null,
+    };
+
+    /// <summary>
+    /// <c>session/list</c>：列出已提交会话。
+    /// </summary>
+    /// <remarks>
+    /// 只读 JSONL 文件与序号范围，不解析完整历史——列一个大目录时解析全部记录会很慢，
+    /// 而且客户端要的是"有哪些会话"，不是每个会话的内容。
+    /// </remarks>
+    private async Task HandleListSessionsAsync(AcpMessage message, CancellationToken cancellationToken)
+    {
+        var cwd = ReadString(message.Params, "cwd");
+        var sessions = new JsonArray();
+
+        foreach (var root in _listRoots)
+        {
+            foreach (var summary in SessionBranch.List(root))
+            {
+                // 有缺口或损坏的会话不能列给客户端：选了也恢复不了。
+                if (summary.HasSequenceGap) continue;
+
+                sessions.Add(new JsonObject
+                {
+                    ["sessionId"] = summary.SessionId,
+                    ["cwd"] = cwd ?? Path.GetTempPath(),
+                    ["updatedAt"] = summary.LastWriteUtc.ToString("O"),
+                });
+            }
+        }
+
+        await SendResultAsync(message.Id, new JsonObject
+        {
+            ["sessions"] = sessions,
+        }, cancellationToken).ConfigureAwait(false);
+
+        await Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// <c>session/close</c>：先取消进行中的工作，再释放。
+    /// </summary>
+    /// <remarks>
+    /// 顺序不能颠倒：先移除会话会让正在跑的轮次失去取消通道，
+    /// 只能等它自己结束——那正是"关闭后进程不肯退出"的常见原因。
+    /// </remarks>
+    private async Task HandleCloseSessionAsync(AcpMessage message, CancellationToken cancellationToken)
+    {
+        var sessionId = ReadString(message.Params, "sessionId");
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            await SendErrorAsync(message.Id, -32602, "session/close 需要 sessionId。", cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        AcpSession? session;
+        lock (_sessions)
+        {
+            if (!_sessions.Remove(sessionId, out session)) session = null;
+        }
+
+        session?.Cancel();
+        await SendResultAsync(message.Id, new JsonObject(), cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>从 prompt 参数里取纯文本；非文本块首版忽略。</summary>

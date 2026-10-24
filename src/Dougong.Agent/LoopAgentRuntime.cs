@@ -208,6 +208,24 @@ public sealed class LoopAgentRuntime(
                     });
                 }
 
+                // 纯文本轮次同样要提交模型响应：否则助手回复从不入库，
+                // 会话恢复时只剩用户消息，模型不记得自己说过什么。
+                // 这是真实缺陷——它只在"恢复一个纯对话会话"时暴露，
+                // 因为带工具的轮次本来就会在下面提交。
+                var plainResponse = JsonSerializer.Serialize(new
+                {
+                    text = text.ToString(),
+                    reasoning = reasoning.ToString(),
+                    calls = Array.Empty<object>(),
+                });
+                if (await CommitOrNullAsync(
+                        StoreRecordKind.ModelResponse, ToElement(plainResponse), cancellationToken)
+                        is { } plainFailure)
+                {
+                    yield return plainFailure;
+                    yield break;
+                }
+
                 yield return await FinishAsync(AgentRunOutcome.Completed, null, cancellationToken).ConfigureAwait(false);
                 yield break;
             }

@@ -36,6 +36,13 @@ public static class AcpChecks
         failures += await CheckAsync("approval-goes-through-protocol", ApprovalViaProtocolAsync);
         failures += await CheckAsync("client-denial-blocks-execution", DenialBlocksAsync);
         failures += await CheckAsync("unanswered-approval-is-denied", UnansweredAsync);
+        failures += await CheckAsync("load-replays-full-history", LoadReplaysAsync);
+        failures += await CheckAsync("resume-does-not-replay-but-keeps-history", ResumeKeepsAsync);
+        failures += await CheckAsync("load-rejects-unknown-outcome-session", LoadBlocksAsync);
+        failures += await CheckAsync("list-reports-committed-sessions", ListSessionsAsync);
+        failures += await CheckAsync("close-removes-session", CloseSessionAsync);
+        failures += await CheckAsync("load-declared-capability-is-real", CapabilityAsync);
+        failures += await CheckAsync("plain-turn-persists-assistant-reply", PlainTurnPersistsAsync);
 
         Console.WriteLine(failures == 0
             ? "ACP: ALL PASS"
@@ -70,7 +77,9 @@ public static class AcpChecks
             TimeSpan? approvalTimeout = null,
             string permissionOutcome = "allow-once",
             bool replyToPermission = true,
-            IAgentRuntime? runtime = null)
+            IAgentRuntime? runtime = null,
+            string? storeRoot = null,
+            Func<string, string?>? sessionPathFor = null)
         {
             _permissionReply = new JsonObject
             {
@@ -105,7 +114,9 @@ public static class AcpChecks
                     return new AcpSessionRuntime(
                         new LoopAgentRuntime(client!, dispatcher), dispatcher);
                 },
-                new StringWriter());
+                new StringWriter(),
+                storeResolver: sessionPathFor,
+                listRoots: storeRoot is null ? null : [storeRoot]);
 
             _loop = Task.Run(() => host.RunAsync(_stop.Token));
             _clientToHost = _toHost.Writer.AsStream(leaveOpen: true);
@@ -131,8 +142,12 @@ public static class AcpChecks
         }
 
         /// <summary>用现成运行时构造（不需要注入 client 与工具的用例）。</summary>
-        public Harness(IAgentRuntime runtime)
-            : this(client: null, tool: null, runtime: runtime) { }
+        public Harness(
+            IAgentRuntime runtime,
+            string? storeRoot = null,
+            Func<string, string?>? sessionPathFor = null)
+            : this(client: null, tool: null, runtime: runtime,
+                   storeRoot: storeRoot, sessionPathFor: sessionPathFor) { }
 
         public List<JsonNode> Received { get; } = [];
 
@@ -272,10 +287,11 @@ public static class AcpChecks
         if (result["protocolVersion"]?.GetValue<int>() != 1)
             return $"协商版本应为 1，实际 {result["protocolVersion"]}";
 
-        // 没实现的能力不能声明。
+        // 声明了 loadSession 就必须真的能重放（由 load-replays-full-history 验证）。
+        // 这里只确认声明存在；能力的真实性由那条用例负责。
         var caps = result["agentCapabilities"];
-        if (caps?["loadSession"]?.GetValue<bool>() == true)
-            return "声明了 loadSession 但未实现";
+        if (caps?["loadSession"] is null)
+            return "未声明 loadSession";
 
         return result["agentInfo"]?["name"]?.GetValue<string>() == "dougong"
             ? null : "agentInfo 缺少名称";
@@ -424,24 +440,30 @@ public static class AcpChecks
             ? null : $"错误码应为 -32601，实际 {response["error"]!["code"]}";
     }
 
+    /// <summary>
+    /// 真正未实现的方法必须显式报错，而不是静默成功。
+    /// </summary>
+    /// <remarks>
+    /// 原先这里检查 load/resume/list/close；它们现在已实现，因此改用
+    /// 仍未实现的 <c>session/delete</c> 与 <c>session/set_mode</c>，
+    /// 否则这条检查会变成"检查一个已实现的方法报错"——那是错的断言。
+    /// </remarks>
     private static async Task<string?> UnimplementedAsync()
     {
         await using var harness = new Harness(TextRuntime("hi"));
 
-        foreach (var method in new[] { "session/load", "session/resume", "session/list", "session/close" })
+        foreach (var method in new[] { "session/delete", "session/set_mode" })
         {
             var response = await harness.RequestAsync(Request(1, method, new JsonObject
             {
                 ["sessionId"] = "x",
-                ["cwd"] = Path.GetTempPath(),
             }));
 
             if (response["error"] is null)
                 return $"'{method}' 未实现却返回成功——不能静默假装支持";
 
-            var message = response["error"]!["message"]?.GetValue<string>() ?? "";
-            if (!message.Contains("session/new", StringComparison.Ordinal))
-                return $"'{method}' 的错误未给出替代做法：{message}";
+            if (response["error"]!["code"]?.GetValue<int>() != -32601)
+                return $"'{method}' 的错误码应为 -32601";
         }
 
         return null;
@@ -546,7 +568,7 @@ public static class AcpChecks
         await using var harness = new Harness(new ToolCallingClient("c1"), tool);
 
         return await RunApprovalScenarioAsync(
-            harness, approve: true,
+            harness, tool, approve: true,
             expectExecuted: true,
             expectPermissionRequest: true);
     }
@@ -557,14 +579,10 @@ public static class AcpChecks
         var tool = new CountingTool();
         await using var harness = new Harness(new ToolCallingClient("c1"), tool);
 
-        var failure = await RunApprovalScenarioAsync(
-            harness, approve: false,
+        return await RunApprovalScenarioAsync(
+            harness, tool, approve: false,
             expectExecuted: false,
             expectPermissionRequest: true);
-        if (failure is not null) return failure;
-
-        return tool.ExecutionCount == 0
-            ? null : $"客户端拒绝后工具仍执行了 {tool.ExecutionCount} 次";
     }
 
     /// <summary>客户端不回复时按拒绝处理，不能挂死。</summary>
@@ -576,21 +594,18 @@ public static class AcpChecks
             new ToolCallingClient("c1"), tool,
             approvalTimeout: TimeSpan.FromMilliseconds(300));
 
-        var failure = await RunApprovalScenarioAsync(
-            harness, approve: null,
+        return await RunApprovalScenarioAsync(
+            harness, tool, approve: null,
             expectExecuted: false,
             expectPermissionRequest: true);
-        if (failure is not null) return failure;
-
-        return tool.ExecutionCount == 0
-            ? null : $"无回复时工具仍执行了 {tool.ExecutionCount} 次";
     }
 
     /// <summary>
     /// 跑一次需要审批的对话。<paramref name="approve"/> 为 null 表示客户端不回复。
     /// </summary>
     private static async Task<string?> RunApprovalScenarioAsync(
-        Harness harness, bool? approve, bool expectExecuted, bool expectPermissionRequest)
+        Harness harness, CountingTool tool, bool? approve,
+        bool expectExecuted, bool expectPermissionRequest)
     {
         await harness.RequestAsync(Request(1, "initialize", new JsonObject { ["protocolVersion"] = 1 }));
         var session = await harness.RequestAsync(Request(2, "session/new", new JsonObject
@@ -611,11 +626,332 @@ public static class AcpChecks
         if (expectPermissionRequest && !harness.SawPermissionRequest)
             return "需要审批的工具没有发出 session/request_permission";
 
+        // 这条断言是核心：审批的最终目的是控制"工具到底有没有被执行"。
+        // 只验证"发过权限请求"而不验证执行结果，等于没测审批。
+        if (expectExecuted && tool.ExecutionCount == 0)
+            return "客户端已批准，但工具没有被执行";
+
+        if (!expectExecuted && tool.ExecutionCount > 0)
+            return $"客户端未批准，但工具执行了 {tool.ExecutionCount} 次";
+
         var stopReason = response["result"]?["stopReason"]?.GetValue<string>();
         return stopReason is null ? $"prompt 失败：{response["error"]?.ToJsonString()}" : null;
     }
 
+    /// <summary>
+    /// <c>session/load</c> 必须重放整段历史再响应。
+    /// </summary>
+    /// <remarks>
+    /// 只回 {sessionId} 而不重放，客户端显示空会话——看起来"恢复成功"，历史全丢。
+    /// 因此这里验证的是**真收到了重放的历史内容**，不是"没报错"。
+    /// </remarks>
+    private static async Task<string?> LoadReplaysAsync()
+    {
+        var dir = NewTempDir("load");
+        try
+        {
+            var sessionPath = Path.Combine(dir, "sess-load.jsonl");
+            await WriteSessionAsync(sessionPath, "sess-load", "还记得我说过的暗号吗", "暗号是 BLUE-42");
+
+            await using var harness = new Harness(
+                TextRuntime("ignored"), storeRoot: dir, sessionPathFor: _ => sessionPath);
+
+            await harness.RequestAsync(Request(1, "initialize", new JsonObject { ["protocolVersion"] = 1 }));
+
+            var load = await harness.RequestAsync(Request(2, "session/load", new JsonObject
+            {
+                ["sessionId"] = "sess-load",
+                ["cwd"] = dir,
+                ["mcpServers"] = new JsonArray(),
+            }));
+
+            if (load["error"] is not null) return $"session/load 失败：{load["error"]}";
+
+            var replayedUser = harness.Received
+                .Select(n => n["params"]?["update"])
+                .Where(u => u?["sessionUpdate"]?.GetValue<string>() == "user_message_chunk")
+                .Select(u => u?["content"]?["text"]?.GetValue<string>() ?? "")
+                .ToList();
+
+            if (!replayedUser.Any(t => t.Contains("暗号", StringComparison.Ordinal)))
+                return $"没有重放用户消息：{string.Join("|", replayedUser)}";
+
+            var replayedAssistant = harness.Received
+                .Select(n => n["params"]?["update"])
+                .Where(u => u?["sessionUpdate"]?.GetValue<string>() == "agent_message_chunk")
+                .Select(u => u?["content"]?["text"]?.GetValue<string>() ?? "")
+                .ToList();
+
+            return replayedAssistant.Any(t => t.Contains("BLUE-42", StringComparison.Ordinal))
+                ? null : $"没有重放助手消息：{string.Join("|", replayedAssistant)}";
+        }
+        finally { TryDelete(dir); }
+    }
+
+    /// <summary>
+    /// <c>session/resume</c> 不重放，但**必须**把历史接回上下文。
+    /// </summary>
+    /// <remarks>
+    /// 两个要求缺一不可：重放了就违背 resume 语义；不接历史则后续轮次从零开始。
+    /// 验证方式：resume 后发一轮，检查送给模型的历史里确实含旧内容。
+    /// </remarks>
+    private static async Task<string?> ResumeKeepsAsync()
+    {
+        var dir = NewTempDir("resume");
+        try
+        {
+            var sessionPath = Path.Combine(dir, "sess-resume.jsonl");
+            await WriteSessionAsync(sessionPath, "sess-resume", "记住这个数字 7", "已记住 7");
+
+            var client = new RecordingClient();
+            await using var harness = new Harness(
+                client, storeRoot: dir, sessionPathFor: _ => sessionPath);
+
+            await harness.RequestAsync(Request(1, "initialize", new JsonObject { ["protocolVersion"] = 1 }));
+
+            var resume = await harness.RequestAsync(Request(2, "session/resume", new JsonObject
+            {
+                ["sessionId"] = "sess-resume",
+                ["cwd"] = dir,
+                ["mcpServers"] = new JsonArray(),
+            }));
+
+            if (resume["error"] is not null) return $"session/resume 失败：{resume["error"]}";
+
+            if (harness.Received.Any(n => n["method"]?.GetValue<string>() == "session/update"))
+                return "session/resume 不应重放历史";
+
+            await harness.RequestAsync(Request(3, "session/prompt", new JsonObject
+            {
+                ["sessionId"] = "sess-resume",
+                ["prompt"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "数字是多少" }),
+            }));
+
+            var history = client.LastHistory;
+            if (history is null) return "模型没有被调用";
+
+            return history.Any(m => (m.Text ?? "").Contains("记住这个数字 7", StringComparison.Ordinal))
+                ? null : "resume 后模型没有看到恢复的历史";
+        }
+        finally { TryDelete(dir); }
+    }
+
+    /// <summary>有未知结果的会话必须拒绝恢复，不能假装历史完整。</summary>
+    private static async Task<string?> LoadBlocksAsync()
+    {
+        var dir = NewTempDir("block");
+        try
+        {
+            var sessionPath = Path.Combine(dir, "sess-block.jsonl");
+            await using (var store = await JsonlAgentStore.OpenAsync(sessionPath, "sess-block"))
+            {
+                await store.CommitAsync(new StoreRecord(0, StoreRecordKind.UserInput,
+                    JsonSerializer.SerializeToElement("do it")));
+                await store.CommitAsync(new StoreRecord(0, StoreRecordKind.ToolCallStarted,
+                    JsonDocument.Parse("""{"id":"c1","tool":"write_file"}""").RootElement.Clone()));
+            }
+
+            await using var harness = new Harness(
+                TextRuntime("x"), storeRoot: dir, sessionPathFor: _ => sessionPath);
+
+            await harness.RequestAsync(Request(1, "initialize", new JsonObject { ["protocolVersion"] = 1 }));
+
+            var load = await harness.RequestAsync(Request(2, "session/load", new JsonObject
+            {
+                ["sessionId"] = "sess-block",
+                ["cwd"] = dir,
+                ["mcpServers"] = new JsonArray(),
+            }));
+
+            if (load["error"] is null) return "有未知结果的会话被成功恢复";
+
+            var message = load["error"]!["message"]?.GetValue<string>() ?? "";
+            return message.Contains("c1", StringComparison.Ordinal)
+                ? null : $"拒绝原因未指出具体调用：{message}";
+        }
+        finally { TryDelete(dir); }
+    }
+
+    /// <summary><c>session/list</c> 必须列出真实存在的已提交会话。</summary>
+    private static async Task<string?> ListSessionsAsync()
+    {
+        var dir = NewTempDir("list");
+        try
+        {
+            await WriteSessionAsync(Path.Combine(dir, "a.jsonl"), "sess-a", "hi", "hello");
+            await WriteSessionAsync(Path.Combine(dir, "b.jsonl"), "sess-b", "yo", "hey");
+
+            await using var harness = new Harness(TextRuntime("x"), storeRoot: dir);
+            await harness.RequestAsync(Request(1, "initialize", new JsonObject { ["protocolVersion"] = 1 }));
+
+            var list = await harness.RequestAsync(Request(2, "session/list", new JsonObject()));
+            if (list["error"] is not null) return $"session/list 失败：{list["error"]}";
+
+            if (list["result"]?["sessions"] is not JsonArray sessions)
+                return "session/list 没有返回 sessions 数组";
+
+            var ids = sessions
+                .Select(s => s?["sessionId"]?.GetValue<string>() ?? "")
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToList();
+
+            // SessionSummary 的 SessionId 取自文件名（与 CLI --list 一致）。
+            return ids.SequenceEqual(["a", "b"])
+                ? null : $"列出的会话不符：{string.Join(",", ids)}";
+        }
+        finally { TryDelete(dir); }
+    }
+
+    /// <summary><c>session/close</c> 之后该会话不能再接受 prompt。</summary>
+    private static async Task<string?> CloseSessionAsync()
+    {
+        await using var harness = new Harness(TextRuntime("hi"));
+        await harness.RequestAsync(Request(1, "initialize", new JsonObject { ["protocolVersion"] = 1 }));
+
+        var session = await harness.RequestAsync(Request(2, "session/new", new JsonObject
+        {
+            ["cwd"] = Path.GetTempPath(),
+            ["mcpServers"] = new JsonArray(),
+        }));
+        var sessionId = session["result"]!["sessionId"]!.GetValue<string>();
+
+        var close = await harness.RequestAsync(Request(3, "session/close", new JsonObject
+        {
+            ["sessionId"] = sessionId,
+        }));
+        if (close["error"] is not null) return $"session/close 失败：{close["error"]}";
+
+        var prompt = await harness.RequestAsync(Request(4, "session/prompt", new JsonObject
+        {
+            ["sessionId"] = sessionId,
+            ["prompt"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "go" }),
+        }));
+
+        return prompt["error"] is null ? "已关闭的会话仍接受 prompt" : null;
+    }
+
+    /// <summary>
+    /// 声明的能力必须与实现一致：<c>loadSession: true</c> 就意味着 load 真的能用。
+    /// </summary>
+    /// <remarks>
+    /// 声明了却没实现，客户端会按能力走恢复路径然后失败——比不声明更糟。
+    /// </remarks>
+    private static async Task<string?> CapabilityAsync()
+    {
+        await using var harness = new Harness(TextRuntime("hi"));
+        var init = await harness.RequestAsync(Request(1, "initialize", new JsonObject
+        {
+            ["protocolVersion"] = 1,
+        }));
+
+        var caps = init["result"]?["agentCapabilities"];
+        if (caps?["loadSession"]?.GetValue<bool>() != true)
+            return "未声明 loadSession，但实现已支持";
+
+        foreach (var name in new[] { "list", "resume", "close" })
+        {
+            if (caps["sessionCapabilities"]?[name] is null)
+                return $"未声明 sessionCapabilities.{name}，但实现已支持";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 回归：纯文本轮次（无工具调用）也必须把助手回复写进日志。
+    /// </summary>
+    /// <remarks>
+    /// 这是真实缺陷：纯文本轮次原先直接 <c>FinishAsync</c> 返回，从不提交
+    /// <c>ModelResponse</c>。于是所有"只是聊天"的会话在恢复后只剩用户消息，
+    /// 模型不记得自己说过什么。
+    /// <para>
+    /// 为什么之前的用例没抓到：它们都是手工写入完整的 JSONL 再测恢复，
+    /// 从未让**运行时自己**跑一轮再恢复。这一条补上那个缺口。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> PlainTurnPersistsAsync()
+    {
+        var dir = NewTempDir("plain");
+        try
+        {
+            var path = Path.Combine(dir, "sess-plain.jsonl");
+
+            await using (var store = await JsonlAgentStore.OpenAsync(path, "sess-plain"))
+            {
+                var runtime = new LoopAgentRuntime(
+                    new FixedClient("这是助手的回复"), new ToolDispatcher(), store);
+
+                await foreach (var _ in runtime.RunAsync(
+                    new AgentRunRequest("sess-plain", "t1", [], "你好")))
+                {
+                }
+            }
+
+            // 直接检查日志：必须有 ModelResponse，且含助手文本。
+            await using var reopened = await JsonlAgentStore.OpenAsync(path, "sess-plain");
+            var recovered = await SessionRecovery.ReplayAsync(reopened);
+
+            var assistant = recovered.History.FirstOrDefault(m => m.Role == AgentRole.Assistant);
+            if (assistant is null)
+                return "日志里没有助手消息：纯文本轮次未提交 ModelResponse";
+
+            return assistant.Content.Contains("这是助手的回复", StringComparison.Ordinal)
+                ? null : $"助手消息内容不符：{assistant.Content}";
+        }
+        finally { TryDelete(dir); }
+    }
+
+    private static string NewTempDir(string tag)
+    {
+        var dir = Path.Combine(Path.GetTempPath(),
+            $"dg-acp-{tag}-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private static void TryDelete(string dir)
+    {
+        try { Directory.Delete(dir, recursive: true); } catch { }
+    }
+
+    /// <summary>写一个含一轮完整对话的已提交会话。</summary>
+    private static async Task WriteSessionAsync(
+        string path, string sessionId, string userInput, string modelText)
+    {
+        await using var store = await JsonlAgentStore.OpenAsync(path, sessionId);
+        await store.CommitAsync(new StoreRecord(0, StoreRecordKind.UserInput,
+            JsonSerializer.SerializeToElement(userInput)));
+        await store.CommitAsync(new StoreRecord(0, StoreRecordKind.ModelResponse,
+            JsonDocument.Parse(JsonSerializer.Serialize(new { text = modelText, calls = Array.Empty<object>() }))
+                .RootElement.Clone()));
+        await store.CommitAsync(new StoreRecord(0, StoreRecordKind.RunFinished,
+            JsonDocument.Parse("""{"outcome":"Completed"}""").RootElement.Clone()));
+    }
+
     // ── 假客户端 ─────────────────────────────────────────────────
+
+    /// <summary>记录模型收到的历史，用于验证恢复是否真的接回了上下文。</summary>
+    private sealed class RecordingClient : IChatClient
+    {
+        public IReadOnlyList<ChatMessage>? LastHistory { get; private set; }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> m, ChatOptions? o = null, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> m, ChatOptions? o = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        {
+            LastHistory = [.. m];
+            await Task.CompletedTask;
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "noted");
+        }
+
+        public object? GetService(Type t, object? k = null) => null;
+        public void Dispose() { }
+    }
+
 
     /// <summary>
     /// 把现成的 <see cref="IAgentRuntime"/> 包成 <see cref="IChatClient"/>，

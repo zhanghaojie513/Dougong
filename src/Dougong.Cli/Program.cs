@@ -478,7 +478,10 @@ public static class Program
                         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                         ".dougong", "sessions");
 
-                var store = TryOpenSessionStore(sessionDir, context.SessionId);
+                // 恢复时复用原路径：换新文件会表现为"恢复了但历史没接上"。
+                var storePath = context.StorePath
+                    ?? Path.Combine(sessionDir, $"{context.SessionId}.jsonl");
+                var store = TryOpenSessionStoreAt(storePath, context.SessionId);
 
                 // 审批走协议：客户端弹窗选择，而不是控制台交互。
                 IToolApprover approver = host is null
@@ -499,7 +502,23 @@ public static class Program
 
                 var runtime = new LoopAgentRuntime(client, dispatcher, store);
                 return new AcpSessionRuntime(runtime, dispatcher);
-            });
+            },
+            storeResolver: sessionId =>
+            {
+                var sessionDir = Environment.GetEnvironmentVariable("DOUGONG_SESSION_DIR")
+                    ?? Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                        ".dougong", "sessions");
+                var candidate = Path.Combine(sessionDir, $"{sessionId}.jsonl");
+                return File.Exists(candidate) ? candidate : null;
+            },
+            listRoots:
+            [
+                Environment.GetEnvironmentVariable("DOUGONG_SESSION_DIR")
+                    ?? Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                        ".dougong", "sessions")
+            ]);
 
         await host.RunAsync();
         return 0;
@@ -518,6 +537,21 @@ public static class Program
         {
             Console.Error.WriteLine($"[acp] 拒绝工具 '{request.Tool.Name}'：{reason}");
             return ValueTask.FromResult(ToolApprovalDecision.Deny(reason));
+        }
+    }
+
+    private static IAgentStore? TryOpenSessionStoreAt(string path, string sessionId)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(path));
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+            return JsonlAgentStore.OpenAsync(path, sessionId).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[acp] 会话存储打开失败，改用无持久化：{ex.Message}");
+            return null;
         }
     }
 

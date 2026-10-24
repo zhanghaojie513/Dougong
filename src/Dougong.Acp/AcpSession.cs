@@ -12,7 +12,19 @@ namespace Dougong.Acp;
 /// <c>Dougong.Agent</c>（L1），拿不到 <c>Dougong.Ai</c> 的连接器工厂。
 /// 因此模型连接由宿主注入，ACP 层只负责协议。
 /// </remarks>
-public sealed record AcpSessionContext(string SessionId, string Workspace);
+/// <param name="RestoredHistory">
+/// 从已提交日志恢复出的历史。新建会话时为空；<c>session/load</c> 与
+/// <c>session/resume</c> 会带上它，宿主据此重建上下文。
+/// </param>
+/// <param name="StorePath">
+/// 该会话的 JSONL 路径（若已知）。恢复时必须复用原路径，否则会写到一个新文件、
+/// 表现为"恢复了但历史没接上"。
+/// </param>
+public sealed record AcpSessionContext(
+    string SessionId,
+    string Workspace,
+    IReadOnlyList<AgentMessage>? RestoredHistory = null,
+    string? StorePath = null);
 
 /// <summary>
 /// 一个会话的运行时与工具入口。
@@ -27,19 +39,86 @@ public sealed record AcpSessionRuntime(IAgentRuntime Runtime, IToolDispatcher Di
 /// 一个 ACP 会话：把 <see cref="AgentEvent"/> 翻译为 <c>session/update</c>，
 /// 并把审批转成 <c>session/request_permission</c>。
 /// </summary>
-internal sealed class AcpSession(
-    string sessionId,
-    string workspace,
-    IAgentRuntime runtime,
-    AcpAgentHost host,
-    TextWriter log)
+internal sealed class AcpSession
 {
     private readonly CancellationTokenSource _cancel = new();
-    private readonly List<AgentMessage> _history = [];
+    private readonly List<AgentMessage> _history;
     private int _running;
 
-    public string SessionId { get; } = sessionId;
-    public string Workspace { get; } = workspace;
+    /// <param name="restoredHistory">
+    /// 恢复出的历史。非空表示这是一次恢复，后续轮次必须接着它继续。
+    /// </param>
+    public AcpSession(
+        string sessionId,
+        string workspace,
+        IAgentRuntime runtime,
+        AcpAgentHost host,
+        TextWriter log,
+        IReadOnlyList<AgentMessage>? restoredHistory = null)
+    {
+        SessionId = sessionId;
+        Workspace = workspace;
+        _runtime = runtime;
+        _host = host;
+        _log = log;
+        _history = restoredHistory is null ? [] : [.. restoredHistory];
+    }
+
+    private readonly IAgentRuntime _runtime;
+    private readonly AcpAgentHost _host;
+    private readonly TextWriter _log;
+
+    public string SessionId { get; }
+    public string Workspace { get; }
+
+    /// <summary>把已提交历史作为 <c>session/update</c> 重放给客户端。</summary>
+    /// <remarks>
+    /// <c>session/load</c> 要求 Agent 先重放**整段**对话再响应。
+    /// 只回 {sessionId} 而不重放，客户端会显示空会话——看起来"恢复成功"，
+    /// 实际历史全丢。
+    /// </remarks>
+    public async Task ReplayHistoryAsync(CancellationToken cancellationToken)
+    {
+        foreach (var message in _history)
+        {
+            switch (message.Role)
+            {
+                case AgentRole.User:
+                    await NotifyAsync("user_message_chunk", new JsonObject
+                    {
+                        ["content"] = new JsonObject { ["type"] = "text", ["text"] = message.Content },
+                    }, cancellationToken).ConfigureAwait(false);
+                    break;
+
+                case AgentRole.Assistant:
+                    await NotifyAsync("agent_message_chunk", new JsonObject
+                    {
+                        ["content"] = new JsonObject { ["type"] = "text", ["text"] = message.Content },
+                    }, cancellationToken).ConfigureAwait(false);
+                    break;
+
+                case AgentRole.Tool:
+                    await NotifyAsync("tool_call_update", new JsonObject
+                    {
+                        ["toolCallId"] = message.ToolCallId ?? "unknown",
+                        ["status"] = "completed",
+                        ["content"] = new JsonArray(new JsonObject
+                        {
+                            ["type"] = "content",
+                            ["content"] = new JsonObject
+                            {
+                                ["type"] = "text",
+                                ["text"] = message.Content,
+                            },
+                        }),
+                    }, cancellationToken).ConfigureAwait(false);
+                    break;
+            }
+        }
+    }
+
+    /// <summary>当前已承载的历史条数，供诊断与检查项使用。</summary>
+    public int HistoryCount => _history.Count;
 
     /// <summary>取消当前轮次。并发调用安全。</summary>
     public void Cancel() => _cancel.Cancel();
@@ -68,7 +147,7 @@ internal sealed class AcpSession(
 
         try
         {
-            await foreach (var evt in runtime.RunAsync(request, linked.Token).ConfigureAwait(false))
+            await foreach (var evt in _runtime.RunAsync(request, linked.Token).ConfigureAwait(false))
             {
                 switch (evt)
                 {
@@ -117,7 +196,7 @@ internal sealed class AcpSession(
 
                     case AgentEvent.ContextCompacted compacted:
                         // 压缩是宿主关心的事，但对客户端也要可见：历史被有损改写了。
-                        log.WriteLine(
+                        _log.WriteLine(
                             $"[acp] 会话 {SessionId} 压缩：{compacted.RemovedMessages} 条，"
                             + $"applied={compacted.Applied}");
                         break;
@@ -152,7 +231,7 @@ internal sealed class AcpSession(
     private Task NotifyAsync(string sessionUpdate, JsonObject update, CancellationToken cancellationToken)
     {
         update["sessionUpdate"] = sessionUpdate;
-        return host.SendNotificationAsync(
+        return _host.SendNotificationAsync(
             "session/update",
             new JsonObject
             {

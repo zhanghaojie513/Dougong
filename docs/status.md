@@ -293,7 +293,19 @@
     导致审批器挂在另一个实例上、工具执行根本不经过它。改为单一工厂产出一对。
   - 真实进程级验证：外部客户端驱动 `dougong --acp`，1 次权限请求 → 客户端批准 →
     工具执行 → 模型读到文件真实内容 → `end_turn`。
-  - **未实现**：`session/load`/`resume`/`list`/`close`（显式返回 -32601 并给出替代做法）、
+  - **会话恢复已实现**：`session/load`（重放整段历史再响应）、`session/resume`
+    （不重放但接回历史）、`session/list`（列出已提交会话）、`session/close`
+    （先取消再释放）。`loadSession` 与 `sessionCapabilities` 相应声明为支持——
+    声明了就必须真能用，否则客户端会按能力走恢复路径然后失败。
+  - 恢复历史来自 JSONL 真相源（`SessionRecovery`），不是客户端提供。有未知结果的
+    会话**拒绝恢复**并指出具体调用，不假装历史完整。
+  - **修掉一个真实缺陷（只有真实进程验证才暴露）**：纯文本轮次（无工具调用）
+    从不提交 `ModelResponse`，于是所有"只是聊天"的会话恢复后只剩用户消息，
+    模型不记得自己说过什么。19 项单元验收没抓到，因为它们都是手工写完整 JSONL
+    再测恢复，从未让运行时自己跑一轮。已补回归用例并有反证。
+  - 真实进程验证：进程 A 建立会话并告知暗号 → 进程 B `session/list` → `session/load`
+    （重放 2 条 update）→ 追问暗号，模型准确答出 `BLUE-42`。
+  - **未实现**：`session/delete`、`session/set_mode`（显式 -32601）、
     `fs/*`、`terminal`、`elicitation`、`plan`。
   - **指标导出已实现**（`src/Dougong.Ai/DougongTelemetry.cs`）：基于 BCL 的
     `System.Diagnostics.Metrics.Meter`，不直接引 `OpenTelemetry` 包——SDK 只发布到
@@ -385,6 +397,12 @@
   9 项自检通过（含反证）；等待审批期间不持锁，避免慢审批阻塞工作区。
 - 2026-10-24：M1 提交屏障：`IAgentStore` 契约与 JSONL 实现，四个提交落点串起
   "先提交意图、再产生副作用"；6 项自检通过，并用移除屏障的反证确认测试有效。
+- 2026-10-24：M2.4 会话恢复：load/resume/list/close 实现，20 项验收（含四个反证）。
+  真实进程验证暴露一个真缺陷：纯文本轮次从不提交 ModelResponse，
+  所有纯聊天会话恢复后只剩用户消息。已修并补回归。
+  同时记录用户规则「不做假通过的测试」，并据此审出一处假断言：
+  审批用例的 expectExecuted 形参从未被使用。
+
 - 2026-10-24：M2.4 补完审批接线：AcpApprover 接入 CLI 的 dispatcher，审批走
   session/request_permission。13 项验收（新增批准/拒绝/无回复三种情形）。
   修掉两个真缺陷：host 收到响应后直接忽略（审批永远挂着）、
