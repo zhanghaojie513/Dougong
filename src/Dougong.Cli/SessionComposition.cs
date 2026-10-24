@@ -86,8 +86,10 @@ public sealed class SessionComposition
     /// </remarks>
     public IToolDispatcher CreateDispatcher()
     {
+        // 已知无访问的工具（如 ask_user）不产生审批项：让用户先批准"允许提问"、
+        // 再看到问题，等于把一次交互拆成两次。策略收得很窄，见 PermissionPolicyApprover。
         var dispatcher = new ToolDispatcher(
-            _approver,
+            new PermissionPolicyApprover(_approver),
             new ToolResourceGate(),
             _sessionId, "turn-1", _workspace,
             TimeSpan.FromMinutes(5),
@@ -277,12 +279,17 @@ public static class AcpComposition
     /// </param>
     /// <param name="storePath">会话日志路径；null 表示不持久化。</param>
     /// <param name="onMcpError">MCP 连接错误的输出出口。</param>
+    /// <param name="hostAccessor">
+    /// 延迟取 ACP host。<c>ask_user</c> 工具要向客户端发请求，而 host 在装配之后才存在，
+    /// 因此用委托而不是直接传实例——与 <see cref="AcpApprover"/> 同样的处理。
+    /// </param>
     public static async Task<AcpSessionRuntime> ComposeAsync(
         AcpSessionContext context,
         IChatClient client,
         IToolApprover approver,
         string? storePath,
         TextWriter onMcpError,
+        Func<AcpAgentHost>? hostAccessor = null,
         CancellationToken cancellationToken = default)
     {
         var store = storePath is null ? null : OpenStore(storePath, context.SessionId);
@@ -291,6 +298,11 @@ public static class AcpComposition
             context.SessionId, context.Workspace, client, store, approver);
 
         var dispatcher = composition.CreateDispatcher();
+
+        // 提问工具只在有 ACP 客户端可问时注册：没有 host 就没有人回答，
+        // 注册一个永远失败的工具有害无益。
+        if (hostAccessor is not null)
+            dispatcher.Register(new AcpElicitationTool(hostAccessor(), context.SessionId));
 
         // MCP 工具：与 REPL 同一套 DOUGONG_MCP_SERVERS 配置。
         var (registries, clients) = await composition

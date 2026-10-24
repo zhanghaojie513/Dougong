@@ -33,6 +33,7 @@ public static class ProtocolSurfaceChecks
         failures += await CheckAsync("parses-http-spec", ParseHttpAsync);
         failures += await CheckAsync("acp-rejects-fs-requests", AcpRejectsFsAsync);
         failures += await CheckAsync("acp-rejects-terminal-requests", AcpRejectsTerminalAsync);
+        failures += await CheckAsync("acp-rejects-inbound-elicitation", AcpRejectsInboundElicitationAsync);
 
         Console.WriteLine(failures == 0
             ? "PROTOCOL-SURFACE: ALL PASS"
@@ -208,6 +209,17 @@ public static class ProtocolSurfaceChecks
 
         return null;
     }
+
+    /// <summary>
+    /// 入站方向的 <c>elicitation/create</c> 必须以 −32602 拒绝，并说明是**方向反了**。
+    /// </summary>
+    /// <remarks>
+    /// 与 fs/terminal 的 −32601 不同：那两类是我们有意不声明能力，这一类是消息方向错了。
+    /// 报"不支持"会让对端以为是我们缺功能，实际是它发错了方向——诊断必须区分这两种情形，
+    /// 否则对端会照着错误的方向去排查。
+    /// </remarks>
+    private static Task<string?> AcpRejectsInboundElicitationAsync() =>
+        ExpectAcpErrorAsync("elicitation/create", -32602, expectHint: "Agent 向客户端");
 
     /// <summary>
     /// 验证 ACP 对某个方法返回指定错误码，且诊断里给出替代做法的线索。

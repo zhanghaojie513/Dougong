@@ -170,6 +170,72 @@ M1 已做过候选对比，结论是自研循环。
 | `protocolVersion` 不等于 1 时断连而非降级 | TKCode §3.4 | 采用 |
 | 未回复的权限请求视为拒绝 | TKCode §8.3 | 必须 |
 | `session/update` 有 14 种稳定变体 | TKCode §7 | 首版只实现 4-5 种，其余忽略 |
+| 提问是**工具**，不是宿主特权 | TKCode `AskUserTool.cs` + `docs/design/ask-user.md`；pi.net 的 `question.ts` / `questionnaire.ts` | 见 §4.5 |
+| 提问取工作区独占，避免问答与审批同时弹 | TKCode `docs/design/ask-user.md`（明确写出 `Concurrency = Exclusive` 并接受等待代价） | 见 §4.5 |
+| 提问不走审批（`NoAccess`） | TKCode 同上 | 见 §4.5 |
+| 传输失败**不得**报成"用户跳过" | TKCode 文档记录的 Cursor 事故 | 见 §4.5 |
+| form 模式 schema 是扁平对象，属性名即字段标识 | ACP schema（`requestedSchema`） | 属性名用 `header` |
+| plan 是**全量替换**的条目列表 `{content, priority, status}` | ACP schema | 未实现，理由见 §4.6 |
+
+### 4.5 elicitation（已实现）
+
+调研三个同类实现后，形状高度一致，都是「1–4 个问题、每题 2–4 个选项、每个选项带说明」：
+
+| 项目 | 暴露方式 | 备注 |
+|---|---|---|
+| Claude Code | `AskUserQuestion` 工具 | 最常被模仿的形状 |
+| Codex | `request_user_input` 工具 | 同上 |
+| TKCode | `ask_user` 工具 + `question`/`questionnaire` 扩展 | 唯一写了设计文档说明取舍的 |
+| pi.net | 仅扩展（`question.ts`、`questionnaire.ts`） | 没有做成工具 |
+
+我们采用**工具**形态（`ask_user`），理由有三：
+
+1. 工具天然经过 `IToolDispatcher`——审计、并发协调、终态记录都是现成的。
+   做成宿主特权等于在 dispatcher 之外再开一条执行路径，与"唯一执行入口"冲突。
+2. 模型能自己决定何时问，宿主不必猜测意图。
+3. 工具形态让"提问不可用"有地方表达（返回结果），不需要额外的错误通道。
+
+三条从 TKCode 直接采纳、并落进代码与验收的结论：
+
+- **取工作区独占**（`AcpElicitationTool.DescribeExecution` → `WorkspaceExclusive`）。
+  代价是等待用户回答期间占住工作区锁，但这段时间的"工作"本来就是停下来等用户；
+  收益是避免问答面板与审批面板同时弹出。
+- **不走审批**。`DescribePermission` 报 `ToolPermission(None, IsKnown: true, …)`。
+  但 dispatcher 会对每次调用都请求审批（这是正确的保守默认），
+  因此宿主显式套一层 `PermissionPolicyApprover`：仅当
+  **已知 + 无访问 + 未声明任何路径/命令/域名** 三者同时成立时才跳过询问。
+  未知权限（MCP 工具全部如此）与声明了范围的工具照旧逐次审批。
+- **四种结果必须分开**（`AskOutcome`）：`Answered` / `Declined` / `Cancelled` /
+  `Unavailable`，另有 `InvalidRequest`。**客户端报错、传输异常、本轮取消都不能
+  伪装成"用户拒绝"**——这是 Cursor 踩过的坑，模型会据此误判自己已被否决。
+  `Cancelled` 之下还用诊断文本区分"用户关闭了对话框"与"本轮被取消、用户根本没看到"。
+
+另有一条本地约束：形状不合法（例如只有 1 个选项）时**不发请求**，
+直接返回 `InvalidRequest` 并提示模型"如果只有一条合理路径，直接说明并继续，
+不要编造凑数选项"。这类问题问出来只会浪费用户一次点击。
+
+能力声明只加 `form`，**不加 `url`**：URL 模式要求客户端在安全上下文打开链接、
+对 Punycode 域名告警，我们无法验证客户端是否做到，声明了就是在承诺做不到的事。
+入站方向的 `elicitation/create` 以 −32602 拒绝并说明"方向反了"，
+而不是笼统报"不支持"——后者会让对端以为是能力问题。
+
+### 4.6 plan：为什么还没做
+
+`plan` 的数据源是协议里最麻烦的一处。ACP 的 plan 是
+`{entries:[{content, priority, status}]}`，且**每次都是全量替换**。
+要做对，运行时必须持续维护"当前计划"，而 `IAgentRuntime` 目前只产出
+`RunStarted` / `TextDelta` / `ToolCallRequested` / `ToolCallFinished` /
+`ContextCompacted` / `RunFinished`，没有 plan 事件。
+
+两个可选做法都不够好：
+
+- 由运行时从工具调用序列**猜**计划：这会把"看起来像计划"的东西报给用户，
+  用户无法分辨哪些是真计划、哪些是推测，属于 P3"可解释失败"的反面。
+- 加一个让模型自己维护 TODO 的工具：这是独立的一片功能（自己的 schema、存储、
+  恢复语义），塞进 M2 会让它变成半成品。
+
+因此**不做**，并在 `status.md` 记为已知缺口，而不是"实现了但走不通"。
+
 
 ### 4.3 首版范围（按门 3："从哪个入口触达"）
 
@@ -182,10 +248,11 @@ M1 已做过候选对比，结论是自研循环。
 - `session/update`：`agent_message_chunk`、`agent_thought_chunk`、`tool_call`、
   `tool_call_update`、`usage_update`
 - `session/request_permission`：由 `AcpApprover` 实现 `IToolApprover`
+- `session/load` / `session/resume` / `session/list` / `session/close`（M2.4 补齐）
+- `elicitation/create`（Agent → Client）：由 `ask_user` 工具发起，见 §4.5
 
-**不做**：`session/load`、`session/resume`、`session/list`、`session/close`、
-`fs/*`、`terminal`、`elicitation`、`plan`、`available_commands`。
-声明不支持，而不是"实现了但走不通"。
+**不做**：`fs/*`、`terminal`、`plan`、`available_commands`。
+声明不支持，而不是"实现了但走不通"。（`elicitation` 已按 §4.5 实现。）
 
 ### 4.4 硬约束（写进验收）
 

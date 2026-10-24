@@ -184,8 +184,8 @@ MCP 连接由插件管理并桥接到 Agent 工具契约。权限和资源计划
 
 ### 6.3 Acp 层
 
-- 手写 ACP Agent 端，锁定协议版本并进行兼容测试。v1 基线：initialize、session/new、session/prompt、session/update、session/request_permission、session/cancel；`session/load` 需声明 `loadSession` 能力。v1 已稳定的 `session/list`、`session/close`、`session/resume`、取消与 elicitation 按兼容客户端支持情况逐步实现。
-- 映射：审批流 ↔ permission request / elicitation；会话事件 ↔ session/update。标准入口为 UTF-8 逐行 JSON-RPC over stdio，stdout 独占协议，日志和遥测走 stderr 或独立出口。
+- 手写 ACP Agent 端，锁定协议版本并进行兼容测试。v1 基线：initialize、session/new、session/prompt、session/update、session/request_permission、session/cancel；`session/load` 需声明 `loadSession` 能力。`session/list`、`session/close`、`session/resume` 与 elicitation 已实现（M2.4/M2.5）；elicitation 只声明 `form` 模式、不声明 `url`。`plan` 未实现——它要求运行时持续维护全量替换的计划，靠工具序列猜测会把推测伪装成计划。
+- 映射：审批流 ↔ permission request；模型主动澄清 ↔ elicitation（以 `ask_user` 工具发起，不产生额外审批项）；会话事件 ↔ session/update。标准入口为 UTF-8 逐行 JSON-RPC over stdio，stdout 独占协议，日志和遥测走 stderr 或独立出口。
 - 外部 ACP 客户端可通过标准入口驱动 Dougong。ACP v2 目前为 draft，含 `replayFrom` 重放与恢复时重建待处理审批；定稿后桌面内部会话语义优先收敛到标准，私有层只保留进程启动/守护、认证、单实例和 PTY 所有权（§7）。
 
 ### 6.4 遥测

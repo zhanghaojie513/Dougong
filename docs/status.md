@@ -331,7 +331,7 @@
   - 真实进程验证：`DOUGONG_SHELL=1` 下通过 ACP 驱动，模型成功调用 shell 工具
     并读到真实 stdout。
   - **未实现**：`session/delete`、`session/set_mode`（显式 -32601）、
-    `fs/*`、`terminal`、`elicitation`、`plan`。
+    `fs/*`、`terminal`、`plan`。
   - **指标导出已实现**（`src/Dougong.Ai/DougongTelemetry.cs`）：基于 BCL 的
     `System.Diagnostics.Metrics.Meter`，不直接引 `OpenTelemetry` 包——SDK 只发布到
     标准出口，谁来采集由宿主决定。5 项验收（`-- telemetry`）用 `MeterListener`
@@ -356,10 +356,35 @@
   - **ACP 客户端能力方法已显式拒绝**：`fs/*` 与 `terminal/*` 返回 -32601 并说明
     "Dougong 有意不声明——读写统一走 dispatcher、命令执行统一走 shell 工具"。
     笼统的"不受支持"会让对端误以为是实现缺陷，而不是能力协商的结果。
+  - **ACP elicitation 已实现**（`src/Dougong.Acp/AcpElicitationTool.cs`，工具名
+    `ask_user`）：模型可主动向用户提出 1–4 个选择题，每题 2–4 个带说明的选项，
+    走 `elicitation/create` 的 `form` 模式。四条设计结论：
+    ① **是工具不是宿主特权**——经过 dispatcher，审计/并发/终态都是现成的，
+    与"唯一执行入口"一致；同类实现（Claude Code `AskUserQuestion`、Codex
+    `request_user_input`、TKCode `ask_user`）都是这个形状。
+    ② **取工作区独占**：避免问答面板与审批面板同时弹出。
+    ③ **不走审批**：`DescribePermission` 报已知 `None`。但 dispatcher 对每次调用
+    都会请求审批（正确的保守默认），因此宿主套了一层 `PermissionPolicyApprover`，
+    只在「已知 + 无访问 + 未声明路径/命令/域名」三条同时成立时跳过。
+    未知权限（MCP 工具全部如此）与声明了范围的工具照旧逐次审批。
+    ④ **四种结果不混淆**：`Answered` / `Declined` / `Cancelled` / `Unavailable`，
+    另有 `InvalidRequest`。客户端报错、传输异常、本轮取消都**不能**报成"用户拒绝"
+    ——这是 Cursor 的已知事故，模型会据此误判自己已被否决。`Cancelled` 之下还用
+    诊断文本区分"用户关闭了对话框"与"本轮被取消、用户根本没看到"。
+  - 形状不合法（如只有 1 个选项）时**不发请求**，直接返回 `InvalidRequest`
+    并提示模型"只有一条合理路径就直接说明并继续，不要编造凑数选项"。
+  - 能力声明只加 `form`，**不加 `url`**——URL 模式要求客户端在安全上下文打开链接
+    并对 Punycode 域名告警，我们无法验证，声明了就是承诺做不到的事。
+    入站方向的 `elicitation/create` 以 −32602 拒绝并说明"方向反了"。
+  - 验收 10 项（`-- elicitation`）+ 1 项真实进程（`-- elicitation-process`），
+    5 条反证逐条命中：把 `cancel` 改报 `Declined`、放行单选项、多声明 `url`、
+    去掉 `IsKnown` 守卫、去掉工具注册——最后一次是**真实 `dougong --acp` 进程**
+    （provider 用本地 HTTP stub，不读任何密钥）驱动完整一轮问答。
   - **未实现**：MCP 断线重连（当前断连即失败，不自动重试——
-    远端操作是否已发生未知，重试会重复副作用）；ACP 的 `plan` 与 `elicitation`
-    （**缺数据源**：`IAgentRuntime` 没有 plan 事件，elicitation 需要客户端能力，
-    做了也只是空壳）；OTel exporter（宿主自行接 meter provider）。
+    远端操作是否已发生未知，重试会重复副作用）；ACP 的 `plan`
+    （**缺数据源**：`IAgentRuntime` 没有 plan 事件，而 ACP 的 plan 是每次全量替换，
+    靠工具序列去猜"看起来像计划的"会把推测伪装成计划，属于 P3 反面）；
+    OTel exporter（宿主自行接 meter provider）。
 - [ ] M2 L1 默认候选待审；受限自动启用需用户选择，来源/作用域/撤销/隐私双数据流和最小留出评测齐备。
 - [ ] M3 API/行为兼容、作者模板和卸载测试稳定化；完整 Skill 进化和评测优化按验证结果后续建设。
 
@@ -441,6 +466,14 @@
   HTTP transport（三形态配置）、ACP 客户端能力方法显式拒绝。10 项验收含四个反证。
   如实记录两项未做：MCP 断线重连（重试会重复副作用）、
   ACP plan/elicitation（运行时没有数据源，做了是空壳）。
+  （后项已于 2026-10-25 补齐 elicitation，见下。）
+
+- 2026-10-25：ACP elicitation：`ask_user` 工具化实现，form 模式 1–4 题 × 2–4 选项。
+  11 项验收（10 项进程内 + 1 项真实 `dougong --acp` 进程），5 条反证逐条命中。
+  期间发现一个真缺陷：dispatcher 会对每次调用请求审批，导致用户先被问
+  "允许提问吗"再看到问题本身；引入 `PermissionPolicyApprover` 限定跳过范围
+  （已知 + 无访问 + 无路径/命令/域名），并用三种"不该跳过"的工具反证边界。
+  如实记录未做：ACP `plan`（缺数据源，靠工具序列猜会把推测伪装成计划）。
 
 - 2026-10-24：入口能力对齐：抽出 SessionComposition/AcpComposition，
   REPL 与 ACP 走同一装配。5 项一致性验收（含反证 3 项）。

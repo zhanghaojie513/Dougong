@@ -218,8 +218,10 @@ public sealed class AcpAgentHost
                 break;
 
             case "elicitation/create":
+                // 方向反了：elicitation 是 Agent → Client 的请求，
+                // 客户端不该向 Agent 发。如实指出，而不是让它以为是能力问题。
                 await SendErrorAsync(message.Id, -32602,
-                    "Dougong 未声明 elicitation 能力，不能接受结构化补充输入请求。",
+                    "elicitation/create 是 Agent 向客户端的请求；Dougong 作为 Agent 不接受该方向的调用。",
                     cancellationToken).ConfigureAwait(false);
                 break;
 
@@ -273,6 +275,12 @@ public sealed class AcpAgentHost
                 {
                     ["http"] = false,
                     ["sse"] = false,
+                },
+                // 只声明 form 模式：不声明 url——URL 模式要求客户端在安全上下文打开链接、
+                // 对 Punycode 域名告警，我们无法验证这些，声明了就是在承诺做不到的事。
+                ["elicitation"] = new JsonObject
+                {
+                    ["form"] = new JsonObject(),
                 },
                 ["sessionCapabilities"] = new JsonObject
                 {

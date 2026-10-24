@@ -325,7 +325,7 @@ public sealed record AgentToolResult(JsonElement Content, JsonElement? Details =
 | `session/new` · `session/prompt` | Agent Loop 启动 / 输入 |
 | `session/load`（v1，需 `loadSession` 能力） | 加载已提交会话；不表示接管旧进程或恢复旧连接 |
 | `session/resume` / `session/list` / `session/close`（v1 稳定） | 恢复、列举、关闭会话；按兼容客户端支持逐步实现 |
-| `elicitation/create`（客户端能力） | 结构化补充输入；可承载审批类交互 |
+| `elicitation/create`（Agent→Client 请求） | 结构化补充输入；由 `ask_user` 工具发起，只声明 `form` 模式 |
 | `session/update`（通知） | 事件总线消息翻译（流式文本块、工具调用、计划） |
 | permission 请求（Agent→Client） | 审批流（客户端弹窗 = 审批器插件的一种） |
 | `session/cancel` | linked CancellationToken 取消 |
@@ -335,6 +335,27 @@ public sealed record AgentToolResult(JsonElement Content, JsonElement? Details =
 **长请求不能阻塞读循环**（实测缺陷）：`session/prompt` 要跑完整轮，若在读循环里 await，后续的 `session/cancel` 通知根本读不到，取消永远无效。因此长请求登记到待完成表后立即继续读取，异常单独观察。
 
 **stdout 只归协议**：任何日志必须走 stderr。这条有专门的验收项——逐行检查 host 输出都能解析为 JSON。
+
+**elicitation 作为工具**（`AcpElicitationTool`，工具名 `ask_user`）：模型主动向用户提
+1–4 个选择题，每题 2–4 个带说明的选项。做成工具而非宿主特权，是为了复用
+dispatcher 的审计、并发协调与终态记录——否则等于在"唯一执行入口"之外再开一条路径。
+四条约束：
+
+1. **取工作区独占**：问答面板与审批面板不能同时弹出。
+2. **不产生审批项**：`DescribePermission` 报已知 `None`。但 dispatcher 对每次调用
+   都会请求审批（正确的保守默认），所以由宿主套 `PermissionPolicyApprover`，
+   仅当「已知 + 无访问 + 未声明路径/命令/域名」同时成立时跳过。未知权限
+   （MCP 工具全部如此）与声明了范围的工具照旧逐次审批——否则一个只读工具声明
+   `None` 就能绕开人工确认。
+3. **结果分类不可合并**：`Answered` / `Declined` / `Cancelled` / `Unavailable` /
+   `InvalidRequest`。客户端报错、传输异常、本轮取消都不得报成"用户拒绝"，
+   否则模型会误判自己被否决并改变方案（Cursor 的已知事故）。
+4. **形状不合法时不发请求**：只有 1 个选项之类的问题问出来只会浪费一次点击，
+   直接返回 `InvalidRequest` 并提示模型"只有一条合理路径就说明并继续"。
+
+只声明 `form`，不声明 `url`——URL 模式要求客户端在安全上下文打开链接并对
+Punycode 域名告警，我们无法验证，声明了就是承诺做不到的事。入站方向的
+`elicitation/create` 以 −32602 拒绝并说明方向。
 
 ### 5.4 遥测
 

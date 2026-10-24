@@ -84,6 +84,12 @@ public static class Program
         if (args.FirstOrDefault() == "surface")
             return await ProtocolSurfaceChecks.RunAsync();
 
+        if (args.FirstOrDefault() == "elicitation")
+            return await ElicitationChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "elicitation-process")
+            return await ElicitationProcessChecks.RunAsync();
+
         // 供端到端测试使用的最小 stdio MCP server。
         if (args.FirstOrDefault() == "mcp-server")
             return await McpTestServer.RunAsync();

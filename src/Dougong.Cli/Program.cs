@@ -442,7 +442,10 @@ public static class Program
 
                 // 装配集中在 AcpComposition，测试直接复用同一路径。
                 return await AcpComposition.ComposeAsync(
-                    context, client, approver, storePath, Console.Error);
+                    context, client, approver, storePath, Console.Error,
+                    // ask_user 工具需要向客户端发请求；host 在装配之后才存在，
+                    // 因此用延迟取用。
+                    hostAccessor: () => host!);
             },
             storeResolver: sessionId =>
             {
