@@ -60,35 +60,37 @@ run_case() {
   fi
 }
 
-# 1. 语言判据写反：英文也算"含中文" → 反例检测不出来
-mut01() { perl -0pi -e 's/text\.Any\(c => c >= 0x4E00 && c <= 0x9FFF\);/text.Length > 0;/' "$EFFECT"; }
+# 1. 相对判据放宽到"只要更短" → 5% 的噪声也算遵循
+mut01() { perl -0pi -e 's/return a\.Length <= b\.Length \* \(1 - MinShrinkRatio\);/return a.Length < b.Length;/' "$EFFECT"; }
 
-# 2. 列表判据放宽到任何非空行 → 段落也算列表
-mut02() { perl -0pi -e 's/return bulletLines >= 2;/return lines.Length > 0;/' "$EFFECT"; }
+# 2. 相对判据的下限去掉 → 只回一句"好"也算遵循
+mut02() { perl -0pi -e 's/if \(a\.Length < 40\) return false;/if (a.Length < 0) return false;/' "$EFFECT"; }
 
-# 3. 去掉"snake 必须多于 camel"这一半 → camelCase 为主也会被判为遵循
-mut03() { perl -0pi -e 's/return snake > 0 && snake > camel;/return snake > 0;/' "$EFFECT"; }
+# 3. 去掉"pascal 必须多于 camel" → 以 camelCase 为主也算遵循
+mut03() { perl -0pi -e 's/return pascal >= MinPascalIdentifiers && pascal > camel;/return pascal >= MinPascalIdentifiers;/' "$EFFECT"; }
 
-# 4. snake_case 模式写宽到匹配任意标识符 → 任何标识符都算遵循。
-#    直接替换整行正则字面量，避免在 perl 里处理嵌套转义。
+# 3b. 去掉"至少 2 个 PascalCase"下限 → 单个惯例标识符就算遵循
+mut07() { perl -0pi -e 's/return pascal >= MinPascalIdentifiers && pascal > camel;/return pascal > 0 \&\& pascal > camel;/' "$EFFECT"; }
+
+# 4. PascalCase 正则写宽到匹配任意标识符 → 任何命名都算遵循
 mut04() {
-  perl -0pi -e 's/\Q\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b\E/\b[a-z][a-zA-Z0-9_]*\b/' "$EFFECT"
+  perl -0pi -e 's/\Q\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b\E/\b[A-Za-z][A-Za-z0-9_]*\b/' "$EFFECT"
 }
 
 # 5. 无记忆组也传注入器 → 对照组失效。
-#    注意必须改 L1HarnessChecks 里那段：检查项有自己的代码路径，
-#    改 L1EffectChecks 的同名行不会影响它（上一版就是这样错过的）。
+#    必须改 L1HarnessChecks 里那段：检查项有自己的代码路径。
 mut05() { perl -0pi -e 's/Memory = null,\n                MemoryWorkspace = dir,/Memory = new StoreMemoryInjector(store),\n                MemoryWorkspace = dir,/' "$HARNESS"; }
 
 # 6. 提示里泄漏偏好 → 两组都会照做，指标失去区分力
-mut06() { perl -0pi -e 's/"简要说明 HTTP 缓存的工作方式。"/"请用中文简要说明 HTTP 缓存的工作方式。"/' "$EFFECT"; }
+mut06() { perl -0pi -e 's/"说明 HTTP 缓存的工作方式。"/"请简短说明 HTTP 缓存的工作方式。"/' "$EFFECT"; }
 
-run_case criteria-accept-following        criteria-reject-non-following      mut01
-run_case bullets-any-nonempty-line        criteria-reject-non-following      mut02
-run_case naming-drops-camel-comparison    criteria-reject-non-following      mut03
-run_case naming-pattern-too-wide          criteria-accept-following          mut04
-run_case no-memory-group-gets-injector    no-memory-group-sees-nothing       mut05
-run_case prompt-leaks-preference          prompt-does-not-leak-preference    mut06
+run_case concise-shrink-threshold-removed   criteria-reject-non-following      mut01
+run_case concise-floor-removed              criteria-reject-non-following      mut02
+run_case pascal-drops-camel-comparison      criteria-reject-non-following      mut03
+run_case pascal-single-identifier-accepted  criteria-reject-non-following      mut07
+run_case pascal-pattern-too-wide            criteria-accept-following          mut04
+run_case no-memory-group-gets-injector      no-memory-group-sees-nothing       mut05
+run_case prompt-leaks-preference            prompt-does-not-leak-preference    mut06
 
 restore
 

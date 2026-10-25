@@ -41,10 +41,13 @@
   原因文本与注入器共用 `MemoryDiagnostics`，避免展示与实际注入漂移。
 - `Dougong.Cli`：`DOUGONG_MEMORY` 开关（默认关闭）。启用即意味着偏好内容进入
   后续每次 prompt、可能发给远端模型——按 `skills-evolution.md §4` 必须显式开启。
-- 验收 1（记忆效果对照）的测量装置：`spike` 的 `-- l1-effect`（10 个留出任务、
-  有/无记忆两组、机械化判据、预先登记的最小提升 50%）与 `-- l1-harness`
-  （装置自检 6 项，不需要真实模型）。缺凭证时 `-- l1-effect` 明确报"未运行"
-  并返回非零，绝不算通过。见 [skill-l1-acceptance-1.md](docs/skill-l1-acceptance-1.md)。
+- 验收 1（记忆效果对照）的测量装置与实测结果：`spike` 的 `-- l1-effect`
+  （10 个留出任务、有/无记忆两组、机械化判据、预先登记的最小提升 50%）
+  与 `-- l1-harness`（装置自检 6 项，不需要真实模型）。
+  缺凭证时 `-- l1-effect` 明确报"未运行"并返回非零，绝不算通过。
+  **实测：6 家 provider × 2 种协议共 14 个组合，提升 60%–90%（中位数 80%），
+  14/14 超过 50% 阈值。** 适用范围仅限被测模型与这 10 个任务。
+  见 [skill-l1-acceptance-1.md](docs/skill-l1-acceptance-1.md)。
 - `Dougong.Agent`：`ToolDescriptor.MayHaveIrreversibleEffects`（默认 false）
   与 `UnknownOutcome.MayHaveIrreversibleEffects`（默认 true）+ `RecoveredSession.Retryable`。
   恢复时据此区分「只读工具崩溃，可安全重试」与「可能已产生副作用，必须人工核实」。

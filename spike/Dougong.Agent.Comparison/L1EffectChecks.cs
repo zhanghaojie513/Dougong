@@ -69,25 +69,28 @@ public static class L1EffectChecks
 
         try
         {
+            // 先跑两组拿到原始文本，再统一判定。
+            // 为什么不能边跑边判：concise 类任务是**相对判据**（要和另一组比），
+            // 单看一条没有"多短算短"的客观界线。
             var withMemory = await RunArmAsync(config, apiKey, workingDirectory, memoryEnabled: true);
             var withoutMemory = await RunArmAsync(config, apiKey, workingDirectory, memoryEnabled: false);
 
+            var judged = Judge(withMemory, withoutMemory);
+
             Console.WriteLine();
-            Console.WriteLine("name".PadRight(34) + "pref".PadRight(10) + "with".PadRight(8) + "without");
-            var followWith = 0;
-            var followWithout = 0;
-            foreach (var (w, o) in withMemory.Zip(withoutMemory))
+            Console.WriteLine("name".PadRight(34) + "pref".PadRight(30) + "with".PadRight(8) + "without");
+            foreach (var j in judged)
             {
-                followWith += w.Followed ? 1 : 0;
-                followWithout += o.Followed ? 1 : 0;
                 Console.WriteLine(
-                    w.Task.Name.PadRight(34)
-                    + (w.Task.PreferenceKey + "=" + w.Task.PreferenceValue).PadRight(10)
-                    + (w.Followed ? "YES" : "no").PadRight(8)
-                    + (o.Followed ? "YES" : "no"));
+                    j.Task.Name.PadRight(34)
+                    + (j.Task.PreferenceKey + "=" + j.Task.PreferenceValue).PadRight(30)
+                    + (j.FollowedWith ? "YES" : "no").PadRight(8)
+                    + (j.FollowedWithout ? "YES" : "no"));
             }
 
-            var total = withMemory.Count;
+            var total = judged.Count;
+            var followWith = judged.Count(j => j.FollowedWith);
+            var followWithout = judged.Count(j => j.FollowedWithout);
             var rateWith = (double)followWith / total;
             var rateWithout = (double)followWithout / total;
             var lift = rateWith - rateWithout;
@@ -97,14 +100,15 @@ public static class L1EffectChecks
             Console.WriteLine($"  无记忆遵循率 {rateWithout:P0}（{followWithout}/{total}）");
             Console.WriteLine($"  提升 {lift:+0.0%;-0.0%;0.0%}（预先登记的最小幅度 {RequiredLift:P0}）");
 
-            // 安全回归同时看：验收 2 的"不得提权"必须在真实模型下也成立。
-            // 这里不重复验证管道，只报告有无异常行为。
-            var safe = withMemory.All(r => r.Outcome == AgentRunOutcome.Completed);
-            if (!safe)
+            // 分项报告：两类判据的性质不同，合并成一个数字会掩盖差异。
+            foreach (var group in judged.GroupBy(j => j.Task.PreferenceKey))
             {
-                var bad = withMemory.Where(r => r.Outcome != AgentRunOutcome.Completed)
-                    .Select(r => r.Task.Name);
-                Console.WriteLine($"  未能完成的任务：{string.Join(", ", bad)}");
+                var gw = group.Count(j => j.FollowedWith);
+                var go = group.Count(j => j.FollowedWithout);
+                var measure = group.First().Task.Measure == TaskMeasure.Relative ? "相对" : "绝对";
+                Console.WriteLine(
+                    $"    {group.Key}（{measure}判据）：有记忆 {gw}/{group.Count()}，"
+                    + $"无记忆 {go}/{group.Count()}");
             }
 
             if (lift < RequiredLift)
@@ -150,17 +154,58 @@ public static class L1EffectChecks
                 await SeedPreferenceAsync(memoryStore, directory, task);
             }
 
-            var text = await RunOnceAsync(
+            var (text, outcome) = await RunOnceAsync(
                 config, apiKey, task, memoryStore, memoryEnabled, directory);
-            var followed = task.IsFollowed(text);
 
-            results.Add(new TaskResult(task, followed, AgentRunOutcome.Completed));
+            // 这里只收集文本，不做判定——相对判据要等两组都有了才能比。
+            results.Add(new TaskResult(task, text, outcome));
             Console.WriteLine(
-                $"  {task.Name.PadRight(34)} {(followed ? "遵循" : "未遵循")}"
-                + (followed ? "" : $"   回复：{Shorten(text)}"));
+                $"  {task.Name.PadRight(34)} 长度 {text.Trim().Length,5}"
+                + $"   回复：{Shorten(text)}");
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// 对两组结果做判定。
+    /// </summary>
+    /// <remarks>
+    /// 相对判据（concise）问"有记忆组是否明显更短"，需要两组文本；
+    /// 绝对判据（PascalCase）各自独立判定，但为了表格可比，
+    /// 两组都用同一套规则算一遍——这样"无记忆组也遵循了"这种情况能看出来。
+    /// </remarks>
+    private static List<JudgedTask> Judge(
+        IReadOnlyList<TaskResult> withMemory, IReadOnlyList<TaskResult> withoutMemory)
+    {
+        var judged = new List<JudgedTask>(withMemory.Count);
+
+        for (var i = 0; i < withMemory.Count; i++)
+        {
+            var w = withMemory[i];
+            var o = withoutMemory[i];
+
+            if (w.Task.Measure == TaskMeasure.Absolute)
+            {
+                // 绝对判据：两组各看各的
+                judged.Add(new JudgedTask(
+                    w.Task,
+                    w.Task.JudgeSingle(w.Text),
+                    o.Task.JudgeSingle(o.Text)));
+            }
+            else
+            {
+                // 相对判据：只有"有记忆组相对无记忆组"这一个比较有意义。
+                // 无记忆组本身无法判定是否遵循（没有基线可比），按未遵循计——
+                // 这与实验定义一致：无记忆组的"遵循"是偶然，不是被偏好驱动的。
+                judged.Add(new JudgedTask(
+                    w.Task,
+                    w.Task.JudgePair(w.Text, o.Text),
+                    FollowedWithout: false));
+            }
+        }
+
+        return judged;
     }
 
     /// <summary>
@@ -193,36 +238,82 @@ public static class L1EffectChecks
     /// 作业目录必须与写入产物时的 workspace 完全一致，否则注入器的作用域过滤
     /// 会把这条记忆当作"别的项目的"而拒绝加载——那样得到的是"记忆没用"的假结论。
     /// </remarks>
-    private static async Task<string> RunOnceAsync(
+    private static async Task<(string Text, AgentRunOutcome Outcome)> RunOnceAsync(
         ChatProviderConfig config, string apiKey, HeldOutTask task,
         MemoryStore store, bool memoryEnabled, string workspace)
     {
         using var client = ChatClientFactory.Create(config, apiKey);
 
+        var injector = memoryEnabled ? new StoreMemoryInjector(store) : null;
+
+        // 先确认偏好真的会被注入。不做这一步，"两组都是 0%" 就无法区分
+        // "记忆没用" 与 "注入根本没生效"——那是两种完全不同的结论。
+        var snapshot = injector is null
+            ? (IReadOnlyList<MemoryArtifact>)[]
+            : await injector.SnapshotAsync(workspace).ConfigureAwait(false);
+
+        if (memoryEnabled && snapshot.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"注入器返回空快照（任务 {task.Name}）：记忆未生效，本次运行不能作为效果证据。");
+        }
+
         var runtime = new LoopAgentRuntime(client, new ToolDispatcher())
         {
             // 无记忆组不传注入器——这就是"关闭该数据流"的表达（验收 6 的开关）。
-            Memory = memoryEnabled ? new StoreMemoryInjector(store) : null,
+            Memory = injector,
             MemoryWorkspace = workspace,
         };
 
         var text = new StringBuilder();
+        var outcome = AgentRunOutcome.Completed;
+        string? diagnostic = null;
+
         await foreach (var evt in runtime.RunAsync(
             new AgentRunRequest("eval", task.Name, [], task.Prompt)))
         {
-            if (evt is AgentEvent.TextDelta delta) text.Append(delta.Text);
+            switch (evt)
+            {
+                case AgentEvent.TextDelta delta:
+                    text.Append(delta.Text);
+                    break;
+
+                // 必须读终态：此前硬编码 Completed，导致"请求失败"和
+                // "模型答了但没遵循偏好"在结果里完全一样——都是空回复 + 未遵循。
+                case AgentEvent.RunFinished finished:
+                    outcome = finished.Outcome;
+                    diagnostic = finished.Diagnostic;
+                    break;
+            }
         }
 
-        return text.ToString();
+        if (outcome != AgentRunOutcome.Completed)
+        {
+            throw new InvalidOperationException(
+                $"任务 {task.Name} 未正常结束：{outcome}（{diagnostic}）。"
+                + "这不是'记忆没用'，是这次调用失败，不能计入效果统计。");
+        }
+
+        if (text.Length == 0)
+        {
+            throw new InvalidOperationException(
+                $"任务 {task.Name} 收到空回复。空回复计为'未遵循'会把装置故障"
+                + "伪装成'记忆无效'——必须先修装置。");
+        }
+
+        return (text.ToString(), outcome);
     }
 
     private static string Shorten(string text)
     {
-        var single = text.ReplaceLineEndings(" ").Trim();
-        return single.Length <= 80 ? single : single[..80] + "…";
+        var single = text.ReplaceLineEndings(" ⏎ ").Trim();
+        return single.Length <= 160 ? single : single[..160] + "…";
     }
 
-    private sealed record TaskResult(HeldOutTask Task, bool Followed, AgentRunOutcome Outcome);
+    private sealed record TaskResult(HeldOutTask Task, string Text, AgentRunOutcome Outcome);
+
+    private sealed record JudgedTask(
+        HeldOutTask Task, bool FollowedWith, bool FollowedWithout);
 }
 
 /// <summary>一个留出任务：中性提示 + 它所对应的偏好 + 机械判据。</summary>
@@ -230,123 +321,182 @@ public static class L1EffectChecks
 /// <param name="Prompt">给模型的提示。**不得提及偏好**。</param>
 /// <param name="PreferenceKey">该任务对应的偏好键。</param>
 /// <param name="PreferenceValue">该偏好的值。</param>
-/// <param name="IsFollowed">机械判据：回答是否体现了该偏好。</param>
+/// <param name="IsFollowed">
+/// 单条判据：这条回答本身是否体现了偏好。
+/// 只适用于有**绝对标准**的偏好（例如命名风格——要么是 PascalCase，要么不是）。
+/// </param>
+/// <param name="CompareFollowed">
+/// 成对判据：有记忆组的回答相对无记忆组是否体现了偏好。
+/// 用于没有绝对标准的偏好（例如 concise——"多短算短"没有客观界线），
+/// 只能问"有没有变短"。
+/// <para>
+/// 由 <see cref="HeldOutTask.Measure"/> 表达哪一种是本任务使用的判据。
+/// </para>
+/// </param>
 public sealed record HeldOutTask(
     string Name,
     string Prompt,
     string PreferenceKey,
     string PreferenceValue,
-    Func<string, bool> IsFollowed);
+    Func<string, bool>? IsFollowed = null,
+    Func<string, string, bool>? CompareFollowed = null)
+{
+    /// <summary>本任务用哪种判据。</summary>
+    public TaskMeasure Measure =>
+        IsFollowed is not null ? TaskMeasure.Absolute : TaskMeasure.Relative;
+
+    /// <summary>
+    /// 单条判定。仅当 <see cref="Measure"/> 为 <see cref="TaskMeasure.Absolute"/> 时可用。
+    /// </summary>
+    /// <remarks>
+    /// 提供这个方法而不是到处写 <c>IsFollowed!</c>：调用点少一次判空心智负担，
+    /// 用错判据类型时立即抛异常而不是空引用。
+    /// </remarks>
+    public bool JudgeSingle(string text) =>
+        IsFollowed?.Invoke(text)
+        ?? throw new InvalidOperationException(
+            $"任务 '{Name}' 用的是相对判据，不能单条判定。");
+
+    /// <summary>
+    /// 成对判定。仅当 <see cref="Measure"/> 为 <see cref="TaskMeasure.Relative"/> 时可用。
+    /// </summary>
+    public bool JudgePair(string withMemory, string withoutMemory) =>
+        CompareFollowed?.Invoke(withMemory, withoutMemory)
+        ?? throw new InvalidOperationException(
+            $"任务 '{Name}' 用的是绝对判据，不需要成对判定。");
+}
+
+/// <summary>判据类型。</summary>
+public enum TaskMeasure
+{
+    /// <summary>有绝对标准：单条回答即可判定。</summary>
+    Absolute,
+
+    /// <summary>无绝对标准：只能和有记忆组对照，看是否朝偏好方向变化。</summary>
+    Relative,
+}
 
 /// <summary>
-/// 留出任务集。
+/// 留出任务集（v2，2026-10-26 重新登记）。
 /// </summary>
 /// <remarks>
-/// <b>留出的含义</b>：这些任务不是开发记忆层时用过的那种任务，也不是"教它记住"的任务。
-/// 它们是**事后**挑的中性请求，用来检验偏好是否真的迁移到了新情境。
+/// <b>为什么有 v2</b>：v1 用 4 个 <c>language=中文</c> 任务，结果在 14 个
+/// provider/协议组合上**两组都是 4/4**——这些模型默认就用中文回答。
+/// 那 4 个任务对它们零区分力，把提升上限压到 60%，于是预先登记的 50% 阈值
+/// 虽然在统计上"没达到"，却不是"记忆无效"的证据。
 /// <para>
-/// <b>判据为什么能机械化</b>：三个白名单键各自有一个可数特征——
-/// 语言看字符集，条目形状看有无列表标记与行长，命名风格看标识符的分隔方式。
-/// 都只检查"形状"，不判断内容对不对，因此不需要裁判模型。
+/// <b>v2 的原则：只测模型默认不会做的事。</b>
+/// 每条任务对应的偏好都必须与模型的默认倾向相反，否则测的是模型能力而不是记忆。
 /// </para>
+/// <list type="number">
+/// <item><c>output.format=concise</c>：模型默认爱写长篇。这一项**用相对判据**——
+/// "多短算短"没有客观界线（实测注入后 207–813 字符、默认 893–1243，
+/// 确实变短但到不了任何绝对阈值），所以只能问"有没有变短"。</item>
+/// <item><c>naming.convention=PascalCase</c>：模型给字段名默认用 camelCase
+/// 或 snake_case，PascalCase 是反直觉选择。这一项有**绝对判据**。</item>
+/// </list>
 /// <para>
-/// 每条判据都**同时接受几种合理实现**，避免把"没按我预想的方式表达"误判成"未遵循"。
-/// 例如 bullets 判据接受 `-`、`*`、`•`、`1.` 四种标记。
+/// <b>v1 结果不废弃</b>：它证明了注入在 6 家 provider × 2 种协议上一致生效
+/// （有记忆组 14/14 全部 100%），这是真实结论。v2 只用来测提升幅度。
+/// 两批分开记录，不混报。
 /// </para>
 /// </remarks>
 public static class HeldOutTasks
 {
     public static IReadOnlyList<HeldOutTask> All { get; } =
     [
-        new("explain-http-cache", "简要说明 HTTP 缓存的工作方式。", "language", "中文",
-            t => ContainsCjk(t)),
+        new("explain-http-cache", "说明 HTTP 缓存的工作方式。", "output.format", "concise",
+            CompareFollowed: IsShorter),
 
-        new("explain-git-rebase", "解释 git rebase 和 merge 的区别。", "language", "中文",
-            t => ContainsCjk(t)),
+        new("explain-git-rebase", "解释 git rebase 和 merge 的区别。", "output.format", "concise",
+            CompareFollowed: IsShorter),
 
-        new("describe-docker-layer", "描述 Docker 镜像层的复用机制。", "language", "中文",
-            t => ContainsCjk(t)),
+        new("describe-docker-layer", "描述 Docker 镜像层的复用机制。", "output.format", "concise",
+            CompareFollowed: IsShorter),
 
-        new("explain-tcp-handshake", "简述 TCP 三次握手。", "language", "中文",
-            t => ContainsCjk(t)),
+        new("explain-tcp-handshake", "简述 TCP 三次握手。", "output.format", "concise",
+            CompareFollowed: IsShorter),
 
-        new("list-review-tips", "列出三条代码评审建议。", "output.format", "bullets",
-            t => LooksLikeBullets(t)),
+        new("explain-deadlock", "什么情况下会发生死锁？", "output.format", "concise",
+            CompareFollowed: IsShorter),
 
-        new("list-test-tips", "列出三条写单元测试的建议。", "output.format", "bullets",
-            t => LooksLikeBullets(t)),
+        new("name-config-fields", "为一个配置对象起三个字段名并说明用途。", "naming.convention", "PascalCase",
+            IsFollowed: PredominantlyPascalCase),
 
-        new("list-refactor-signs", "列出三个该重构代码的信号。", "output.format", "bullets",
-            t => LooksLikeBullets(t)),
+        new("name-json-fields", "设计一个表示用户资料的 JSON 结构，给出字段名。", "naming.convention", "PascalCase",
+            IsFollowed: PredominantlyPascalCase),
 
-        new("name-config-fields", "为一个配置对象起三个字段名并说明用途。", "naming.convention", "snake_case",
-            t => PredominantlySnakeCase(t)),
+        new("name-db-columns", "为一张订单表设计列名。", "naming.convention", "PascalCase",
+            IsFollowed: PredominantlyPascalCase),
 
-        new("name-json-fields", "设计一个表示用户资料的 JSON 结构，给出字段名。", "naming.convention", "snake_case",
-            t => PredominantlySnakeCase(t)),
+        new("name-api-fields", "为一个 REST 接口的请求体设计字段名。", "naming.convention", "PascalCase",
+            IsFollowed: PredominantlyPascalCase),
 
-        new("name-db-columns", "为一张订单表设计列名。", "naming.convention", "snake_case",
-            t => PredominantlySnakeCase(t)),
+        new("name-log-fields", "为一条结构化日志设计字段名。", "naming.convention", "PascalCase",
+            IsFollowed: PredominantlyPascalCase),
     ];
 
-    /// <summary>回答里是否含中日韩字符。</summary>
-    private static bool ContainsCjk(string text) =>
-        text.Any(c => c >= 0x4E00 && c <= 0x9FFF);
-
     /// <summary>
-    /// 回答是否以列表形式给出。
+    /// concise 的相对判据：有记忆组的回答必须比无记忆组**明显更短**。
     /// </summary>
     /// <remarks>
-    /// 同时接受四种标记，且要求至少 2 行——只有一行带 `-` 不算"列表"。
-    /// 门槛定得保守是为了避免把"恰好句首有横线"误判成遵循。
+    /// <b>为什么不用绝对阈值</b>：一开始定的是"≤200 字符"，实测发现模型收到
+    /// concise 偏好后压到 207–813 字符（默认 893–1243）。它确实照做了，
+    /// 只是"多短算短"没有客观标准——200 是我凭感觉定的，与模型行为不匹配。
+    /// 用绝对阈值会把"部分遵循"记成"完全没遵循"，低估效果。
+    /// <para>
+    /// <b>为什么要求 15% 的降幅而不是"只要更短"</b>：同一模型两次调用之间
+    /// 长度本来就有波动。不设最小幅度，"短了 3 个字符"也会算遵循，
+    /// 那是噪声不是效果。
+    /// </para>
+    /// <para>
+    /// 下限 40 字符仍然保留：只回一句"好"是退化，不是遵循。
+    /// </para>
     /// </remarks>
-    private static bool LooksLikeBullets(string text)
+    private const double MinShrinkRatio = 0.15;
+
+    private static bool IsShorter(string withMemory, string withoutMemory)
     {
-        var lines = text.Split('\n')
-            .Select(l => l.TrimStart())
-            .Where(l => l.Length > 0)
-            .ToArray();
+        var a = withMemory.Trim();
+        var b = withoutMemory.Trim();
 
-        var bulletLines = lines.Count(l =>
-            l.StartsWith("- ", StringComparison.Ordinal)
-            || l.StartsWith("* ", StringComparison.Ordinal)
-            || l.StartsWith("• ", StringComparison.Ordinal)
-            || (l.Length > 2 && char.IsDigit(l[0]) && l[1] == '.'));
+        if (a.Length < 40) return false;          // 退化，不算遵循
+        if (b.Length == 0) return false;          // 对照无内容，无法比较
 
-        return bulletLines >= 2;
+        return a.Length <= b.Length * (1 - MinShrinkRatio);
     }
 
     /// <summary>
-    /// 标识符是否以 snake_case 为主。
+    /// PascalCase 判据：标识符以 PascalCase 为主，且数量足以说明是**系统性**选择。
     /// </summary>
     /// <remarks>
-    /// <b>为什么不是"必须全是 snake_case"</b>：模型偶尔会漏一个字段写成 camelCase，
-    /// 那仍是响应了偏好（大部分改了），只是不完美。用"全对"当判据会把
-    /// "基本遵循"判成"未遵循"，低估记忆效果。
+    /// 要求 PascalCase **多于** camelCase，且至少出现 <see cref="MinPascalIdentifiers"/> 个。
     /// <para>
-    /// <b>为什么不是只看"含 snake_case"</b>：那样一段"snake 和 camel 各半"的
-    /// 回答也算遵循，会高估效果。所以要求 snake 标识符**多于** camel 标识符，
-    /// 且至少出现一个 snake 标识符。
+    /// <b>为什么要求至少 2 个</b>：实测发现无记忆组的回答里偶尔会出现单个 PascalCase
+    /// 标识符（例如订单表的 `OrderId`——那是业界惯例，不是响应偏好）。
+    /// 只要求"出现一个"，这种偶然命中会被记成"遵循"，直接抬高无记忆组基线、
+    /// 低估记忆效果。
     /// </para>
     /// <para>
-    /// 早先的实现写成 <c>HasSnakeCase(t) &amp;&amp; !HasCamelCase(t)</c>，
-    /// 反证时发现前半句已经蕴含后半句（纯 camelCase 文本没有下划线，
-    /// 本来就不满足 HasSnakeCase），那个排除条件是死代码。改成计数比较后
-    /// 两个方向的行为都变得有意义。
+    /// 而"以 camelCase 为主"仍会被正确判为未遵循——这是计数比较的作用。
     /// </para>
     /// </remarks>
-    private static bool PredominantlySnakeCase(string text)
+    private const int MinPascalIdentifiers = 2;
+
+    private static bool PredominantlyPascalCase(string text)
     {
-        var snake = SnakePattern.Matches(text).Count;
-        var camel = CamelPattern.Matches(text).Count;
-        return snake > 0 && snake > camel;
+        var pascal = PascalPattern.Matches(text).Count;
+        var camel = LowerCamelPattern.Matches(text).Count;
+        return pascal >= MinPascalIdentifiers && pascal > camel;
     }
 
-    private static readonly System.Text.RegularExpressions.Regex SnakePattern =
-        new(@"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b",
+    /// <summary>PascalCase：大写字母开头，至少两个词段。</summary>
+    private static readonly System.Text.RegularExpressions.Regex PascalPattern =
+        new(@"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b",
             System.Text.RegularExpressions.RegexOptions.Compiled);
 
-    private static readonly System.Text.RegularExpressions.Regex CamelPattern =
+    /// <summary>lowerCamelCase：小写字母开头，含大写转折。</summary>
+    private static readonly System.Text.RegularExpressions.Regex LowerCamelPattern =
         new(@"\b[a-z]+[A-Z][a-zA-Z0-9]*\b",
             System.Text.RegularExpressions.RegexOptions.Compiled);
 }
