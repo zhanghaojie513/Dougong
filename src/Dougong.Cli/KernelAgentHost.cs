@@ -34,10 +34,52 @@ public sealed class KernelAgentHost : IAsyncDisposable
 
     private readonly DougongKernel _kernel;
     private readonly List<PluginId> _registered = [];
+    private readonly IDisposable? _stateSubscription;
+    private readonly TextWriter _diagnostics;
 
-    private KernelAgentHost(DougongKernel kernel)
+    /// <param name="diagnostics">
+    /// 诊断输出。必须是 stderr（ACP 模式下 stdout 归协议）。
+    /// </param>
+    private KernelAgentHost(DougongKernel kernel, TextWriter? diagnostics)
     {
         _kernel = kernel;
+        _diagnostics = diagnostics ?? Console.Error;
+
+        // 订阅状态变化并把失败/阻塞打到诊断出口。
+        // 这修的是一个真实缺口：内核一直在产生带 Stage/Hint 的 PluginDiagnostic，
+        // 但产品代码里**没有任何订阅者**——诊断通道存在，却没人读，用户看不到。
+        _stateSubscription = _kernel.SubscribeStateChanges(ReportFailure);
+    }
+
+    /// <summary>
+    /// 把失败或阻塞的状态变化写到诊断出口。
+    /// </summary>
+    /// <remarks>
+    /// 只报需要人介入的状态：<see cref="PluginState.Failed"/> 与
+    /// <see cref="PluginState.Blocked"/>。正常启停不刷屏。
+    /// <para>
+    /// 输出包含阶段与建议——这是判据 4"能定位到组件"的落点。
+    /// 没有 Hint 的阶段（如观察者异常）只报状态与原因，不编造建议。
+    /// </para>
+    /// </remarks>
+    private void ReportFailure(PluginStateChange change)
+    {
+        if (change.To is not (PluginState.Failed or PluginState.Blocked)) return;
+
+        var diagnostic = change.Diagnostic;
+        var stage = diagnostic?.Stage is { } s and not PluginFailureStage.Unknown
+            ? $" [{s}]"
+            : string.Empty;
+
+        _diagnostics.WriteLine(
+            $"[kernel] 插件 '{change.PluginId}' 进入 {change.To}{stage}：{change.Reason ?? "(无原因)"}");
+
+        if (diagnostic is not null)
+        {
+            _diagnostics.WriteLine($"  详情：{diagnostic.Code}: {diagnostic.Message}");
+            if (diagnostic.Hint is { Length: > 0 } hint)
+                _diagnostics.WriteLine($"  建议：{hint}");
+        }
     }
 
     /// <summary>
@@ -51,11 +93,16 @@ public sealed class KernelAgentHost : IAsyncDisposable
     /// <param name="createRuntime">
     /// 构造运行时的委托。它接受 dispatcher 实例；dispatcher 同样由内核解析。
     /// </param>
+    /// <param name="diagnostics">
+    /// 诊断输出出口，默认 <see cref="Console.Error"/>。ACP 模式下必须传 stderr：
+    /// stdout 归协议所有。
+    /// </param>
     public static async Task<KernelAgentHost> CreateAsync(
         IAgentStore? store,
         Func<IToolApprover, IStoreAccessor?, CancellationToken, Task<IToolDispatcher>> createDispatcher,
         Func<IDispatcherAccessor, IStoreAccessor?, IAgentRuntime> createRuntime,
         IToolApprover approver,
+        TextWriter? diagnostics = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(createDispatcher);
@@ -63,7 +110,7 @@ public sealed class KernelAgentHost : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(approver);
 
         var kernel = new DougongKernel();
-        var host = new KernelAgentHost(kernel);
+        var host = new KernelAgentHost(kernel, diagnostics);
 
         try
         {
@@ -154,6 +201,9 @@ public sealed class KernelAgentHost : IAsyncDisposable
             catch (Exception) { /* 停用失败不能阻止其余清理；诊断从状态订阅取。 */ }
         }
 
+        // 先退订再销毁：销毁过程本身会发出 Deactivating/Failed 状态，
+        // 此时仍想看到诊断，所以退订放在最后。
+        _stateSubscription?.Dispose();
         await _kernel.DisposeAsync().ConfigureAwait(false);
     }
 

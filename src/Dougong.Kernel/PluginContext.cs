@@ -146,7 +146,13 @@ public sealed class PluginContext : IAsyncDisposable
             _cleanup.Clear();
             _cleanupCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             _cleanupTask = _cleanupCompletion.Task;
-            _ = DisposeCoreAsync(cleanup, _cleanupCompletion);
+
+            // 必须在独立任务上启动，不能直接调用。
+            // DisposeCoreAsync 在第一个 await 之前是同步执行的，而它调用的清理回调
+            // 可能是同步阻塞的（例如 Thread.Sleep）。直接调用会让本方法在返回 Task
+            // 之前就卡住，调用方的 WithinBudgetAsync 根本拿不到句柄、超时预算形同虚设。
+            // 这与 M0 修过的"同步激活回调绕过超时"是同一类缺陷。
+            _ = Task.Run(() => DisposeCoreAsync(cleanup, _cleanupCompletion));
             return _cleanupTask;
         }
     }

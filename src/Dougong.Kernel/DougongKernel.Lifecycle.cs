@@ -1,7 +1,20 @@
 namespace Dougong.Kernel;
 
 internal sealed class LifecycleTimeoutException(string phase, Exception inner)
-    : TimeoutException($"插件阶段 '{phase}' 超时；代次已隔离，需重启宿主。", inner);
+    : TimeoutException($"插件阶段 '{phase}' 超时；代次已隔离，需重启宿主。", inner)
+{
+    /// <summary>超时的阶段名（cancellation / drain / events / cleanup / activation）。</summary>
+    public string Phase { get; } = phase;
+
+    /// <summary>把阶段名映射到诊断阶段。未识别的名字归为 Unknown，不猜测。</summary>
+    public PluginFailureStage Stage => Phase switch
+    {
+        "activation" => PluginFailureStage.Activate,
+        "cancellation" or "drain" or "events" => PluginFailureStage.Drain,
+        "cleanup" => PluginFailureStage.Cleanup,
+        _ => PluginFailureStage.Unknown,
+    };
+}
 
 public sealed partial class DougongKernel
 {
@@ -48,7 +61,14 @@ public sealed partial class DougongKernel
             entry.IsolationReason = reason;
             entry.DesiredActive = false;
             WithdrawServices(entry);
-            SetState(entry, changes, PluginState.Failed, reason, error);
+
+            // 从超时异常里取阶段；非超时异常（观察者/清理回调抛出）归为 Cleanup，
+            // 因为 Isolate 的调用点都在清理路径上。
+            var stage = error is LifecycleTimeoutException timeout
+                ? timeout.Stage
+                : PluginFailureStage.Cleanup;
+
+            SetState(entry, changes, PluginState.Failed, reason, error, stage);
         }
         PublishChanges(changes);
     }

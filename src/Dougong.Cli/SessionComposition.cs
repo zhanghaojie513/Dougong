@@ -353,7 +353,9 @@ public static class AcpComposition
                 (resolvedDispatcher, resolvedStore) =>
                     composition.CreateRuntime(resolvedDispatcher, resolvedStore, ledger),
                 approver,
-                cancellationToken).ConfigureAwait(false);
+                // ACP 模式下 stdout 归协议，诊断必须走调用方给的出口。
+                diagnostics: onMcpError,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
 
             runtime = kernelHost.ResolveRuntime();
             // 会话记录里的 dispatcher 与 runtime 出自**同一次**内核装配，

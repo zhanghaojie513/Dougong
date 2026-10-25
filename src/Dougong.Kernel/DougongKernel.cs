@@ -593,9 +593,20 @@ public sealed partial class DougongKernel : IAsyncDisposable
             entry.CleanupFailed = cleanupError is not null;
             Exception? error = activationError is not null && cleanupError is not null
                 ? new AggregateException(activationError, cleanupError) : activationError ?? cleanupError;
+            // 阶段判定：优先报"更接近根因"的那个。
+            // 激活与清理都失败时，清理失败通常是激活失败的次生结果（服务没提交成功），
+            // 因此先看 activationTimeout / activationError。
+            var failureStage = activationTimeout is not null
+                ? PluginFailureStage.Activate
+                : activationError is not null
+                    ? PluginFailureStage.Activate
+                    : cleanupError is not null
+                        ? PluginFailureStage.Cleanup
+                        : PluginFailureStage.Unknown;
+
             SetState(entry, changes, cleanupError is not null || (!stopped && (activationError is not null || activationTimeout is not null))
                 ? PluginState.Failed : PluginState.Stopped,
-                error is null ? "已停止。" : "激活未提交；注册已撤销。", error);
+                error is null ? "已停止。" : "激活未提交；注册已撤销。", error, failureStage);
         }
         PublishChanges(changes);
         if (callerCancelled) throw new OperationCanceledException(cancellationToken);
@@ -639,7 +650,8 @@ public sealed partial class DougongKernel : IAsyncDisposable
             entry.CleanupFailed = error is not null;
             if (error is null) ForgetDependencies(entry.Id, generation);
             SetState(entry, changes, error is null ? PluginState.Stopped : PluginState.Failed,
-                error is null ? "已停止。" : "清理失败，不能再次激活。", error);
+                error is null ? "已停止。" : "清理失败，不能再次激活。", error,
+                error is null ? PluginFailureStage.Unknown : PluginFailureStage.Cleanup);
         }
         PublishChanges(changes);
         return null;
@@ -852,13 +864,17 @@ public sealed partial class DougongKernel : IAsyncDisposable
     /// 调用方须持有 <c>_sync</c>；用户观察者在锁外通知。
     /// </summary>
     private void SetState(PluginEntry entry, List<PluginStateChange> changes,
-        PluginState to, string? reason, Exception? error = null)
+        PluginState to, string? reason, Exception? error = null,
+        PluginFailureStage stage = PluginFailureStage.Unknown)
     {
         var from = entry.State;
         entry.State = to;
         var change = new PluginStateChange(
             entry.Id, from, to, reason,
-            error is null ? null : new PluginDiagnostic(error.GetType().Name, error.Message));
+            error is null
+                ? null
+                : new PluginDiagnostic(
+                    error.GetType().Name, error.Message, stage, PluginFailureHints.For(stage)));
         changes.Add(change);
         CommitDelta(new StateDelta(++_revision, change, Partition: entry.Id));
     }

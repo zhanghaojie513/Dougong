@@ -127,7 +127,9 @@ public sealed class KernelRepeatedCycleTests
     [Fact]
     public async Task Isolated_generation_does_not_block_later_cycles()
     {
-        await using var kernel = new DougongKernel
+        // 不用 await using：隔离代次会让 DisposeAsync 抛
+        // "存在未能干净停止的代次"——那是正确行为，不是本用例要断言的。
+        var kernel = new DougongKernel
         {
             CleanupTimeout = TimeSpan.FromMilliseconds(100),
             CancellationTimeout = TimeSpan.FromMilliseconds(100),
@@ -146,6 +148,10 @@ public sealed class KernelRepeatedCycleTests
             Assert.Equal(PluginState.Active, loaded.State);
             await kernel.UnloadAsync(loaded.Id).AsTask().WaitAsync(Timeout);
         }
+
+        // 隔离代次使销毁如实报错——这是 P2 要求的行为，不是缺陷。
+        try { await kernel.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch (InvalidOperationException) { }
     }
 
     /// <summary>轮询直到条件成立或超时。GC 是协作式的，不能同步断言。</summary>
