@@ -13,6 +13,7 @@
 > quality-gates.md  每一片必须过哪些门           ← 门槛，不随进度放宽
 > architecture.md / design.md    怎么设计         ← 契约，代码注释引用
 > kernel-vs-cordis.md  与 dsh/Cordis 的实测对比  ← 对标依据与已定取舍
+> m3-plan.md   M3 怎么做、什么算完成          ← 最后阶段的计划
 > status.md    实际做到哪一步（附证据）          ← 台账，只认实测
 > journey/     过程中真实踩过什么                ← 复盘素材
 > ```

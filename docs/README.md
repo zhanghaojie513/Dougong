@@ -37,6 +37,7 @@ journey/ = 开发记录：各里程碑真实发生的问题与判断。复盘素
 | [status.md](status.md) | 现在到哪了：已实现、测试基线、未完成验收、恢复入口 | 动手前必读；只认实测证据 |
 | [acp-reference-survey.md](acp-reference-survey.md) | M2.4 前置调查：TKCode（ACP Client）与 pi.net 的实际做法与可借鉴/不可借鉴项 | M2.4 实现者 |
 | [g14-kernel-wiring-plan.md](g14-kernel-wiring-plan.md) | G14 接线方案：租约粒度取舍（一回合一次）、目标装配、7 项验收与反证方式 | G14 实现者 |
+| [m3-plan.md](m3-plan.md) | M3 计划：四条完成判据、七个切片顺序、`Experimental` 决策点、M2 遗留的三条待办登记 | 启动 M3 前读 |
 | [kernel-vs-cordis.md](kernel-vs-cordis.md) | 与 dsh/Cordis 内核的一手对比：租约/排空/超时/变化传播逐项对照，已定取舍（不做热更新），以及"对等的 .NET dsh"这个定位为何不成立 | 决定内核方向与对外表述时读 |
 | [m1-candidate-comparison.md](m1-candidate-comparison.md) | M1 候选对比：MAF 包装 vs 自研循环的同用例对比与选择理由 | M1 实现者；Agent 代码注释引用。M1 关闭后移入 `journey/` |
 
