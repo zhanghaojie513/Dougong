@@ -26,38 +26,37 @@ jobs:
       - name: Restore
         run: dotnet restore Dougong.slnx
 
-      - name: Build
-        run: dotnet build Dougong.slnx -c Release --no-restore
+      # 刻意走 scripts/all-checks.sh 而不是在这里重写一遍命令：
+      # 此前 CI 只跑内核测试与 pack，**32 个自检套件从未在 CI 上跑过**。
+      # 结果就是本地全绿、CI 红——而且漏掉的正是覆盖协议、会话、
+      # 审批、资源锁的那一大半检查。两套流程必然漂移，只留一套。
+      - name: Full self-check (build + tests + API compat + all suites)
+        shell: bash
+        run: bash scripts/all-checks.sh
 
-      # 测试栈是 xUnit v3 + Microsoft.Testing.Platform。
-      # 不能用 VSTest 的 `--logger "console;verbosity=normal"`：MTP 不接受该参数，
-      # 表现为「Zero tests ran」+ Handshake failures（退出码 5）——
-      # 看起来像测试挂了，实际一个测试都没跑起来。
-      # MTP 的等价参数是 `--output Detailed`。
-      - name: Test
-        run: dotnet test Dougong.slnx -c Release --no-build --output Detailed
-
-      # 偶发失败已被观察到一次，重试一次以区分 flaky 与真失败；
-      # 重试仍失败则说明是真实回归。
-      - name: Test (retry on flake)
-        if: failure()
-        run: dotnet test Dougong.slnx -c Release --no-build --output Detailed
-
-      # 这一步同时做两件事：验证能打包，以及 **API 兼容检查**。
-      # Dougong.Kernel 与 Dougong.Agent 启用了 EnablePackageValidation，
-      # 与 artifacts/baseline/ 下的基线包比对（见 docs/m3-plan.md §五）。
-      # 因此 `error CP****` 表示公开 API 被破坏性修改，**不是打包故障**：
-      # 要么改回兼容形状，要么按 scripts/update-api-baseline.sh 更新基线并在
-      # CHANGELOG.md 记录。
-      - name: Pack (packaging + API compatibility)
+      # 最终产物单独打一次到 artifacts/packages 供上传。
+      # 注意：API 兼容检查已在上一版的 pack 中执行过（all-checks.sh 里），
+      # 这里只用 --no-build 产出上传用的包。
+      - name: Pack artifacts for upload
         run: dotnet pack Dougong.slnx -c Release --no-build -o artifacts/packages
 
       # 基线缺失时不让它悄悄变成"无基线=不校验"。
+      #
+      # 用 PowerShell 语法而不是 bash：runner 是 windows-latest，
+      # 默认 shell 是 pwsh。先前写了 `for pkg in ...; do` 这种 bash 语法，
+      # CI 直接 ParserError 失败——而本地是 Git Bash，测不出来。
+      # 若要写 bash，必须显式 `shell: bash`。
       - name: Verify API baselines exist
+        shell: pwsh
         run: |
-          for pkg in Dougong.Kernel Dougong.Agent; do
-            test -f "artifacts/baseline/$pkg.nupkg" || { echo "缺少基线：artifacts/baseline/$pkg.nupkg（见 scripts/update-api-baseline.sh）" >&2; exit 1; }
-          done
+          foreach ($pkg in @('Dougong.Kernel', 'Dougong.Agent')) {
+            $path = "artifacts/baseline/$pkg.nupkg"
+            if (-not (Test-Path $path)) {
+              Write-Error "缺少基线：$path（见 scripts/update-api-baseline.sh）"
+              exit 1
+            }
+            Write-Host "  基线存在：$path"
+          }
 
       - name: Upload packages
         if: always()
