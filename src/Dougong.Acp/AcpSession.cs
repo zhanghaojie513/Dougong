@@ -267,6 +267,21 @@ internal sealed class AcpSession
                         }, linked.Token).ConfigureAwait(false);
                         break;
 
+                    case AgentEvent.PlanUpdated plan:
+                        // ACP 的 plan 是**全量替换**：每次发完整列表，不发增量。
+                        // 数据来源是模型主动调用的 todo_write 工具，不是推测。
+                        await NotifyAsync("plan", new JsonObject
+                        {
+                            ["sessionId"] = SessionId,
+                            ["entries"] = new JsonArray([.. plan.Entries.Select(e => (JsonNode)new JsonObject
+                            {
+                                ["content"] = e.Content,
+                                ["priority"] = e.Priority,
+                                ["status"] = e.Status,
+                            })]),
+                        }, linked.Token).ConfigureAwait(false);
+                        break;
+
                     case AgentEvent.ContextCompacted compacted:
                         // 压缩必须同步反映到会话历史，否则下一轮又把完整历史传回去，
                         // 压缩白做——这是真实缺陷：运行时的 baseline 被压了，

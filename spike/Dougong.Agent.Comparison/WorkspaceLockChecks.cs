@@ -23,6 +23,11 @@ public static class WorkspaceLockChecks
         failures += await CheckAsync("same-workspace-locks-are-shared-across-gates", SharedAcrossGatesAsync);
         failures += await CheckAsync("different-workspaces-do-not-block", DifferentWorkspacesAsync);
         failures += await CheckAsync("shared-lock-table-is-reclaimed", ReclaimedAsync);
+        failures += await CheckAsync("parallel-reads-do-not-block-each-other", ParallelReadsAsync);
+        failures += await CheckAsync("read-blocks-write-on-same-path", ReadWriteConflictAsync);
+        failures += await CheckAsync("unrelated-writes-run-in-parallel", UnrelatedWritesAsync);
+        failures += await CheckAsync("no-keys-falls-back-to-serial", NoKeysFallsBackAsync);
+        failures += await CheckAsync("file-tools-declare-real-resource-keys", FileToolsDeclareKeysAsync);
 
         Console.WriteLine(failures == 0
             ? "WORKSPACE-LOCK: ALL PASS"
@@ -117,6 +122,166 @@ public static class WorkspaceLockChecks
         return after <= baseline
             ? null
             : $"共享锁表未回收：从 {baseline} 涨到 {after}（20 轮后）";
+    }
+
+    /// <summary>两个只读调用必须能并行——串行化它们是真实损失（G5）。</summary>
+    private static async Task<string?> ParallelReadsAsync()
+    {
+        using var gate = new ToolResourceGate(isolated: true);
+
+        var reader = new ToolExecutionPlan(ToolConcurrency.Serial)
+        {
+            Reads = ["file:a.txt"],
+        };
+
+        using var first = await gate.EnterAsync(reader, "/tmp/g5-ws");
+
+        // 第二个只读调用必须立刻拿到，不能等第一个释放。
+        var second = await Task.WhenAny(
+            gate.EnterAsync(reader, "/tmp/g5-ws").AsTask(),
+            Task.Delay(300));
+
+        if (second is not Task<IDisposable>)
+            return "两个只读调用互相阻塞：读-读应该可以并行";
+
+        var lease = await (Task<IDisposable>)second;
+        lease.Dispose();
+        return null;
+    }
+
+    /// <summary>读与写对同一资源必须互斥。</summary>
+    private static async Task<string?> ReadWriteConflictAsync()
+    {
+        using var gate = new ToolResourceGate(isolated: true);
+
+        var reader = new ToolExecutionPlan(ToolConcurrency.Serial) { Reads = ["file:a.txt"] };
+        var writer = new ToolExecutionPlan(ToolConcurrency.Serial) { Writes = ["file:a.txt"] };
+
+        using var held = await gate.EnterAsync(reader, "/tmp/g5-ws");
+
+        var write = await Task.WhenAny(
+            gate.EnterAsync(writer, "/tmp/g5-ws").AsTask(),
+            Task.Delay(300));
+
+        if (write is Task<IDisposable>)
+        {
+            var lease = await (Task<IDisposable>)write;
+            lease.Dispose();
+            return "读者持锁期间写者取得了执行权：读-写未互斥";
+        }
+
+        return null;
+    }
+
+    /// <summary>不同资源的写可以并行——资源键的意义就在于此。</summary>
+    private static async Task<string?> UnrelatedWritesAsync()
+    {
+        using var gate = new ToolResourceGate(isolated: true);
+
+        var writerA = new ToolExecutionPlan(ToolConcurrency.Serial) { Writes = ["file:a.txt"] };
+        var writerB = new ToolExecutionPlan(ToolConcurrency.Serial) { Writes = ["file:b.txt"] };
+
+        using var heldA = await gate.EnterAsync(writerA, "/tmp/g5-ws");
+
+        var second = await Task.WhenAny(
+            gate.EnterAsync(writerB, "/tmp/g5-ws").AsTask(),
+            Task.Delay(300));
+
+        if (second is not Task<IDisposable>)
+            return "不同资源的写互相阻塞：资源键没有起作用";
+
+        var lease = await (Task<IDisposable>)second;
+        lease.Dispose();
+        return null;
+    }
+
+    /// <summary>未声明资源键时退回两级保守默认，行为不变。</summary>
+    private static async Task<string?> NoKeysFallsBackAsync()
+    {
+        using var gate = new ToolResourceGate(isolated: true);
+
+        var plain = ToolExecutionPlan.Serial;
+        using var held = await gate.EnterAsync(plain, "/tmp/g5-ws");
+
+        var second = await Task.WhenAny(
+            gate.EnterAsync(plain, "/tmp/g5-ws").AsTask(),
+            Task.Delay(300));
+
+        if (second is Task<IDisposable>)
+        {
+            var lease = await (Task<IDisposable>)second;
+            lease.Dispose();
+            return "未声明资源键时应保持串行，实际并行了";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 真实的文件工具必须声明资源键，而不只是框架支持了键。
+    /// </summary>
+    /// <remarks>
+    /// 这条防的是"能力实现了但没人用"——门 3 的老问题。框架有读写锁，
+    /// 而 read_file/write_file 仍声明 Serial，等于什么都没变。
+    /// <para>
+    /// 同时验证规范化：`./a.txt` 与 `<workspace>/a.txt` 必须是同一个键，
+    /// 否则该互斥的没互斥。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> FileToolsDeclareKeysAsync()
+    {
+        var workspace = Path.Combine(Path.GetTempPath(), "g5-keys-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var read = new Dougong.Cli.ReadFileTool(workspace);
+            var write = new Dougong.Cli.WriteFileTool(workspace);
+
+            var readPlan = read.DescribeExecution(Args("a.txt"));
+            var writePlan = write.DescribeExecution(Args("a.txt"));
+
+            if (readPlan.Reads.Count == 0)
+                return "read_file 未声明 Reads：两个读仍会排队";
+            if (writePlan.Writes.Count == 0)
+                return "write_file 未声明 Writes：写不会与读互斥";
+
+            // 同一文件的不同写法必须得到同一个键。
+            var dotted = read.DescribeExecution(Args("./a.txt"));
+            if (dotted.Reads[0] != readPlan.Reads[0])
+                return $"路径未规范化：'a.txt' → {readPlan.Reads[0]}，'./a.txt' → {dotted.Reads[0]}";
+
+            // 读写必须落在同一个键上，否则两者不互斥。
+            if (readPlan.Reads[0] != writePlan.Writes[0])
+                return $"读与写用了不同的键：读 {readPlan.Reads[0]} / 写 {writePlan.Writes[0]}";
+
+            // 真实互斥：读持锁期间，写同一文件必须等。
+            using var gate = new ToolResourceGate(isolated: true);
+            using var held = await gate.EnterAsync(readPlan, workspace);
+
+            var blocked = await Task.WhenAny(
+                gate.EnterAsync(writePlan, workspace).AsTask(),
+                Task.Delay(300));
+
+            if (blocked is Task<IDisposable>)
+            {
+                var lease = await (Task<IDisposable>)blocked;
+                lease.Dispose();
+                return "read_file 持锁期间 write_file 取得了执行权：真实工具未互斥";
+            }
+
+            return null;
+        }
+        finally
+        {
+            try { Directory.Delete(workspace, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    private static System.Text.Json.JsonElement Args(string path)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(new { path }));
+        return document.RootElement.Clone();
     }
 
     private static async Task<int> CheckAsync(string name, Func<Task<string?>> action)

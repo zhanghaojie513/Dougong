@@ -322,6 +322,7 @@ public sealed record AgentToolResult(JsonElement Content, JsonElement? Details =
 ### 4.4 执行管线与资源协调
 
 - 未声明或无法验证并发能力的工具默认 `Serial`，在同一工作区跨会话互斥。shell、未知资源和会改变进程/环境状态的工具取工作区独占锁；不把结果按序回填当作副作用按序。
+- **资源级读写键（已实现）**：`ToolExecutionPlan.Reads`/`Writes` 声明本次调用触碰的资源；读-读并行、读-写与写-写互斥、不同资源互不阻塞。未声明时退回上面的两级保守默认。键只是标识（字符串按序数比较），**框架不猜两个不同字符串是否指同一资源**——猜错会让该互斥的没互斥，比不并发更糟；规范化（如绝对路径）是工具的责任。加锁按序数排序，避免多资源死锁。
 - 首版只实现这两级：工具串行 + 工作区独占。两级的互斥必须落在**同一把工作区执行权**上（`Serial` 另加全局串行权），否则串行工具会与独占工具并行，取消与串行承诺同时失效。
 - **工作区锁表是进程级共享的**（G9 已修）：每个会话各 `new ToolResourceGate()`，若锁表是实例字段，同工作区的两个会话各持一把锁、跨会话互斥不成立。共享表按规范化工作区路径分键，用引用计数回收，避免随工作区数量无界增长。资源级读写键、跨工作区 host 全局协调属于后续扩展，在出现真实并发冲突并有测试用例后再引入，不预先冻结其键格式与冲突规则。
 - 模型批次中的预检/审批串行；依赖先前调用结果的调用串行。同批包含独占工具时首版整批串行。
@@ -372,6 +373,7 @@ public sealed record AgentToolResult(JsonElement Content, JsonElement? Details =
 | `session/load`（v1，需 `loadSession` 能力） | 加载已提交会话；不表示接管旧进程或恢复旧连接 |
 | `session/resume` / `session/list` / `session/close`（v1 稳定） | 恢复、列举、关闭会话；按兼容客户端支持逐步实现 |
 | `elicitation/create`（Agent→Client 请求） | 结构化补充输入；由 `ask_user` 工具发起，只声明 `form` 模式 |
+| plan（`session/update`） | 模型经 `todo_write` 工具**显式声明**的计划，运行时投影为 `PlanUpdated`，ACP 翻译为全量替换条目 |
 | `session/update`（通知） | 事件总线消息翻译（流式文本块、工具调用、计划） |
 | permission 请求（Agent→Client） | 审批流（客户端弹窗 = 审批器插件的一种） |
 | `session/cancel` | linked CancellationToken 取消 |

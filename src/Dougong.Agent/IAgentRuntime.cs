@@ -91,6 +91,19 @@ public abstract record AgentEvent
         bool Applied,
         string? Diagnostic = null) : AgentEvent;
 
+    /// <summary>
+    /// 模型更新了计划（通过 <c>todo_write</c> 工具）。
+    /// </summary>
+    /// <remarks>
+    /// **全量替换语义**：<see cref="Entries"/> 就是当前完整计划，不是增量。
+    /// 这与 ACP 的 plan 一致，避免宿主自己做增量合并（那容易出错且难以验证）。
+    /// <para>
+    /// 这是模型**声明**的计划，不是运行时推测的。宿主可以据此展示，
+    /// 但不应把它当作"模型一定会这么做"的承诺。
+    /// </para>
+    /// </remarks>
+    public sealed record PlanUpdated(IReadOnlyList<PlanEntry> Entries) : AgentEvent;
+
     /// <summary>运行结束，携带终止原因。</summary>
     public sealed record RunFinished(AgentRunOutcome Outcome, string? Diagnostic = null) : AgentEvent;
 }

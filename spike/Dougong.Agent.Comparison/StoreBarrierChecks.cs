@@ -17,6 +17,7 @@ public static class StoreBarrierChecks
         failures += await CheckAsync("tool-start-failure-prevents-execution", ToolStartFailurePreventsExecutionAsync);
         failures += await CheckAsync("committed-session-recovers-history", CommittedSessionRecoversAsync);
         failures += await CheckAsync("unknown-outcome-on-missing-completion", UnknownOutcomeAsync);
+        failures += await CheckAsync("unknown-outcome-carries-arguments", UnknownArgumentsAsync);
         failures += await CheckAsync("single-writer-lease", SingleWriterLeaseAsync);
         failures += await CheckAsync("truncated-tail-is-isolated", TruncatedTailAsync);
 
@@ -193,6 +194,72 @@ public static class StoreBarrierChecks
     {
         try { await action(); return null; }
         catch (Exception ex) { return ex; }
+    }
+
+    /// <summary>
+    /// 对账出的未知结果必须带**参数原文**（G10 的一部分）。
+    /// </summary>
+    /// <remarks>
+    /// 只有 invocation id 和工具名时，宿主唯一能做的就是问用户"你还记得那个写操作吗"——
+    /// 那不叫对账。这条断言参数真的入库、真的能读回来。
+    /// </remarks>
+    private static async Task<string?> UnknownArgumentsAsync()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dougong-args-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var argumentsJson = JsonSerializer.Serialize(new
+            {
+                path = "a.txt",
+                lines = new[] { "x" },
+            });
+
+            var started = new
+            {
+                id = "c9",
+                tool = "write_file",
+                arguments = argumentsJson,
+            };
+
+            // 手工写两条记录：调用开始（带参数）+ 没有终态。
+            await using (var store = await JsonlAgentStore.OpenAsync(path, "s-args"))
+            {
+                await store.CommitAsync(new StoreRecord(
+                    0, StoreRecordKind.UserInput, Json("""{"text":"写文件"}""")));
+
+                await store.CommitAsync(new StoreRecord(
+                    0, StoreRecordKind.ToolCallStarted,
+                    Json(JsonSerializer.Serialize(started))));
+            }
+
+            await using var reopened = await JsonlAgentStore.OpenAsync(path, "s-args");
+            var recovered = await SessionRecovery.ReplayAsync(reopened);
+
+            if (recovered.Unknown.Count != 1)
+                return $"应有 1 条未知结果，实际 {recovered.Unknown.Count}";
+
+            var unknown = recovered.Unknown[0];
+            if (unknown.ArgumentsJson is null)
+                return "未知结果没有带参数原文：宿主无法核实副作用";
+
+            // 参数必须保持原结构，不能被折叠成字符串。
+            if (!unknown.ArgumentsJson.Contains("path", StringComparison.Ordinal))
+                return $"参数内容不符：{unknown.ArgumentsJson}";
+            if (!unknown.ArgumentsJson.Contains("[", StringComparison.Ordinal))
+                return $"数组参数被折叠：{unknown.ArgumentsJson}";
+
+            return null;
+        }
+        finally
+        {
+            try { File.Delete(path); } catch (IOException) { }
+        }
+    }
+
+    private static System.Text.Json.JsonElement Json(string raw)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(raw);
+        return document.RootElement.Clone();
     }
 
     private static async Task<int> CheckAsync(string name, Func<Task<string?>> action)

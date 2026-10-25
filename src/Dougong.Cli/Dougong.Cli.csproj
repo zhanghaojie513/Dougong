@@ -8,6 +8,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 验收套件要检查真实工具的资源键声明（G5）。
+         工具本身是 internal——它们不该是 SDK 的公开面，但"是否声明了资源键"
+         必须能被验收看到，否则又是"能力实现了但没人用"。 -->
+    <InternalsVisibleTo Include="Dougong.Agent.Comparison" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Dougong.Kernel\Dougong.Kernel.csproj" />
     <ProjectReference Include="..\Dougong.Agent\Dougong.Agent.csproj" />
     <ProjectReference Include="..\Dougong.Ai\Dougong.Ai.csproj" />

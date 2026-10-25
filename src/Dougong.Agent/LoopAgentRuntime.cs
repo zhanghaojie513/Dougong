@@ -331,7 +331,14 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 yield return new AgentEvent.ToolCallRequested(call.Id, call.ToolId, args);
 
                 // 屏障 3：工具开始记录必须落盘，才允许执行（可能产生副作用）。
-                var startedPayload = JsonSerializer.Serialize(new { id = call.Id, tool = call.ToolId });
+                // 参数必须入库：恢复时若只有 id+tool，宿主连"当时要做什么"都不知道，
+                // 无法对账未知结果，更无法判断能否安全重试（G10）。
+                var startedPayload = JsonSerializer.Serialize(new
+                {
+                    id = call.Id,
+                    tool = call.ToolId,
+                    arguments = args.GetRawText(),
+                });
                 if (await CommitOrNullAsync(StoreRecordKind.ToolCallStarted, ToElement(startedPayload), cancellationToken)
                         is { } startedFailure)
                 {
@@ -365,6 +372,16 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 }
 
                 yield return new AgentEvent.ToolCallCompleted(result);
+
+                // 计划工具成功执行 → 投影为 PlanUpdated。
+                // 只在成功时发：失败的计划更新不该被当真，否则 UI 会显示
+                // 一份"模型以为成功但实际被拒"的计划。
+                if (result.Outcome == ToolCallOutcome.Succeeded
+                    && TryReadPlan(result, out var plan))
+                {
+                    yield return new AgentEvent.PlanUpdated(plan);
+                }
+
                 toolResults.Add((call.Id, call.ToolId, result));
             }
 
@@ -380,6 +397,44 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         }
 
         yield return await FinishAsync(AgentRunOutcome.ToolRoundLimitReached, null, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 从工具结果里读出计划条目。只认 <see cref="PlanTool.ToolId"/> 的成功结果。
+    /// </summary>
+    /// <remarks>
+    /// 解析失败返回 false 而**不抛异常**：计划是展示用的附加信息，
+    /// 它坏掉不该让整轮运行失败。但如果静默丢弃，用户会以为"模型没有计划"——
+    /// 所以调用方应当在 false 时不发事件（当前行为），而不是发一个空计划。
+    /// </remarks>
+    private static bool TryReadPlan(ToolDispatchResult result, out IReadOnlyList<PlanEntry> entries)
+    {
+        entries = [];
+
+        if (!string.Equals(result.ToolId, PlanTool.ToolId, StringComparison.Ordinal))
+            return false;
+        if (result.Result is not { } value) return false;
+        if (value.Content.ValueKind is not JsonValueKind.Object) return false;
+        if (!value.Content.TryGetProperty("ok", out var ok) || ok.ValueKind is not JsonValueKind.True)
+            return false;
+        if (!value.Content.TryGetProperty("entries", out var array)
+            || array.ValueKind is not JsonValueKind.Array)
+            return false;
+
+        var parsed = new List<PlanEntry>(array.GetArrayLength());
+        foreach (var item in array.EnumerateArray())
+        {
+            if (item.ValueKind is not JsonValueKind.Object) continue;
+            var content = item.TryGetProperty("content", out var c) ? c.GetString() : null;
+            var status = item.TryGetProperty("status", out var s) ? s.GetString() : null;
+            var priority = item.TryGetProperty("priority", out var p) ? p.GetString() : null;
+            if (string.IsNullOrWhiteSpace(content) || string.IsNullOrWhiteSpace(status)) continue;
+
+            parsed.Add(new PlanEntry(content!, priority ?? string.Empty, status!));
+        }
+
+        entries = parsed;
+        return true;
     }
 
     /// <summary>

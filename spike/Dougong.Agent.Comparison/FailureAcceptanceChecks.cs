@@ -19,6 +19,7 @@ public static class FailureAcceptanceChecks
         failures += await CheckAsync("single-execution-entry-under-concurrency", SingleEntryAsync);
         failures += await CheckAsync("commit-failure-stops-before-side-effect", CommitBeforeSideEffectAsync);
         failures += await CheckAsync("crash-window-reports-unknown-not-replay", CrashWindowAsync);
+        failures += await CheckAsync("runtime-persists-arguments-with-call-start", RuntimeArgumentsAsync);
 
         Console.WriteLine(failures == 0
             ? "FAILURE-ACCEPTANCE: ALL PASS"
@@ -221,6 +222,121 @@ public static class FailureAcceptanceChecks
         finally { TryDelete(root); }
     }
 
+    /// <summary>
+    /// 真实运行时提交"调用开始"时必须带参数（G10）。
+    /// </summary>
+    /// <remarks>
+    /// 为什么要走真实运行时而不是手工写记录：手工写的记录当然带参数——
+    /// 那测的是"我能不能写对 JSON"，不是"运行时会不会写参数"。
+    /// 上一版的 G10 验收就是这个毛病，反证时没能命中。
+    /// </remarks>
+    private static async Task<string?> RuntimeArgumentsAsync()
+    {
+        var root = NewRoot();
+        try
+        {
+            var sessionPath = Path.Combine(root, "runtime-args.jsonl");
+            var recording = new InMemoryAgentStore("s-args");
+
+            // 让"终态"提交失败，而"开始"已落盘——这才是真实的崩溃窗口。
+            // 仅让工具抛异常不行：那会被 dispatcher 记成失败终态并正常提交，
+            // 不产生"未知"。
+            var store = new FailingStore(StoreRecordKind.ToolCallCompleted, recording);
+            try
+            {
+                var dispatcher = new ToolDispatcher(
+                    workspace: root, pathGuard: new WorkspacePathGuard(root));
+                dispatcher.Register(new OkTool());
+
+                var runtime = new LoopAgentRuntime(
+                    new ScriptedChatClient(
+                        new ScriptedTurn(
+                            new ScriptedUpdate(
+                                FunctionCallId: "c7",
+                                FunctionName: "boom",
+                                ArgumentsJson: """{"path":"target.txt","content":"payload-42"}"""))),
+                    dispatcher,
+                    new FixedStoreAccessor(store));
+
+                try
+                {
+                    await foreach (var _ in runtime.RunAsync(
+                        new AgentRunRequest("s-args", "t1", [], "go")))
+                    {
+                    }
+                }
+                catch (Exception)
+                {
+                    // 工具崩溃经由 dispatcher 变成失败终态，正常不应抛到这里；
+                    // 真抛了也不影响本检查要看的"开始记录"。
+                }
+            }
+            finally
+            {
+                await store.DisposeAsync();
+            }
+
+            // 用同一个内存存储重放：文件版有单写者租约，重开前必须先关闭。
+            var recovered = await SessionRecovery.ReplayAsync(recording);
+
+            if (recovered.Unknown.Count == 0)
+                return "崩溃窗口未报出未知结果";
+
+            var unknown = recovered.Unknown[0];
+            if (unknown.ArgumentsJson is null)
+                return "运行时提交的调用开始记录不含参数：恢复后宿主无法核实副作用";
+
+            if (!unknown.ArgumentsJson.Contains("payload-42", StringComparison.Ordinal))
+                return $"参数内容不符：{unknown.ArgumentsJson}";
+
+            return null;
+        }
+        finally { TryDelete(root); }
+    }
+
+    /// <summary>正常执行的工具：真正制造"未知"的是终态提交失败，不是它。</summary>
+    private sealed class OkTool : IAgentTool
+    {
+        public ToolDescriptor Descriptor { get; } = new(
+            "boom", "boom", "1.0.0", "正常工具",
+            JsonDocument.Parse(
+                """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}""")
+                .RootElement.Clone());
+
+        public ToolPermission DescribePermission(JsonElement arguments) =>
+            new(ToolAccess.Write, IsKnown: true, Paths: [], Commands: [], Domains: []);
+
+        public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
+            new(ToolConcurrency.Serial) { Writes = ["target.txt"] };
+
+        public ValueTask<AgentToolResult> ExecuteAsync(
+            ToolInvocation invocation, CancellationToken cancellationToken)
+        {
+            using var document = JsonDocument.Parse("""{"ok":true}""");
+            return ValueTask.FromResult(new AgentToolResult(document.RootElement.Clone()));
+        }
+    }
+
+    /// <summary>执行即抛异常的工具：保留用于其它场景。</summary>
+    private sealed class CrashingTool : IAgentTool
+    {
+        public ToolDescriptor Descriptor { get; } = new(
+            "boom", "boom", "1.0.0", "崩溃工具",
+            JsonDocument.Parse(
+                """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}""")
+                .RootElement.Clone());
+
+        public ToolPermission DescribePermission(JsonElement arguments) =>
+            new(ToolAccess.Write, IsKnown: true, Paths: [], Commands: [], Domains: []);
+
+        public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
+            new(ToolConcurrency.Serial) { Writes = ["target.txt"] };
+
+        public ValueTask<AgentToolResult> ExecuteAsync(
+            ToolInvocation invocation, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("模拟工具崩溃");
+    }
+
     private static StoreRecord Record(StoreRecordKind kind, string payload)
     {
         // 已经是 JSON 的按结构存，纯文本按字符串存——与运行时写入一致。
@@ -401,15 +517,26 @@ public static class FailureAcceptanceChecks
         }
     }
 
-    private sealed class FailingStore(StoreRecordKind failOn) : IAgentStore
+    /// <summary>
+    /// 让指定类型的记录提交失败，其余照常写入底层存储。
+    /// </summary>
+    /// <remarks>
+    /// 必须**真正写入**其余记录：否则"开始"也没落盘，恢复时看不到任何窗口，
+    /// 造不出"有开始、无终态"的场景。
+    /// </remarks>
+    private sealed class FailingStore(StoreRecordKind failOn, IAgentStore? inner = null) : IAgentStore
     {
-        public string SessionId => "failing";
-        public StoreDurability Durability => StoreDurability.ProcessMemory;
+        public string SessionId => inner?.SessionId ?? "failing";
+        public StoreDurability Durability => inner?.Durability ?? StoreDurability.ProcessMemory;
 
         public ValueTask CommitAsync(StoreRecord record, CancellationToken cancellationToken = default)
         {
-            if (record.Kind == failOn) throw new StoreCommitException(record.Kind.ToString(), "注入失败");
-            return ValueTask.CompletedTask;
+            if (record.Kind == failOn)
+                throw new StoreCommitException(record.Kind.ToString(), "注入失败");
+
+            return inner is null
+                ? ValueTask.CompletedTask
+                : inner.CommitAsync(record, cancellationToken);
         }
 
         public async IAsyncEnumerable<StoreRecord> ReadCommittedAsync(

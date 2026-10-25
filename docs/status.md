@@ -479,6 +479,25 @@ Agent 运行实现均由内核承载，组合根解析 `IAgentRuntime`」，这�
   ACP plan/elicitation（运行时没有数据源，做了是空壳）。
   （后项已于 2026-10-25 补齐 elicitation，见下。）
 
+- 2026-10-25：处理剩余四项缺口（G5/G7/G10/G11），M2 协议面闭合。
+  **G5 资源级读写键**：`ToolExecutionPlan` 增加 `Reads`/`Writes`。此前
+  `read_file` 声明 Serial，两个读也要排队——真实损失。实现读写锁要注意三点：
+  ① 不能用 `ReaderWriterLockSlim`（线程亲和，租约跨 await）；② 写者必须显式等
+  读者清零（只占 WriteGate 不够）；③ 多资源按键排序加锁防死锁。
+  `write_file` 从 WorkspaceExclusive 收窄为 Serial+资源键——只与同一文件互斥，
+  不再阻塞整个工作区。探针 8 项，其中一条验证**真实工具**声明了键
+  （防"能力实现了但没人用"）。
+  **G10**：真问题不是"缺幂等键"，而是**未知结果不带参数**——恢复时宿主连
+  "当时要做什么"都不知道。已修：`ToolCallStarted` 记参数原文，
+  `UnknownOutcome.ArgumentsJson` 透出。验收走**真实运行时**（让终态提交失败造窗口），
+  而不是手工写记录——后者测的是"我能不能写对 JSON"。
+  **G11 ACP plan**：数据源是**工具**不是推测。新增 `todo_write`，
+  模型显式声明计划 → 运行时投影为 `PlanUpdated` → ACP 翻译为全量替换条目。
+  6 项验收含"全量替换"「未知 status 词不被改写」「工具失败不发光计划」。
+  **G7**：澄清为设计限制——代码已 `Flush(flushToDisk: true)`，
+  缺的是掉电测试条件；不用"调用了 flush"冒充"已验证"。
+  178 项测试 + 33 套件全绿。
+
 - 2026-10-25：清掉 `Dougong.Agent.csproj` 里多余的 Kernel 工程引用。
   它从 M0 建仓（`5c1bbe5`）起就存在，而 Agent 层源码从没用过 Kernel 的任何类型。
   害处不只是冗余：它让"Agent 可脱离内核单独工作"这句话看起来不成立，

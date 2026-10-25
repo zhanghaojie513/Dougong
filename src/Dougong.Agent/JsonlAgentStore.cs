@@ -10,10 +10,21 @@ namespace Dougong.Agent;
 /// 第一条记录是会话头（含 <see cref="StoreRecordKind"/> 之外的元数据），
 /// 用于声明持久化级别与单写者租约信息。
 /// <para>
-/// 已知边界：这里用 <see cref="FileStream.FlushAsync(CancellationToken)"/> 加上
-/// <c>FlushToDisk</c>，在 Windows 上把缓冲交给 OS，**不保证断电安全**。
-/// 因此 <see cref="Durability"/> 声明为 <see cref="StoreDurability.SurvivesProcessCrash"/>，
-/// 不声明 <see cref="StoreDurability.SurvivesPowerLoss"/>。
+/// 已知边界：每次提交后调用 <c>FileStream.Flush(flushToDisk: true)</c>，
+/// 按 BCL 文档它会"清空所有中间文件缓冲"（Windows 上对应 <c>FlushFileBuffers</c>，
+/// 即把数据交给存储栈并要求设备确认）。
+/// </para>
+/// <para>
+/// 但 <see cref="Durability"/> 仍只声明 <see cref="StoreDurability.SurvivesProcessCrash"/>，
+/// <b>不声明断电安全</b>。理由不是"没做 flush"，而是：
+/// <list type="bullet">
+/// <item>断电安全还取决于磁盘自身的写缓存策略（是否启用易失性写缓存）</item>
+/// <item>文件系统元数据（目录项、文件大小）的持久化时机不完全由应用控制</item>
+/// <item>要宣称它，需要**掉电测试**：真实切断电源后验证可恢复。本项目没有这个条件，
+/// 也不打算用"调用了 flush"来冒充"已验证"（goal.md：不宣称未验证的能力）</item>
+/// </list>
+/// 因此 G7 是**设计限制而非缺陷**：代码已做到软件层面能做的，缺的是验证条件。
+/// 若宿主有掉电测试台，可将该实现包装后声明更高等级——接口本就允许实现自述。
 /// </para>
 /// </remarks>
 public sealed class JsonlAgentStore : IAgentStore

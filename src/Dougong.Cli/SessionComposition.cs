@@ -110,6 +110,9 @@ public sealed class SessionComposition
 
         dispatcher.Register(new ReadFileTool(_workspace));
         dispatcher.Register(new WriteFileTool(_workspace));
+        // 计划工具：ACP plan 的唯一数据源。两个入口都要有，否则
+        // "CLI 能看计划、ACP 看不到"——正是入口能力不一致的老问题。
+        dispatcher.Register(new TodoWriteTool());
 
         if (_shellEnabled) dispatcher.Register(new ShellTool(_workspace));
 

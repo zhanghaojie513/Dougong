@@ -24,7 +24,7 @@ public static class SessionRecovery
         ArgumentNullException.ThrowIfNull(store);
 
         var history = new List<AgentMessage>();
-        var started = new List<(string Id, string Tool)>();
+        var started = new List<(string Id, string Tool, string? ArgumentsJson)>();
         var completed = new Dictionary<string, string?>(StringComparer.Ordinal);
         var truncated = false;
         long lastSequence = 0;
@@ -47,7 +47,8 @@ public static class SessionRecovery
                     break;
 
                 case StoreRecordKind.ToolCallStarted:
-                    if (Parse(record.Payload) is { } s) started.Add((s.Id, s.Tool));
+                    if (Parse(record.Payload) is { } s)
+                        started.Add((s.Id, s.Tool, s.ArgumentsJson));
                     break;
 
                 case StoreRecordKind.ToolCallCompleted:
@@ -65,7 +66,12 @@ public static class SessionRecovery
             .Where(s => !completed.ContainsKey(s.Id))
             .Select(s => new UnknownOutcome(
                 s.Id, s.Tool,
-                "已提交调用开始但没有终态；无法确认副作用是否发生。"))
+                s.ArgumentsJson is null
+                    // 旧会话记录里没有参数：如实说"不知道"，不编造。
+                    ? "已提交调用开始但没有终态；无法确认副作用是否发生。（该会话记录不含调用参数）"
+                    : "已提交调用开始但没有终态；无法确认副作用是否发生。参数见 ArgumentsJson，"
+                      + "宿主据此核实外部状态，不得自动重放。",
+                s.ArgumentsJson))
             .ToList();
 
         return new RecoveredSession(lastSequence, history, unknown, truncated);
@@ -160,11 +166,16 @@ public static class SessionRecovery
         var content = payload.TryGetProperty("content", out var contentElement)
             && contentElement.ValueKind is JsonValueKind.String ? contentElement.GetString() : null;
 
-        return new ToolRecord(id, tool, outcome, diagnostic, content);
+        // 参数是"开始"记录才有的字段；"完成"记录没有，这里返回 null 即可。
+        var arguments = payload.TryGetProperty("arguments", out var argsElement)
+            && argsElement.ValueKind is JsonValueKind.String ? argsElement.GetString() : null;
+
+        return new ToolRecord(id, tool, outcome, diagnostic, content, arguments);
     }
 
     private sealed record ToolRecord(
-        string Id, string Tool, string? Outcome, string? Diagnostic, string? Content);
+        string Id, string Tool, string? Outcome, string? Diagnostic, string? Content,
+        string? ArgumentsJson);
 }
 
 /// <summary>

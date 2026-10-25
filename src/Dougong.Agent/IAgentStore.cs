@@ -88,4 +88,23 @@ public sealed class StoreCommitException(string stage, string message, Exception
 /// 恢复会话时对账出的未知结果。有开始记录却无终态的工具调用会落到这里，
 /// 宿主必须暂停该 turn，不得自动重放。
 /// </summary>
-public sealed record UnknownOutcome(string InvocationId, string ToolId, string Reason);
+/// <param name="ArgumentsJson">
+/// 该调用**当时的参数原文**。没有它，宿主连"当时要做什么"都不知道，
+/// 无从对账（G10 的一部分）。旧会话记录可能不含此字段，此时为 null。
+/// </param>
+/// <remarks>
+/// <b>为什么需要参数</b>：`OutcomeUnknown` 的整个意义是"让宿主能判断副作用是否发生"。
+/// 只有 invocation id 和工具名时，宿主唯一能做的就是问用户"你还记得刚才那个写操作吗"——
+/// 那不叫对账。
+/// <para>
+/// <b>关于幂等键</b>：工具若能声明自己的幂等键（例如"这次写的是文件 X 的版本 Y"），
+/// 宿主就能去外部核实。当前 <see cref="IAgentTool"/> 没有这个通道，因此本记录只提供
+/// 参数原文，由宿主结合工具语义自行核实。不预设键格式——与 `architecture.md` §4.4
+/// 拒绝"预先冻结资源键格式"同一判据。
+/// </para>
+/// </remarks>
+public sealed record UnknownOutcome(
+    string InvocationId,
+    string ToolId,
+    string Reason,
+    string? ArgumentsJson = null);

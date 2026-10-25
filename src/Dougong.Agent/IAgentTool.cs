@@ -69,10 +69,35 @@ public enum ToolConcurrency
     WorkspaceExclusive,
 }
 
-/// <summary>本次调用的资源计划。</summary>
+/// <summary>
+/// 本次调用的资源计划。
+/// </summary>
+/// <remarks>
+/// <see cref="Concurrency"/> 是保守的两级默认；<see cref="Reads"/> 与
+/// <see cref="Writes"/> 是资源级键——声明得越准，并发度越高。
+/// <para>
+/// **键的语义**：只是标识"同一个东西"，不要求是路径。字符串比较用
+/// <see cref="StringComparer.Ordinal"/>，因此工具必须自己统一写法
+/// （例如都用绝对路径）。框架不猜测两个不同字符串是否指同一资源——
+/// 猜错会导致该互斥的没互斥，比不并发更糟。
+/// </para>
+/// <para>
+/// **冲突规则**：写-写冲突、读-写冲突都互斥；读-读不冲突。
+/// 未声明任何键时退回 <see cref="Concurrency"/> 的保守行为。
+/// </para>
+/// </remarks>
 public sealed record ToolExecutionPlan(ToolConcurrency Concurrency)
 {
     public static ToolExecutionPlan Serial { get; } = new(ToolConcurrency.Serial);
+
+    /// <summary>本次调用只读取的资源键。可为空。</summary>
+    public IReadOnlyList<string> Reads { get; init; } = [];
+
+    /// <summary>本次调用会修改的资源键。可为空。</summary>
+    public IReadOnlyList<string> Writes { get; init; } = [];
+
+    /// <summary>是否声明了资源级键。未声明时按 <see cref="Concurrency"/> 处理。</summary>
+    public bool HasResourceKeys => Reads.Count > 0 || Writes.Count > 0;
 }
 
 /// <summary>

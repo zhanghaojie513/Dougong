@@ -43,6 +43,7 @@ public sealed class ToolResourceGate : IDisposable
     private readonly SemaphoreSlim _serial = new(1, 1);
     private readonly bool _isolated;
     private readonly Dictionary<string, SemaphoreSlim> _privateLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ResourceSlot> _resources = new(StringComparer.Ordinal);
 
     // 本实例在共享表里持有引用的工作区键，Dispose 时归还。
     private readonly List<string> _sharedKeys = [];
@@ -75,6 +76,11 @@ public sealed class ToolResourceGate : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
+
+        // 声明了资源键就走读写锁：读-读可并行，读-写与写-写互斥（G5）。
+        // 未声明时退回两级保守默认，保持既有行为不变。
+        if (plan.HasResourceKeys && plan.Concurrency != ToolConcurrency.WorkspaceExclusive)
+            return await EnterResourceAsync(plan, cancellationToken).ConfigureAwait(false);
 
         // 规范化工作区键：./ws 与 ws 是同一个工作区，不能各给一把锁。
         var key = NormalizeWorkspace(workspace);
@@ -153,6 +159,8 @@ public sealed class ToolResourceGate : IDisposable
             {
                 foreach (var gate in _privateLocks.Values) gate.Dispose();
                 _privateLocks.Clear();
+                foreach (var slot in _resources.Values) slot.WriteGate.Dispose();
+                _resources.Clear();
                 return;
             }
 
@@ -169,6 +177,164 @@ public sealed class ToolResourceGate : IDisposable
 
                 _sharedKeys.Clear();
             }
+        }
+    }
+
+    /// <summary>
+    /// 按资源键取得执行权：读-读并行，读写互斥。
+    /// </summary>
+    /// <remarks>
+    /// **为什么不用 <see cref="ReaderWriterLockSlim"/>**：它是线程亲和的
+    /// （进入与退出必须在同一线程），而这里的租约可能跨 await 传递。
+    /// 因此用"每资源一把信号量 + 读计数"自己实现。
+    /// <para>
+    /// **加锁顺序**：所有资源键按序数排序后依次取得，避免两个调用以不同顺序
+    /// 请求同一组资源而死锁。这是必须的——一个工具同时写 a 和 b，
+    /// 另一个先读 b 再写 a，无序加锁会互相等。
+    /// </para>
+    /// </remarks>
+    private async ValueTask<IDisposable> EnterResourceAsync(
+        ToolExecutionPlan plan, CancellationToken cancellationToken)
+    {
+        // 排序去重：同一批里重复的键只取一次，且顺序一致避免死锁。
+        var keys = plan.Reads.Concat(plan.Writes)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(k => k, StringComparer.Ordinal)
+            .ToArray();
+
+        var lease = new ResourceLease(this);
+        try
+        {
+            foreach (var key in keys)
+            {
+                var slot = GetResourceSlot(key);
+                var isWrite = plan.Writes.Contains(key, StringComparer.Ordinal);
+
+                if (isWrite)
+                {
+                    // 写：独占 WriteGate，并等待已有读者全部退出。
+                    await slot.WriteGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await slot.Drained.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        slot.WriteGate.Release();
+                        throw;
+                    }
+
+                    lease.Add(slot, writer: true);
+                }
+                else
+                {
+                    // 读：瞬时占用 WriteGate 与写者互斥，取得计数后立刻归还，
+                    // 因此多个读者可以同时通过。
+                    await slot.WriteGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    slot.EnterRead();
+                    slot.WriteGate.Release();
+                    lease.Add(slot, writer: false);
+                }
+            }
+
+            return lease;
+        }
+        catch
+        {
+            // 中途取消或失败：已取得的必须释放，否则这些资源永久锁死。
+            lease.Dispose();
+            throw;
+        }
+    }
+
+    private ResourceSlot GetResourceSlot(string key)
+    {
+        lock (_sync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_resources.TryGetValue(key, out var existing)) return existing;
+
+            var slot = new ResourceSlot();
+            _resources[key] = slot;
+            return slot;
+        }
+    }
+
+    /// <summary>
+    /// 一个资源的读写状态。
+    /// </summary>
+    /// <remarks>
+    /// **语义**：<see cref="WriteGate"/> 保证写者独占；读者在取得时**瞬时**占用它
+    /// 再立刻归还，因此多个读者可并发，只有写者被挡。写者还要等
+    /// <see cref="Readers"/> 归零——否则"写者拿到 WriteGate 时读者已经在读"
+    /// 这件事不会被发现。
+    /// <para>
+    /// 用 <see cref="TaskCompletionSource"/> 而不是轮询等待读者清零：
+    /// 轮询在长读（大文件）下会白烧 CPU，也让取消响应变慢。
+    /// </para>
+    /// </remarks>
+    private sealed class ResourceSlot
+    {
+        public SemaphoreSlim WriteGate { get; } = new(1, 1);
+        public int Readers;
+
+        private TaskCompletionSource? _drained;
+
+        public Task Drained
+        {
+            get
+            {
+                lock (this)
+                {
+                    if (Readers == 0) return Task.CompletedTask;
+                    return (_drained ??= new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously)).Task;
+                }
+            }
+        }
+
+        public void EnterRead()
+        {
+            lock (this) Readers++;
+        }
+
+        public void ExitRead()
+        {
+            TaskCompletionSource? signal;
+            lock (this)
+            {
+                Readers--;
+                if (Readers > 0) return;
+                signal = _drained;
+                _drained = null;
+            }
+
+            signal?.TrySetResult();
+        }
+    }
+
+    /// <summary>按取得顺序**逆序**释放：先还写者/读者，再还资源槽。</summary>
+    private sealed class ResourceLease(ToolResourceGate owner) : IDisposable
+    {
+        private readonly List<(ResourceSlot Slot, bool Writer)> _held = [];
+        private int _released;
+
+        public void Add(ResourceSlot slot, bool writer) => _held.Add((slot, writer));
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0) return;
+
+            // 逆序释放，与取得顺序相反。
+            for (var i = _held.Count - 1; i >= 0; i--)
+            {
+                var (slot, writer) = _held[i];
+                if (writer) slot.WriteGate.Release();
+                else slot.ExitRead();   // 计数归零时唤醒等待的写者
+            }
+
+            _held.Clear();
+            _ = owner;
         }
     }
 
