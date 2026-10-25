@@ -84,12 +84,23 @@ public sealed class SessionComposition
     /// 工具集是「最小可信集 + 显式开启」：文件读写默认有，shell 与 MCP 需要显式配置。
     /// 这一点两个入口必须一致，否则会出现"CLI 能做但桌面端不能做"的困惑。
     /// </remarks>
-    public IToolDispatcher CreateDispatcher()
+    public IToolDispatcher CreateDispatcher() => CreateDispatcher(_approver);
+
+    /// <summary>
+    /// 用指定的审批器建立 dispatcher。
+    /// </summary>
+    /// <param name="approver">
+    /// 审批器。内核接线时传入的是**由内核解析得到的适配器**，
+    /// 而不是构造本对象时那个实例——否则审批器又成了绕开内核的裸引用。
+    /// </param>
+    public IToolDispatcher CreateDispatcher(IToolApprover approver)
     {
+        ArgumentNullException.ThrowIfNull(approver);
+
         // 已知无访问的工具（如 ask_user）不产生审批项：让用户先批准"允许提问"、
         // 再看到问题，等于把一次交互拆成两次。策略收得很窄，见 PermissionPolicyApprover。
         var dispatcher = new ToolDispatcher(
-            new PermissionPolicyApprover(_approver),
+            new PermissionPolicyApprover(approver),
             new ToolResourceGate(),
             _sessionId, "turn-1", _workspace,
             TimeSpan.FromMinutes(5),

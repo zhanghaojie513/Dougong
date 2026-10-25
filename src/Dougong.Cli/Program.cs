@@ -168,19 +168,67 @@ public static class Program
         // 账目随会话保存，`/usage` 可查；这里不猜单价，只汇总 token 与调用次数。
         var ledger = new UsageLedger();
         // 与 ACP 模式共用同一套装配：能力集合必须一致。
+        // 自动化验收可用 DOUGONG_AUTO_APPROVE=1 免除逐次询问；默认仍走控制台。
+        IToolApprover approver = AutoApproveApprover.IsEnabled
+            ? new AutoApproveApprover()
+            : new ConsoleApprover();
         var composition = SessionComposition.FromEnvironment(
-            sessionId, workspace, ChatClientFactory.Create(config), store, new ConsoleApprover());
+            sessionId, workspace, ChatClientFactory.Create(config), store, approver);
 
-        var dispatcher = composition.CreateDispatcher();
+        // 内核接线（G14）：DOUGONG_KERNEL=1 时运行能力由内核解析，
+        // 宿主不直接持有 dispatcher/runtime 实例。默认关闭，避免结构改动
+        // 一次性影响全部既有套件。
+        var useKernel = Environment.GetEnvironmentVariable("DOUGONG_KERNEL") is "1" or "true";
 
-        var (mcpRegistries, mcpClients) = await composition
-            .ConnectMcpAsync(dispatcher, Console.Out)
-            .ConfigureAwait(false);
+        IAgentRuntime runtime;
+        IReadOnlyList<McpToolRegistry> mcpRegistries = [];
+        IReadOnlyList<ModelContextProtocol.Client.McpClient> mcpClients = [];
+        KernelAgentHost? kernelHost = null;
+
+        try
+        {
+            if (useKernel)
+            {
+                kernelHost = await KernelAgentHost.CreateAsync(
+                    store,
+                    async (resolvedApprover, ct) =>
+                    {
+                        // dispatcher 在插件激活期内构造：MCP 工具注册属于它的构造，
+                        // 不能被推到激活之后（届时服务快照已提交）。
+                        var built = composition.CreateDispatcher(resolvedApprover);
+                        var (registries, clients) = await composition
+                            .ConnectMcpAsync(built, Console.Out, ct)
+                            .ConfigureAwait(false);
+                        mcpRegistries = registries;
+                        mcpClients = clients;
+                        return built;
+                    },
+                    resolvedDispatcher => composition.CreateRuntime(resolvedDispatcher, ledger),
+                    approver).ConfigureAwait(false);
+
+                runtime = kernelHost.ResolveRuntime();
+                Console.WriteLine("kernel=enabled（运行能力由内核解析，每次回合取租约）");
+            }
+            else
+            {
+                var dispatcher = composition.CreateDispatcher();
+                var (registries, clients) = await composition
+                    .ConnectMcpAsync(dispatcher, Console.Out)
+                    .ConfigureAwait(false);
+                mcpRegistries = registries;
+                mcpClients = clients;
+                runtime = composition.CreateRuntime(dispatcher, ledger);
+            }
+        }
+        catch (Exception ex) when (useKernel)
+        {
+            Console.Error.WriteLine($"内核接线失败：{ex.GetType().Name}: {ex.Message}");
+            return 3;
+        }
 
         if (composition.McpServers.Count == 0)
             Console.WriteLine("MCP：未配置（DOUGONG_MCP_SERVERS 开启）");
 
-        var runtime = composition.CreateRuntime(dispatcher, ledger);
         var messages = new List<AgentMessage>(history);
         var turn = 0;
 
@@ -197,6 +245,9 @@ public static class Program
                 {
                     foreach (var registry in mcpRegistries) registry.Dispose();
                     foreach (var mcpClient in mcpClients) await mcpClient.DisposeAsync();
+                    // 内核宿主必须显式释放：它持有租约与排空状态，
+                    // 不释放会让内核对"停用"的判定停在半路。
+                    if (kernelHost is not null) await kernelHost.DisposeAsync();
                     return 0;
                 }
                 continue;

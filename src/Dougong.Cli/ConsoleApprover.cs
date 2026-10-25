@@ -68,3 +68,39 @@ public sealed class ConsoleApprover : IToolApprover
     private static string Truncate(string text, int max) =>
         text.Length <= max ? text : text[..max] + "…";
 }
+
+/// <summary>
+/// 自动批准器：<b>只用于自动化验收</b>，通过 <c>DOUGONG_AUTO_APPROVE=1</c> 显式启用。
+/// </summary>
+/// <remarks>
+/// 为什么需要它：真实进程检查要跑完"模型请求工具 → 审批 → 执行 → 回填"整条链路，
+/// 而 <see cref="ConsoleApprover"/> 在没有交互输入时按拒绝处理（这是正确的
+/// fail-closed 行为）。用管道喂 "y" 不可靠——审批提示与 REPL 提示争抢同一行输入。
+/// <para>
+/// <b>这不是把默认变宽松</b>：默认路径仍是 <see cref="ConsoleApprover"/>。
+/// 启用它会打印一行醒目警告，且未知权限仍然拒绝——自动批准只免除"每次都问"，
+/// 不免除"无法描述权限的工具不得放行"。该分支的存在理由写在这里，
+/// 以免将来被当成生产特性使用。
+/// </para>
+/// </remarks>
+public sealed class AutoApproveApprover : IToolApprover
+{
+    public static bool IsEnabled =>
+        Environment.GetEnvironmentVariable("DOUGONG_AUTO_APPROVE") is "1" or "true";
+
+    public ValueTask<ToolApprovalDecision> RequestApprovalAsync(
+        ToolApprovalRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // 未知权限仍然拒绝：自动批准不改变"不能把未知当无风险"这条。
+        if (!request.Permission.IsKnown)
+        {
+            return ValueTask.FromResult(ToolApprovalDecision.Deny(
+                $"自动批准模式不处理未知权限的工具 '{request.Tool.Name}'。"));
+        }
+
+        return ValueTask.FromResult(
+            ToolApprovalDecision.Allow("DOUGONG_AUTO_APPROVE=1：自动化验收模式"));
+    }
+}

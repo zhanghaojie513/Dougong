@@ -422,7 +422,7 @@
 
 | 性质 | 状态 | 依据 |
 |---|---|---|
-| P1 可组合 | **未达成** | 内核零第三方依赖、生命周期扎实、依赖方向有守卫（`ArchitectureBoundaryTests`）；但**内核未接入产品路径**——`src/Dougong.Agent` 与 `src/Dougong.Cli` 源码中对 `Dougong.Kernel` 的引用为零（CLI 仅 csproj 引用，源码不用）。CLI 装配是 `new ToolDispatcher` / `new LoopAgentRuntime`，未走内核的服务注册与调用租约。可替换性验收也不存在 |
+| P1 可组合 | **部分（已接线，未默认）** | 内核接线已实现（`KernelAgentHost`），`DOUGONG_KERNEL=1` 时运行能力由内核解析、每回合取租约；`-- kernel-wiring` 7 项 + `-- kernel-process` 1 项，含"换一种 IAgentStore 不改内核仍通过"。**但默认仍走旧路径**，所以还不能勾 P1 判定第 1 条 |
 | P2 完整生命周期 | **内核内达成，产品路径未验证** | 177 项测试 + 20 项对抗探针，全部针对内核自身；无一项验证"插件在真实会话中被停用/替换后会话仍可继续"。断电级持久化未声明 |
 | P3 故障可解释 | 基本达成 | 四个提交屏障 + 审批记录 + 未知结果对账；缺工具幂等键 |
 | P4 真实可用 | 部分 | 3 协议 + 真实编码任务 + 压缩 + 恢复；MCP/ACP 已接入；协议内字段名差异无开关（G12/G13） |
@@ -478,6 +478,16 @@ Agent 运行实现均由内核承载，组合根解析 `IAgentRuntime`」，这�
   如实记录两项未做：MCP 断线重连（重试会重复副作用）、
   ACP plan/elicitation（运行时没有数据源，做了是空壳）。
   （后项已于 2026-10-25 补齐 elicitation，见下。）
+
+- 2026-10-25：内核接线（G14）：新增 `KernelAgentHost`/`KernelAgentRuntime`，
+  把存储、审批器、dispatcher、运行时作为插件注册进内核，宿主通过
+  `IServiceReference.InvokeAsync` 使用它们；租约粒度取"一回合一次"。
+  `DOUGONG_KERNEL=1` 启用，默认路径不变。新增两个套件 8 项验收 + 3 条反证。
+  过程中发现三个真实缺陷：① `LeasedDispatcher.Tools` 抛异常会让主循环
+  发不出工具声明（NotSupported），改为激活期内取冻结描述符快照；
+  ② "放弃枚举释放租约"的初版断言是假绿——只测了停用够快，没测运行时循环真的被取消；
+  ③ 收紧后连抓到两处测试自身缺陷（async iterator 里 yield 之后注册的取消回调永不执行；
+  `Task.WhenAny(...) == task` 比较的是 Task<Task> 引用，永远为 false）。
 
 - 2026-10-25：ACP elicitation：`ask_user` 工具化实现，form 模式 1–4 题 × 2–4 选项。
   11 项验收（10 项进程内 + 1 项真实 `dougong --acp` 进程），5 条反证逐条命中。

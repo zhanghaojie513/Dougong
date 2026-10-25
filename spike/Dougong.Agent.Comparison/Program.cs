@@ -90,6 +90,12 @@ public static class Program
         if (args.FirstOrDefault() == "elicitation-process")
             return await ElicitationProcessChecks.RunAsync();
 
+        if (args.FirstOrDefault() == "kernel-wiring")
+            return await KernelWiringChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "kernel-process")
+            return await KernelProcessChecks.RunAsync();
+
         // 供端到端测试使用的最小 stdio MCP server。
         if (args.FirstOrDefault() == "mcp-server")
             return await McpTestServer.RunAsync();
