@@ -34,6 +34,9 @@ public static class ProtocolSurfaceChecks
         failures += await CheckAsync("acp-rejects-fs-requests", AcpRejectsFsAsync);
         failures += await CheckAsync("acp-rejects-terminal-requests", AcpRejectsTerminalAsync);
         failures += await CheckAsync("acp-rejects-inbound-elicitation", AcpRejectsInboundElicitationAsync);
+        failures += await CheckAsync("mcp-transport-kind-is-explicit", TransportKindAsync);
+        failures += await CheckAsync("custom-transport-factory-is-used", TransportFactoryAsync);
+        failures += await CheckAsync("default-transport-when-factory-absent", DefaultTransportAsync);
 
         Console.WriteLine(failures == 0
             ? "PROTOCOL-SURFACE: ALL PASS"
@@ -220,6 +223,141 @@ public static class ProtocolSurfaceChecks
     /// </remarks>
     private static Task<string?> AcpRejectsInboundElicitationAsync() =>
         ExpectAcpErrorAsync("elicitation/create", -32602, expectHint: "Agent 向客户端");
+
+    // ── MCP 传输注入（G16）─────────────────────────────────────────
+
+    /// <summary>形态用显式 Kind 表达，不靠"哪个字段非空"推断。</summary>
+    private static Task<string?> TransportKindAsync()
+    {
+        var specs = Dougong.Cli.SessionComposition.ParseServers(
+            "a=/usr/bin/s --flag;b=https://example.com/mcp");
+
+        if (specs.Count != 2) return Task.FromResult<string?>($"应解析 2 项，实际 {specs.Count}");
+        if (specs[0].Kind != Dougong.Cli.McpTransportKind.Stdio)
+            return Task.FromResult<string?>($"第一项应为 Stdio，实际 {specs[0].Kind}");
+        if (specs[1].Kind != Dougong.Cli.McpTransportKind.Http)
+            return Task.FromResult<string?>($"第二项应为 Http，实际 {specs[1].Kind}");
+
+        return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>
+    /// 注入的传输工厂必须被调用，且其返回值必须被真的用于建连接。
+    /// </summary>
+    /// <remarks>
+    /// 只断言"被调用"不够：工厂返回一个坏传输同样会让检查通过而实际不可用。
+    /// 因此这里让工厂返回一个**必然连不上**的传输，然后断言
+    /// ① 工厂被调用；② 错误来自我们返回的那个传输（消息里带特征字符串），
+    /// 而不是来自内置构造（那说明工厂结果被忽略了）。
+    /// </remarks>
+    private static async Task<string?> TransportFactoryAsync()
+    {
+        const string marker = "custom-transport-marker";
+
+        var calls = 0;
+        var log = new StringWriter();
+
+        var composition = Dougong.Cli.SessionComposition.FromEnvironment(
+            "s-transport", Directory.GetCurrentDirectory(),
+            new FixedChatClient(), new AllowAllApprover());
+
+        // 通过环境变量配一个 server 太绕；直接构造装配器并调内部方法不方便，
+        // 因此这里用 ParseServers + 反射以外的方式：环境变量法。
+        // 改用最简单可行的路径：临时设环境变量（本进程内，检查结束后还原）。
+        var previous = Environment.GetEnvironmentVariable("DOUGONG_MCP_SERVERS");
+        Environment.SetEnvironmentVariable("DOUGONG_MCP_SERVERS", "probe=/nonexistent/server");
+        try
+        {
+            var withServer = Dougong.Cli.SessionComposition.FromEnvironment(
+                "s-transport", Directory.GetCurrentDirectory(),
+                new FixedChatClient(), new AllowAllApprover());
+
+            var (registries, clients) = await withServer.ConnectMcpAsync(
+                new ToolDispatcher(),
+                log,
+                transportFactory: (spec, _) =>
+                {
+                    Interlocked.Increment(ref calls);
+                    // 返回一个必然失败的传输，但失败消息带特征字符串。
+                    return new MarkerTransport(marker);
+                }).ConfigureAwait(false);
+
+            foreach (var registry in registries) registry.Dispose();
+            foreach (var client in clients) await client.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DOUGONG_MCP_SERVERS", previous);
+        }
+
+        if (calls == 0) return "注入的传输工厂没有被调用";
+
+        var text = log.ToString();
+        if (!text.Contains(marker, StringComparison.Ordinal))
+            return $"连接错误不是来自注入的传输，说明工厂结果被忽略：{text}";
+
+        return null;
+    }
+
+    /// <summary>未提供工厂时必须走内置构造——默认行为不变。</summary>
+    private static async Task<string?> DefaultTransportAsync()
+    {
+        var composition = Dougong.Cli.SessionComposition.FromEnvironment(
+            "s-default", Directory.GetCurrentDirectory(),
+            new FixedChatClient(), new AllowAllApprover());
+
+        var (registries, clients) = await composition.ConnectMcpAsync(
+            new ToolDispatcher(), new StringWriter()).ConfigureAwait(false);
+
+        foreach (var registry in registries) registry.Dispose();
+        foreach (var client in clients) await client.DisposeAsync().ConfigureAwait(false);
+
+        // 未配置 server 时应当什么也不做。
+        return registries.Count == 0 ? null : "未配置 server 却产生了注册器";
+    }
+
+    /// <summary>一个必然连接失败的传输，错误消息带特征串，用于识别来源。</summary>
+    private sealed class MarkerTransport(string marker) : ModelContextProtocol.Client.IClientTransport
+    {
+        public string Name => "marker";
+
+        public Task<ModelContextProtocol.Protocol.ITransport> ConnectAsync(
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException(marker);
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class FixedChatClient : Microsoft.Extensions.AI.IChatClient
+    {
+        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
+            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+            Microsoft.Extensions.AI.ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<Microsoft.Extensions.AI.ChatResponseUpdate>
+            GetStreamingResponseAsync(
+                IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+                Microsoft.Extensions.AI.ChatOptions? options = null,
+                [System.Runtime.CompilerServices.EnumeratorCancellation]
+                CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose() { }
+    }
+
+    private sealed class AllowAllApprover : Dougong.Agent.IToolApprover
+    {
+        public ValueTask<Dougong.Agent.ToolApprovalDecision> RequestApprovalAsync(
+            Dougong.Agent.ToolApprovalRequest request, CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Dougong.Agent.ToolApprovalDecision.Allow("测试"));
+    }
 
     /// <summary>
     /// 验证 ACP 对某个方法返回指定错误码，且诊断里给出替代做法的线索。

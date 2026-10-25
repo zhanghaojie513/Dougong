@@ -162,9 +162,20 @@ public sealed class SessionComposition
     /// <remarks>
     /// 连不上不阻止启动，但必须报错——静默跳过会让用户以为工具已就绪。
     /// </remarks>
+    /// <param name="transportFactory">
+    /// 可选的传输工厂。为 null 时用内置的 stdio / HTTP 两种构造。
+    /// 提供后由它决定每个 server 用什么传输——这是第三方扩展新传输的入口，
+    /// **不需要修改本方法**（G16）。
+    /// <para>
+    /// 参数是规格与日志出口；返回的传输由调用方负责（MCP SDK 会接管其生命周期）。
+    /// </para>
+    /// </param>
     public async Task<(IReadOnlyList<McpToolRegistry> Registries,
         IReadOnlyList<ModelContextProtocol.Client.McpClient> Clients)> ConnectMcpAsync(
-        IToolDispatcher dispatcher, TextWriter log, CancellationToken cancellationToken = default)
+        IToolDispatcher dispatcher,
+        TextWriter log,
+        CancellationToken cancellationToken = default,
+        Func<McpServerSpec, TextWriter, ModelContextProtocol.Client.IClientTransport>? transportFactory = null)
     {
         var registries = new List<McpToolRegistry>();
         var clients = new List<ModelContextProtocol.Client.McpClient>();
@@ -173,7 +184,9 @@ public sealed class SessionComposition
         {
             try
             {
-                ModelContextProtocol.Client.IClientTransport transport = spec.IsHttp
+                ModelContextProtocol.Client.IClientTransport transport = transportFactory is not null
+                    ? transportFactory(spec, log)
+                    : spec.IsHttp
                     ? new ModelContextProtocol.Client.HttpClientTransport(
                         new ModelContextProtocol.Client.HttpClientTransportOptions
                         {
@@ -269,14 +282,14 @@ public sealed class SessionComposition
                 || commandLine.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
                 if (Uri.TryCreate(commandLine, UriKind.Absolute, out var endpoint))
-                    results.Add(new McpServerSpec(name, null, [], endpoint));
+                    results.Add(McpServerSpec.Http(name, endpoint));
                 continue;
             }
 
             var parts = commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             if (parts.Length == 0) continue;
 
-            results.Add(new McpServerSpec(name, parts[0], parts[1..], null));
+            results.Add(McpServerSpec.Stdio(name, parts[0], parts[1..]));
         }
 
         return results;
@@ -404,13 +417,39 @@ public static class AcpComposition
     }
 }
 
+/// <summary>MCP 传输形态。</summary>
+/// <remarks>
+/// 显式枚举而不是靠"哪个字段非空"推断：后者无法容纳第四种形态，
+/// 而第三方需要新传输时不该被迫改这个类型（G16）。
+/// </remarks>
+public enum McpTransportKind
+{
+    /// <summary>子进程 + stdin/stdout。</summary>
+    Stdio,
+
+    /// <summary>Streamable HTTP（含 TLS）。</summary>
+    Http,
+}
+
 /// <summary>一个 MCP server 的启动规格。</summary>
 /// <param name="Command">stdio 形态的可执行文件；HTTP 形态为 null。</param>
 /// <param name="Endpoint">HTTP 形态的端点；stdio 形态为 null。</param>
 public sealed record McpServerSpec(
-    string Name, string? Command, IReadOnlyList<string> Arguments, Uri? Endpoint)
+    string Name,
+    string? Command,
+    IReadOnlyList<string> Arguments,
+    Uri? Endpoint,
+    McpTransportKind Kind = McpTransportKind.Stdio)
 {
-    public bool IsHttp => Endpoint is not null;
+    public bool IsHttp => Kind is McpTransportKind.Http;
+
+    /// <summary>用 stdio 形态构造。</summary>
+    public static McpServerSpec Stdio(string name, string command, IReadOnlyList<string> arguments) =>
+        new(name, command, arguments, null, McpTransportKind.Stdio);
+
+    /// <summary>用 HTTP 形态构造。</summary>
+    public static McpServerSpec Http(string name, Uri endpoint) =>
+        new(name, null, [], endpoint, McpTransportKind.Http);
 }
 
 /// <summary>从连接器上取用于记账标签的模型名与协议名。</summary>

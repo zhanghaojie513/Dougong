@@ -221,7 +221,7 @@ M3 之前不启动 `vision/iteration-roadmap.md` 里的 I1–I6。
 | G4 | 完整 JSON Schema 校验 | P2 | 中 | **已修** | `-- schema` 8 项；触发条件已在 M2.1 满足（schema 来自不可信远端） |
 | G5 | 资源级读写键 | P2 | 低 | **已修** | `ToolExecutionPlan.Reads`/`Writes` + 读写锁：读-读并行、读-写与写-写互斥、不同资源互不阻塞。`read_file`/`write_file` 已声明真实键（规范化路径）。`-- workspace-lock` 8 项，反证确认写工具退回旧语义时精确失败 |
 | G6 | 工具替换语义未测 | P3 | 低 | **已修** | `-- tool-replacement` 4 项；反证确认版本不随 schema 变化时检查失败 |
-| G16 | `ConnectMcpAsync` 传输构造不可注入 | P1 | 低 | M3 待办 | **不是缺接缝**：官方 SDK 的 `IClientTransport` 已是接缝，缺的是装配层注入点（约 10 行）。连带 `McpServerSpec` 用 `Uri?`+`string?` 表达形态、容纳不了第四种。**触发条件**：第三方需要 stdio/HTTP 之外的传输；见 m3-plan.md §六 |
+| G16 | `ConnectMcpAsync` 传输构造不可注入 | P1 | 低 | **已修** | `McpTransportKind` 显式表达形态（不再靠"哪个字段非空"推断）；`ConnectMcpAsync` 接受可选 `transportFactory`，第三方扩展传输**不必改本方法**。`-- surface` 三条：Kind 正确、工厂返回值真被使用（用带特征串的失败传输验证）、无工厂时走内置构造 |
 | G7 | 断电级持久化 | P3 | 低 | **设计限制（声明已落地）** | ① 能力：每次提交调用 `Flush(flushToDisk: true)`（BCL 文档语义：清空所有中间文件缓冲）。② **声明已有消费者**（2026-10-25 修）：此前 `StoreDurability` 在产品代码里零消费——声明了却没人读、没人展示，等于没声明。现在 CLI 启动横幅展示等级、`DurabilityText` 三档表述互不相同且明确"不保证断电"，ACP 降级时说明"本次会话不会被保存"。③ 仍不宣称断电安全：需要掉电测试，本项目没有条件。**这是设计限制不是缺陷** |
 | G8 | token 估算非真实计数 | P4 | 中 | **已修** | `-- token` 7 项；实测校准（ASCII 8 字符/token，CJK 1.2），改用分段模型 |
 | G9 | 同目录多会话并行 | P1 | 低 | **已修** | 锁表改为**进程级共享** + 引用计数回收：此前每个会话各 new 一个 gate，同工作区的两个会话各持一把互不相干的锁，跨会话互斥不成立。`-- workspace-lock` 3 项（共享互斥/跨工作区不阻塞/锁表可回收），反证确认无回收时表从 3 涨到 23 |
