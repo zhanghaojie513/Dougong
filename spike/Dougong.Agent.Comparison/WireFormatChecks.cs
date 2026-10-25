@@ -36,6 +36,8 @@ public static class WireFormatChecks
         failures += Check("empty-choices-frame-is-ignored", EmptyChoices);
         failures += Check("reasoning-content-is-echoed", Reasoning);
         failures += Check("other-reasoning-field-names-are-dropped", OtherReasoningFieldsDropped);
+        failures += Check("dialect-switch-round-trips-to-wire", DialectRoundTrip);
+        failures += Check("max-output-tokens-is-configurable", MaxTokensConfigurable);
         failures += await CheckAsync("runtime-history-carries-tool-result-text", RuntimeToolResultTextAsync);
 
         Console.WriteLine(failures == 0
@@ -80,7 +82,8 @@ public static class WireFormatChecks
             {
                 AdditionalProperties = new AdditionalPropertiesDictionary
                 {
-                    ["reasoning_content"] = "thinking",
+                    // Agent 层用中性键；连接器翻译成方言字段名（G12）。
+                    [AgentPropertyKeys.Reasoning] = "thinking",
                 },
             },
             new(ChatRole.Tool, """{"ok":true}""")
@@ -96,8 +99,9 @@ public static class WireFormatChecks
         if (assistant["tool_calls"] is not JsonArray calls || calls.Count != 1)
             return "assistant 未序列化 tool_calls";
         if (calls[0]!["id"]?.GetValue<string>() != "c1") return "tool_calls.id 不符";
+        // 线上字段名由 WireCompat 决定，默认 reasoning_content。
         if (assistant["reasoning_content"]?.GetValue<string>() != "thinking")
-            return "reasoning_content 未回传";
+            return "线上未回传 reasoning_content（默认方言）";
 
         var tool = array[2]!;
         if (tool["role"]?.GetValue<string>() != "tool") return "工具结果角色不是 tool";
@@ -311,43 +315,151 @@ public static class WireFormatChecks
 
         var flushed = decoder.Flush();
         if (flushed.Count != 1) return $"应下发 1 个更新，实际 {flushed.Count}";
+        // Agent 层用中性键（AgentPropertyKeys.Reasoning），连接器负责翻译成方言字段名。
+        // 这里断言的是中性键：跨层契约不该随 provider 变。
         var props = flushed[0].AdditionalProperties;
-        if (props is null || !props.TryGetValue("reasoning_content", out var value))
-            return "reasoning_content 未随调用带出";
+        if (props is null || !props.TryGetValue(AgentPropertyKeys.Reasoning, out var value))
+            return $"{AgentPropertyKeys.Reasoning} 未随调用带出";
         return value?.ToString() == "think more" ? null : $"思考内容不符：{value}";
     }
 
-    // G12 的特征化探针：思考内容放在 reasoning（而非 reasoning_content）时，
-    // 当前实现会**静默丢弃**——不抛异常、不报错，只是什么都没有。
+    // G12 已修：思考字段名由 WireCompat 决定，不再是硬编码。
     //
-    // 这条检查断言的是"缺陷确实存在且确实静默"。它的价值在于：
-    // ① 让文档里"会静默丢失"这句话有实测支撑，而不是读代码的推断；
-    // ② 将来真加了方言开关，这条会失败，逼着把文档一起改掉，
-    //    不至于让文档继续宣称一个已经修好的缺陷。
+    // 这条检查的演化值得留存：它最初是**特征化探针**——断言"缺陷确实存在且确实静默"
+    // （换一个字段名，思考内容会被无声丢弃）。G12 修好后它按设计失败并提示
+    // "缺陷已修，请更新文档"。现在改为验证修复本身：两种字段名都能正确工作。
     private static string? OtherReasoningFieldsDropped()
     {
-        var decoder = new OpenAiChatCompletionsFormat().CreateDecoder();
+        // ① 默认方言：reasoning_content
+        var classic = DecodeReasoning(WireCompat.Default);
+        if (classic != "think more")
+            return $"默认方言（reasoning_content）下思考内容为 '{classic}'，应能读到";
+
+        // ② 覆盖方言：reasoning
+        var alternate = DecodeReasoning(
+            WireCompat.Default with { ReasoningField = "reasoning" });
+        if (alternate != "think more")
+            return $"覆盖为 'reasoning' 后思考内容为 '{alternate}'，说明方言开关没生效";
+
+        // ③ 反方向：方言设成 reasoning 时，reasoning_content 应被忽略。
+        // 这条防的是"两个字段都读"的假实现——那会让两种方言互相污染。
+        var strict = DecodeReasoning(
+            WireCompat.Default with { ReasoningField = "reasoning" }, field: "reasoning_content");
+        if (strict is not null && strict.Length > 0)
+            return $"方言设为 'reasoning' 时仍读了 reasoning_content（得到 '{strict}'）：开关未真正隔离";
+
+        return null;
+    }
+
+    /// <param name="field">响应里实际使用的字段名；null 表示与方言一致。</param>
+    private static string DecodeReasoning(WireCompat compat, string? field = null)
+    {
+        var name = field ?? compat.ReasoningField;
+        var decoder = new OpenAiChatCompletionsFormat(compat).CreateDecoder();
         var updates = new List<ChatResponseUpdate>();
 
-        // 只差字段名：reasoning 而不是 reasoning_content。
-        decoder.Decode("""{"choices":[{"delta":{"reasoning":"think "}}]}""", updates);
-        decoder.Decode("""{"choices":[{"delta":{"reasoning":"more"}}]}""", updates);
-        decoder.Decode("""{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read","arguments":"{}"}}]}}]}""", updates);
+        // 用字符串拼接而不是内插原始字符串：多了一层大括号，内插语法要额外 $，
+        // 这里没必要跟编译器较劲。
+        decoder.Decode(
+            "{\"choices\":[{\"delta\":{\"" + name + "\":\"think \"}}]}", updates);
+        decoder.Decode(
+            "{\"choices\":[{\"delta\":{\"" + name + "\":\"more\"}}]}", updates);
+        decoder.Decode(
+            """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read","arguments":"{}"}}]}}]}""",
+            updates);
         decoder.Decode("""{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}""", updates);
 
         var flushed = decoder.Flush();
-        if (flushed.Count != 1) return $"应下发 1 个调用更新，实际 {flushed.Count}";
+        if (flushed.Count != 1) return string.Empty;
 
         var props = flushed[0].AdditionalProperties;
-        var carried = props is not null && props.TryGetValue("reasoning_content", out var value)
-            ? value?.ToString()
-            : null;
+        return props is not null && props.TryGetValue(AgentPropertyKeys.Reasoning, out var value)
+            ? value?.ToString() ?? string.Empty
+            : string.Empty;
+    }
 
-        if (!string.IsNullOrEmpty(carried))
-            return $"实现已能识别 'reasoning' 字段（带出 '{carried}'）——"
-                + "G12 已修，请同步更新 plan.md/architecture.md 并把本检查改为验证方言开关";
+    /// <summary>
+    /// 方言开关必须端到端生效：读进来、写回去都用同一方言。
+    /// </summary>
+    /// <remarks>
+    /// 只测解码器不够——G12 的本质是"解码和编码用了不同字段名"时静默丢失。
+    /// 这条真的走一遍：用 <c>reasoning</c> 方言解出思考内容，再把它作为历史
+    /// 构造下一轮请求，断言请求体里用的是同一方言的字段名。
+    /// </remarks>
+    private static string? DialectRoundTrip()
+    {
+        var compat = WireCompat.Default with { ReasoningField = "reasoning" };
+        var format = new OpenAiChatCompletionsFormat(compat);
 
-        // 静默：没有任何更新携带思考内容，也没有异常。
+        // 解码：provider 用 reasoning 字段给出思考内容。
+        var decoder = format.CreateDecoder();
+        var updates = new List<ChatResponseUpdate>();
+        decoder.Decode("{\"choices\":[{\"delta\":{\"reasoning\":\"思考中\"}}]}", updates);
+        decoder.Decode(
+            """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read","arguments":"{}"}}]}}]}""",
+            updates);
+        decoder.Decode("""{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}""", updates);
+
+        var flushed = decoder.Flush();
+        if (flushed.Count != 1) return $"应下发 1 个更新，实际 {flushed.Count}";
+
+        var props = flushed[0].AdditionalProperties;
+        if (props is null || !props.TryGetValue(AgentPropertyKeys.Reasoning, out var value))
+            return "解码阶段未产出中性键";
+
+        // 编码：把思考内容放回历史，构造下一轮请求体。
+        var history = new List<ChatMessage>
+        {
+            new(ChatRole.User, "read it"),
+            new(ChatRole.Assistant,
+                [new FunctionCallContent("c1", "read", new Dictionary<string, object?> { ["path"] = "a.txt" })])
+            {
+                AdditionalProperties = new AdditionalPropertiesDictionary
+                {
+                    [AgentPropertyKeys.Reasoning] = value!.ToString(),
+                },
+            },
+            new(ChatRole.Tool, "ok")
+            {
+                AdditionalProperties = new AdditionalPropertiesDictionary { ["tool_call_id"] = "c1" },
+            },
+        };
+
+        var array = format.BuildBody("m", history, null, true)["messages"] as JsonArray;
+        var assistant = array?[1];
+        if (assistant?["reasoning"]?.GetValue<string>() != "思考中")
+            return $"编码阶段未使用方言字段 'reasoning'：{assistant?.ToJsonString()}";
+        if (assistant["reasoning_content"] is not null)
+            return "编码阶段同时写了 reasoning_content：方言未隔离";
+
+        return null;
+    }
+
+    /// <summary>输出上限必须可配置，字段名也由方言决定（G13）。</summary>
+    private static string? MaxTokensConfigurable()
+    {
+        var messages = new List<ChatMessage> { new(ChatRole.User, "hi") };
+
+        // ① 默认不发送该字段：保持已验证端点的行为。
+        var plain = new OpenAiChatCompletionsFormat()
+            .BuildBody("m", messages, new ChatOptions { MaxOutputTokens = 1234 }, true);
+        if (plain["max_tokens"] is not null || plain["max_completion_tokens"] is not null)
+            return "默认方言不应发送输出上限字段（会改变已验证端点的行为）";
+
+        // ② 显式配置 max_tokens。
+        var classic = new OpenAiChatCompletionsFormat(
+                WireCompat.Default with { MaxTokensField = "max_tokens" })
+            .BuildBody("m", messages, new ChatOptions { MaxOutputTokens = 1234 }, true);
+        if (classic["max_tokens"]?.GetValue<int>() != 1234)
+            return $"max_tokens 未按配置发送：{classic.ToJsonString()}";
+
+        // ③ 显式配置 max_completion_tokens。
+        var modern = new OpenAiChatCompletionsFormat(
+                WireCompat.Default with { MaxTokensField = "max_completion_tokens" })
+            .BuildBody("m", messages, new ChatOptions { MaxOutputTokens = 4321 }, true);
+        if (modern["max_completion_tokens"]?.GetValue<int>() != 4321)
+            return $"max_completion_tokens 未按配置发送：{modern.ToJsonString()}";
+
         return null;
     }
 

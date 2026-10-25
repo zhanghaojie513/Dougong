@@ -96,7 +96,9 @@ public sealed class AnthropicMessagesFormat : IChatWireFormat
         var body = new JsonObject
         {
             ["model"] = model,
-            ["max_tokens"] = 4096,
+            // 输出上限：以前硬编码 4096，无法调整（G13）。
+            // 未指定时沿用 4096 保持已验证端点的行为。
+            ["max_tokens"] = options?.MaxOutputTokens ?? 4096,
             ["messages"] = array,
             ["stream"] = stream,
         };

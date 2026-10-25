@@ -18,6 +18,17 @@ namespace Dougong.Ai;
 /// </remarks>
 public sealed class OpenAiChatCompletionsFormat : IChatWireFormat
 {
+    private readonly WireCompat _compat;
+
+    /// <param name="compat">
+    /// 方言差异开关。默认值对应已实测通过的端点；接不同方言时显式覆盖，
+    /// 而不是改这里的代码（G12/G13）。
+    /// </param>
+    public OpenAiChatCompletionsFormat(WireCompat? compat = null)
+    {
+        _compat = compat ?? WireCompat.Default;
+    }
+
     public ChatProtocol Protocol => ChatProtocol.OpenAiChatCompletions;
 
     public string RelativePath => "/chat/completions";
@@ -47,10 +58,18 @@ public sealed class OpenAiChatCompletionsFormat : IChatWireFormat
             body["tools"] = ToolDeclarations.ToOpenAiToolsArray(declarations);
         }
 
+        // 输出上限：字段名为 null 表示不发（沿用端点默认），
+        // 避免改变已验证端点的行为（G13）。
+        if (_compat.MaxTokensField is { Length: > 0 } maxField
+            && options?.MaxOutputTokens is { } maxTokens)
+        {
+            body[maxField] = maxTokens;
+        }
+
         return body;
     }
 
-    private static JsonObject ToWireMessage(ChatMessage message)
+    private JsonObject ToWireMessage(ChatMessage message)
     {
         var item = new JsonObject { ["role"] = message.Role.Value };
 
@@ -66,12 +85,13 @@ public sealed class OpenAiChatCompletionsFormat : IChatWireFormat
 
         item["content"] = message.Text ?? string.Empty;
 
-        // 思考模式下带工具调用的 assistant 消息必须回传 reasoning_content，否则被拒（实测 400）。
+        // 思考模式下带工具调用的 assistant 消息必须回传思考内容，否则被拒（实测 400）。
+        // 字段名由 compat 决定：Agent 层用中性键，翻译发生在这里。
         if (message.AdditionalProperties is { } props
-            && props.TryGetValue("reasoning_content", out var reasoning)
+            && props.TryGetValue(AgentPropertyKeys.Reasoning, out var reasoning)
             && reasoning?.ToString() is { Length: > 0 } reasoningText)
         {
-            item["reasoning_content"] = reasoningText;
+            item[_compat.ReasoningField] = reasoningText;
         }
 
         var calls = message.Contents.OfType<FunctionCallContent>().ToList();
@@ -98,9 +118,9 @@ public sealed class OpenAiChatCompletionsFormat : IChatWireFormat
         return item;
     }
 
-    public ChatStreamDecoder CreateDecoder() => new Decoder();
+    public ChatStreamDecoder CreateDecoder() => new Decoder(_compat);
 
-    private sealed class Decoder : ChatStreamDecoder
+    private sealed class Decoder(WireCompat compat) : ChatStreamDecoder
     {
         // index -> (id, name, 参数片段)
         private readonly Dictionary<int, (string Id, string Name, System.Text.StringBuilder Args)> _pending = [];
@@ -154,7 +174,7 @@ public sealed class OpenAiChatCompletionsFormat : IChatWireFormat
                     updates.Add(new ChatResponseUpdate(ChatRole.Assistant, text));
                 }
 
-                if (delta.TryGetProperty("reasoning_content", out var reasoning)
+                if (delta.TryGetProperty(compat.ReasoningField, out var reasoning)
                     && reasoning.ValueKind is JsonValueKind.String
                     && reasoning.GetString() is { Length: > 0 } thinking)
                 {
@@ -199,7 +219,7 @@ public sealed class OpenAiChatCompletionsFormat : IChatWireFormat
             if (_pending.Count == 0)
             {
                 if (_reasoning.Length == 0) return [];
-                // 只有思考内容时也要带出，否则下一轮缺 reasoning_content。
+                // 只有思考内容时也要带出，否则下一轮缺该字段。
                 return [WithReasoning(new ChatResponseUpdate(ChatRole.Assistant, string.Empty))];
             }
 
@@ -221,7 +241,7 @@ public sealed class OpenAiChatCompletionsFormat : IChatWireFormat
             if (_reasoning.Length == 0) return update;
             update.AdditionalProperties = new AdditionalPropertiesDictionary
             {
-                ["reasoning_content"] = _reasoning.ToString(),
+                [AgentPropertyKeys.Reasoning] = _reasoning.ToString(),
             };
             _reasoning.Clear();
             return update;

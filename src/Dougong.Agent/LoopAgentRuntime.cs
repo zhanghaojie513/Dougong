@@ -112,7 +112,7 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             var text = new StringBuilder();
             var calls = new List<PendingCall>();
             // 某些 provider（如 DeepSeek 思考模式）要求带工具调用的 assistant 消息
-            // 回传 reasoning_content，否则请求被拒。这里原样保留并透传。
+            // 回传思考内容，否则请求被拒。字段名由连接器翻译，本层只用中性键。
             var reasoning = new StringBuilder();
             var fragmentCount = new Dictionary<string, int>(StringComparer.Ordinal);
 
@@ -156,7 +156,7 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 if (!moved) break;
 
                 if (enumerator.Current.AdditionalProperties is { } updateProps
-                    && updateProps.TryGetValue("reasoning_content", out var reasoningValue)
+                    && updateProps.TryGetValue(AgentPropertyKeys.Reasoning, out var reasoningValue)
                     && reasoningValue?.ToString() is { Length: > 0 } reasoningText)
                     reasoning.Append(reasoningText);
 
@@ -230,13 +230,13 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 // 纯文本轮次才单独补 assistant 消息。
                 // 有工具调用时，文本必须与 tool_calls 合进同一条 assistant 消息：
                 // 分开写会得到两条相邻的 assistant 消息，思考模式的 provider
-                // 会认为带 tool_calls 的那条缺少 reasoning_content 而拒掉整轮（实测 400）。
+                // 会认为带 tool_calls 的那条缺少思考内容而拒掉整轮（实测 400）。
                 if (text.Length > 0)
                 {
                     history.Add(new ChatMessage(ChatRole.Assistant, text.ToString())
                     {
                         AdditionalProperties = reasoning.Length > 0
-                            ? new AdditionalPropertiesDictionary { ["reasoning_content"] = reasoning.ToString() }
+                            ? new AdditionalPropertiesDictionary { [AgentPropertyKeys.Reasoning] = reasoning.ToString() }
                             : null,
                     });
                 }
@@ -412,7 +412,7 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         history.Add(new ChatMessage(ChatRole.Assistant, toolCalls)
         {
             AdditionalProperties = reasoning.Length > 0
-                ? new AdditionalPropertiesDictionary { ["reasoning_content"] = reasoning }
+                ? new AdditionalPropertiesDictionary { [AgentPropertyKeys.Reasoning] = reasoning }
                 : null,
         });
 

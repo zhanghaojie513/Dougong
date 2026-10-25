@@ -217,8 +217,8 @@ status.md 的记录不够准确（写了"未实现真实模型摘要"，但没�
 | G9 | 同目录多会话并行 | P1 | 低 | 待定 | **触发条件**：桌面宿主需要多会话 |
 | G10 | 工具幂等键 | P3 | 低 | 设计缺口 | `OutcomeUnknown` 后无法按契约核实。**触发条件**：接入有幂等语义的远端工具 |
 | G11 | ACP `plan` 无数据源 | P4 | 低 | 设计缺口 | 运行时无 plan 状态，而 ACP 的 plan 是**每次全量替换**。**触发条件**：出现真实的计划维护需求（模型自维护 TODO 工具），届时 plan 是该工具的投影而非推测 |
-| G12 | 思考字段名硬编码，无方言开关 | P4/P3 | 中 | 设计缺口 | `reasoning_content` 在**七处**被写成"协议本身的行为"：`LoopAgentRuntime.cs:126`（读流）/`:206`、`:382`（写回历史）；`OpenAiChatCompletionsFormat.cs:71`（读历史）、`:74`（写入线上）、`:157`（读流）、`:224`（写回历史）。接一家把思考放 `reasoning` 或 `reasoning_text` 的 provider 时，**思考内容静默丢失**；若对方是思考模式要求回传，下一轮直接 400 且错误信息通常不含字段名。**触发条件**：首次接入非 `reasoning_content` 风格的 provider |
-| G13 | 输出上限不可配置 | P4 | 低 | 设计缺口 | `AnthropicMessagesFormat.cs:99` 硬编码 `max_tokens = 4096`；两个 OpenAI format 从不发送该字段（`ChatOptions` 只被读了 `ReadToolDeclarations`）。既无法限制输出，也无法提高上限，长输出任务会被端点默认值截断。**触发条件**：出现需要长输出或需要设上限的任务 |
+| G12 | 思考字段名硬编码 | P4/P3 | 中 | **已修** | `AgentPropertyKeys.Reasoning`（中性键）+ `WireCompat.ReasoningField`（方言开关）。Agent 层不再出现任何 provider 字段名；连接器负责翻译。`-- wire` 三条：默认方言、覆盖方言、方言隔离（防"两个字段都读"）。反证：编码写死旧字段名时精确失败 |
+| G13 | 输出上限不可配置 | P4 | 低 | **已修** | `WireCompat.MaxTokensField`（null=不发，保持已验证端点行为）+ `ChatOptions.MaxOutputTokens`。Anthropic format 改为 `options?.MaxOutputTokens ?? 4096`。`-- wire` 的 `max-output-tokens-is-configurable` 三条 |
 | G14 | **内核未接入产品路径** | P1 | **阻断** | **已修（开关默认关）** | `-- kernel-wiring` 7 项 + `-- kernel-process` 1 项；3 条反证。默认仍走旧路径，`DOUGONG_KERNEL=1` 启用 |
 | G15 | 编排者持有可替换实现（审批器/dispatcher） | P3/P1 | 中 | **已修** | `IApproverAccessor` / `IDispatcherAccessor`：`ToolDispatcher` 与 `LoopAgentRuntime` 不再持有实现实例。内核路径传 `KernelApproverAccessor`/`KernelDispatcherAccessor`（走租约），直连路径传 `Fixed*`（显式固定）。`-- bare-hold` 12 处持有全部有说明，两条已知缺口条目已从白名单消失 |
 
@@ -256,11 +256,10 @@ M2.2 的热更新让"批准了 A、执行了 B"成为现实风险（G6），
 真实 usage 已采集到足够样本可校准估算（G8）。
 **这验证了"触发条件"这种写法的价值**：不是拖延，而是有判据地决定何时动手。
 
-**剩余缺口状态**：G14 已接线但**默认未启用**（见 §三 2.6 的步骤 4），因此 P1 仍未达达成判定——
-"默认路径用内核"才是终点。其余 G5/G7/G9/G10/G11/G12/G13
-不阻断当前目标：G7 是设计限制（需要独立持久化证明），其他六项等真实需求。
-其中 G12 是唯一会在接入新 provider 时**静默出错**的一项（思考内容丢失不报错），
-因此它排在待触发项的第一位。
+**剩余缺口状态**：G14、G15、G12、G13 已修，内核接线已是默认路径。
+剩余 G5/G7/G9/G10/G11 不阻断当前目标：G7 是设计限制（需要独立持久化证明），
+其余四项等真实需求。**已无一等"静默出错"的缺口**——G12 修好后，
+接新 provider 的方言差异走 `WireCompat` 配置，不再需要改连接器代码。
 
 ---
 

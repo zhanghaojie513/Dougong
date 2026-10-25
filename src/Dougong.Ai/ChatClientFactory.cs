@@ -27,6 +27,15 @@ public sealed record ChatProviderConfig
     public string? ApiKeyEnvironmentVariable { get; init; }
 
     /// <summary>
+    /// 同一协议内部的方言差异（字段名、可选参数）。默认值对应已实测通过的端点。
+    /// </summary>
+    /// <remarks>
+    /// 接一家"兼容 OpenAI"但字段名不同的端点时，改这里而不是改连接器代码——
+    /// 否则每接一家就要动一次协议实现（G12/G13 的成因）。
+    /// </remarks>
+    public WireCompat Compat { get; init; } = WireCompat.Default;
+
+    /// <summary>
     /// Anthropic 兼容层的端点路径覆盖。多数是 <c>/v1/messages</c>；
     /// DeepSeek 挂在 <c>/anthropic/v1/messages</c>。仅对 <see cref="ChatProtocol.AnthropicMessages"/> 有效。
     /// </summary>
@@ -70,7 +79,7 @@ public static class ChatClientFactory
 
         IChatWireFormat format = config.Protocol switch
         {
-            ChatProtocol.OpenAiChatCompletions => new OpenAiChatCompletionsFormat(),
+            ChatProtocol.OpenAiChatCompletions => new OpenAiChatCompletionsFormat(config.Compat),
             ChatProtocol.OpenAiResponses => new OpenAiResponsesFormat(),
             ChatProtocol.AnthropicMessages => new AnthropicMessagesFormat(
                 config.MessagesPath ?? "/v1/messages"),
