@@ -103,8 +103,26 @@ public sealed class StoreCommitException(string stage, string message, Exception
 /// 拒绝"预先冻结资源键格式"同一判据。
 /// </para>
 /// </remarks>
+/// <param name="MayHaveIrreversibleEffects">
+/// 该工具是否声明了可能不可撤销的副作用。宿主据此决定处置方式：
+/// <c>false</c> 表示可安全重试；<c>true</c> 表示必须人工核实。
+/// <para>
+/// 旧会话记录不含此信息时按 <c>true</c> 处理——宁可要求人工核实，
+/// 也不要让宿主误以为可以安全重放。
+/// </para>
+/// </param>
 public sealed record UnknownOutcome(
     string InvocationId,
     string ToolId,
     string Reason,
-    string? ArgumentsJson = null);
+    string? ArgumentsJson = null)
+{
+    /// <summary>
+    /// 该工具是否声明了可能不可撤销的副作用。默认 <c>true</c>。
+    /// </summary>
+    /// <remarks>
+    /// 默认 true（保守）：旧代码构造的 UnknownOutcome 会被当作"需人工核实"。
+    /// 用 <c>init</c> 属性而不是构造参数，避免破坏已有调用的构造函数签名。
+    /// </remarks>
+    public bool MayHaveIrreversibleEffects { get; init; } = true;
+}

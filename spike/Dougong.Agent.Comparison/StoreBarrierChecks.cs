@@ -18,6 +18,8 @@ public static class StoreBarrierChecks
         failures += await CheckAsync("committed-session-recovers-history", CommittedSessionRecoversAsync);
         failures += await CheckAsync("unknown-outcome-on-missing-completion", UnknownOutcomeAsync);
         failures += await CheckAsync("unknown-outcome-carries-arguments", UnknownArgumentsAsync);
+        failures += await CheckAsync("read-only-unknown-does-not-block-recovery", ReadOnlyUnknownAsync);
+        failures += await CheckAsync("side-effecting-unknown-blocks-recovery", SideEffectUnknownAsync);
         failures += await CheckAsync("single-writer-lease", SingleWriterLeaseAsync);
         failures += await CheckAsync("truncated-tail-is-isolated", TruncatedTailAsync);
 
@@ -247,6 +249,91 @@ public static class StoreBarrierChecks
                 return $"参数内容不符：{unknown.ArgumentsJson}";
             if (!unknown.ArgumentsJson.Contains("[", StringComparison.Ordinal))
                 return $"数组参数被折叠：{unknown.ArgumentsJson}";
+
+            return null;
+        }
+        finally
+        {
+            try { File.Delete(path); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>
+    /// 只读工具崩溃**不该**让会话无法恢复。
+    /// </summary>
+    /// <remarks>
+    /// 此前所有未知结果都被一律拒绝恢复——一次只读工具崩溃会让整个会话报废。
+    /// 现在按工具声明区分：无副作用的可以继续。
+    /// </remarks>
+    private static async Task<string?> ReadOnlyUnknownAsync()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dougong-ro-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var started = new
+            {
+                id = "c1",
+                tool = "read_file",
+                arguments = """{"path":"a.txt"}""",
+                mayHaveIrreversibleEffects = false,   // 只读工具显式声明
+            };
+
+            await using (var store = await JsonlAgentStore.OpenAsync(path, "s-ro"))
+            {
+                await store.CommitAsync(new StoreRecord(
+                    0, StoreRecordKind.ToolCallStarted, Json(JsonSerializer.Serialize(started))));
+            }
+
+            await using var reopened = await JsonlAgentStore.OpenAsync(path, "s-ro");
+            var recovered = await SessionRecovery.ReplayAsync(reopened);
+
+            if (recovered.Unknown.Count != 1) return $"应有 1 条未知结果，实际 {recovered.Unknown.Count}";
+            if (recovered.RequiresReconciliation)
+                return "只读工具的未知结果不应阻塞恢复";
+            if (recovered.DescribeBlockingReason() is { } reason)
+                return $"只读工具不该产出阻塞原因：{reason}";
+            if (recovered.Retryable.Count != 1)
+                return $"应被列为可重试，实际 {recovered.Retryable.Count} 条";
+
+            return null;
+        }
+        finally
+        {
+            try { File.Delete(path); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>可能有不可撤销副作用的工具崩溃，必须阻塞并要求人工核实。</summary>
+    private static async Task<string?> SideEffectUnknownAsync()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dougong-rw-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var started = new
+            {
+                id = "c2",
+                tool = "write_file",
+                arguments = """{"path":"a.txt"}""",
+                mayHaveIrreversibleEffects = true,
+            };
+
+            await using (var store = await JsonlAgentStore.OpenAsync(path, "s-rw"))
+            {
+                await store.CommitAsync(new StoreRecord(
+                    0, StoreRecordKind.ToolCallStarted, Json(JsonSerializer.Serialize(started))));
+            }
+
+            await using var reopened = await JsonlAgentStore.OpenAsync(path, "s-rw");
+            var recovered = await SessionRecovery.ReplayAsync(reopened);
+
+            if (!recovered.RequiresReconciliation)
+                return "有副作用的工具崩溃必须要求人工核实";
+            if (recovered.DescribeBlockingReason() is not { } reason)
+                return "必须产出阻塞原因";
+            if (!reason.Contains("对账", StringComparison.Ordinal))
+                return $"阻塞原因未说明要对账：{reason}";
+            if (recovered.Retryable.Count != 0)
+                return "有副作用的未知结果不该被列为可重试";
 
             return null;
         }

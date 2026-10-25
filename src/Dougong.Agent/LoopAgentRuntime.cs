@@ -322,6 +322,12 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             }
 
             var toolResults = new List<(string Id, string ToolId, ToolDispatchResult Result)>();
+            // 取一次工具描述符快照：开始记录要写入"是否有不可撤销副作用"。
+            // 用快照而不是每次查询，避免循环内工具被注销导致前后不一致。
+            var toolDescriptors =
+                (await _dispatcher.GetToolsAsync(cancellationToken).ConfigureAwait(false))
+                    .ToDictionary(t => t.Id, StringComparer.Ordinal);
+
             foreach (var call in calls)
             {
                 // 用累积片段的原文重新解析，而不是直接序列化字典：
@@ -333,11 +339,19 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 // 屏障 3：工具开始记录必须落盘，才允许执行（可能产生副作用）。
                 // 参数必须入库：恢复时若只有 id+tool，宿主连"当时要做什么"都不知道，
                 // 无法对账未知结果，更无法判断能否安全重试（G10）。
+                // 记录"这次调用是否可能有不可撤销副作用"：
+                // 恢复时若发现无终态，宿主据此判断能否安全重试。
+                // 工具可能在派发前被注销，取不到描述符时保守按 true 记。
+                var mayHaveEffects = toolDescriptors.TryGetValue(call.ToolId, out var descriptor)
+                    ? descriptor.MayHaveIrreversibleEffects
+                    : true;   // 取不到描述符（工具已注销）时保守按"有副作用"记
+
                 var startedPayload = JsonSerializer.Serialize(new
                 {
                     id = call.Id,
                     tool = call.ToolId,
                     arguments = args.GetRawText(),
+                    mayHaveIrreversibleEffects = mayHaveEffects,
                 });
                 if (await CommitOrNullAsync(StoreRecordKind.ToolCallStarted, ToElement(startedPayload), cancellationToken)
                         is { } startedFailure)

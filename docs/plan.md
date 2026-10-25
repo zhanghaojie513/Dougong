@@ -225,7 +225,7 @@ M3 之前不启动 `vision/iteration-roadmap.md` 里的 I1–I6。
 | G7 | 断电级持久化 | P3 | 低 | **设计限制（声明已落地）** | ① 能力：每次提交调用 `Flush(flushToDisk: true)`（BCL 文档语义：清空所有中间文件缓冲）。② **声明已有消费者**（2026-10-25 修）：此前 `StoreDurability` 在产品代码里零消费——声明了却没人读、没人展示，等于没声明。现在 CLI 启动横幅展示等级、`DurabilityText` 三档表述互不相同且明确"不保证断电"，ACP 降级时说明"本次会话不会被保存"。③ 仍不宣称断电安全：需要掉电测试，本项目没有条件。**这是设计限制不是缺陷** |
 | G8 | token 估算非真实计数 | P4 | 中 | **已修** | `-- token` 7 项；实测校准（ASCII 8 字符/token，CJK 1.2），改用分段模型 |
 | G9 | 同目录多会话并行 | P1 | 低 | **已修** | 锁表改为**进程级共享** + 引用计数回收：此前每个会话各 new 一个 gate，同工作区的两个会话各持一把互不相干的锁，跨会话互斥不成立。`-- workspace-lock` 3 项（共享互斥/跨工作区不阻塞/锁表可回收），反证确认无回收时表从 3 涨到 23 |
-| G10 | 工具幂等键 | P3 | 低 | **部分修复** | 真问题不是"缺幂等键"，而是**未知结果不带参数**：恢复时宿主连"当时要做什么"都不知道，无从对账。已修：`ToolCallStarted` 记录含参数原文，`UnknownOutcome.ArgumentsJson` 透出。幂等键本身仍缺（需远端工具配合），触发条件不变 |
+| G10 | 工具幂等键 | P3 | 低 | **已修（可解部分）** | 原登记说"缺幂等键"，但真问题更基础：未知结果无法区分「可安全重试」与「必须人工核实」，于是全部拒绝恢复——一次只读工具崩溃让整个会话报废。已修：`ToolDescriptor.MayHaveIrreversibleEffects`（默认 false）+ 恢复时据此分流出 `RecoveredSession.Retryable`。`-- store` 两条验收（只读不阻塞 / 有副作用阻塞）+ 反证。**幂等键本身仍缺**：需要远端工具配合识别重复请求，触发条件不变 |
 | G11 | ACP `plan` 无数据源 | P4 | 低 | **已修** | 数据源是**工具**不是推测：`todo_write` 让模型显式声明计划，运行时投影为 `PlanUpdated`，ACP 翻译为全量替换的 plan 条目。`-- acp-plan` 6 项，反证确认去掉投影后两条精确失败 |
 | G12 | 思考字段名硬编码 | P4/P3 | 中 | **已修** | `AgentPropertyKeys.Reasoning`（中性键）+ `WireCompat.ReasoningField`（方言开关）。Agent 层不再出现任何 provider 字段名；连接器负责翻译。`-- wire` 三条：默认方言、覆盖方言、方言隔离（防"两个字段都读"）。反证：编码写死旧字段名时精确失败 |
 | G13 | 输出上限不可配置 | P4 | 低 | **已修** | `WireCompat.MaxTokensField`（null=不发，保持已验证端点行为）+ `ChatOptions.MaxOutputTokens`。Anthropic format 改为 `options?.MaxOutputTokens ?? 4096`。`-- wire` 的 `max-output-tokens-is-configurable` 三条 |

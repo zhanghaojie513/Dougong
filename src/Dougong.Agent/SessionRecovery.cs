@@ -24,7 +24,7 @@ public static class SessionRecovery
         ArgumentNullException.ThrowIfNull(store);
 
         var history = new List<AgentMessage>();
-        var started = new List<(string Id, string Tool, string? ArgumentsJson)>();
+        var started = new List<(string Id, string Tool, string? ArgumentsJson, bool MayHaveEffects)>();
         var completed = new Dictionary<string, string?>(StringComparer.Ordinal);
         var truncated = false;
         long lastSequence = 0;
@@ -48,7 +48,7 @@ public static class SessionRecovery
 
                 case StoreRecordKind.ToolCallStarted:
                     if (Parse(record.Payload) is { } s)
-                        started.Add((s.Id, s.Tool, s.ArgumentsJson));
+                        started.Add((s.Id, s.Tool, s.ArgumentsJson, s.MayHaveIrreversibleEffects));
                     break;
 
                 case StoreRecordKind.ToolCallCompleted:
@@ -66,12 +66,11 @@ public static class SessionRecovery
             .Where(s => !completed.ContainsKey(s.Id))
             .Select(s => new UnknownOutcome(
                 s.Id, s.Tool,
-                s.ArgumentsJson is null
-                    // 旧会话记录里没有参数：如实说"不知道"，不编造。
-                    ? "已提交调用开始但没有终态；无法确认副作用是否发生。（该会话记录不含调用参数）"
-                    : "已提交调用开始但没有终态；无法确认副作用是否发生。参数见 ArgumentsJson，"
-                      + "宿主据此核实外部状态，不得自动重放。",
-                s.ArgumentsJson))
+                DescribeUnknown(s),
+                s.ArgumentsJson)
+            {
+                MayHaveIrreversibleEffects = s.MayHaveEffects,
+            })
             .ToList();
 
         return new RecoveredSession(lastSequence, history, unknown, truncated);
@@ -170,12 +169,31 @@ public static class SessionRecovery
         var arguments = payload.TryGetProperty("arguments", out var argsElement)
             && argsElement.ValueKind is JsonValueKind.String ? argsElement.GetString() : null;
 
-        return new ToolRecord(id, tool, outcome, diagnostic, content, arguments);
+        // 旧记录没有这个字段：按 true（有副作用）保守处理——
+        // 宁可要求人工核实，也不要让宿主误以为可以安全重试。
+        var mayHaveEffects = !payload.TryGetProperty("mayHaveIrreversibleEffects", out var effectsElement)
+            || effectsElement.ValueKind is not JsonValueKind.False;
+
+        return new ToolRecord(id, tool, outcome, diagnostic, content, arguments, mayHaveEffects);
     }
 
     private sealed record ToolRecord(
         string Id, string Tool, string? Outcome, string? Diagnostic, string? Content,
-        string? ArgumentsJson);
+        string? ArgumentsJson, bool MayHaveIrreversibleEffects);
+
+    /// <summary>未知结果的说明文本。区分"可能已产生副作用"与"可安全重试"。</summary>
+    private static string DescribeUnknown(
+        (string Id, string Tool, string? ArgumentsJson, bool MayHaveEffects) started)
+    {
+        var basis = started.ArgumentsJson is null
+            ? "（该会话记录不含调用参数）"
+            : "参数见 ArgumentsJson。";
+
+        return started.MayHaveEffects
+            ? "已提交调用开始但没有终态；该工具可能产生不可撤销副作用，"
+              + "必须人工核实外部状态，不得自动重放。" + basis
+            : "已提交调用开始但没有终态；该工具声明为无不可撤销副作用，可安全重试。" + basis;
+    }
 }
 
 /// <summary>
@@ -189,18 +207,47 @@ public sealed record RecoveredSession(
     bool HasSequenceGap)
 {
     /// <summary>是否需要人工对账才能继续。为 true 时不得自动续跑。</summary>
-    public bool RequiresReconciliation => Unknown.Count > 0;
+    /// <summary>是否存在需要人工核实的未知结果（可能有不可撤销副作用）。</summary>
+    public bool RequiresReconciliation => Unknown.Any(u => u.MayHaveIrreversibleEffects);
+
+    /// <summary>
+    /// 可安全重试的未知结果：工具声明为无不可撤销副作用。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="Unknown"/> 的区别在于**能否自动重试**。
+    /// 一次只读工具崩溃不该让整个会话无法恢复。
+    /// </remarks>
+    public IReadOnlyList<UnknownOutcome> Retryable => [.. Unknown.Where(u => !u.MayHaveIrreversibleEffects)];
 
     /// <summary>可以直接用于 <see cref="AgentRunRequest.History"/>。</summary>
     public IReadOnlyList<AgentMessage> HistoryForResume => History;
 
     /// <summary>阻塞续跑的原因；可继续时返回 null。</summary>
+    /// <summary>
+    /// 恢复时是否需要人工介入。返回 null 表示可以继续。
+    /// </summary>
+    /// <remarks>
+    /// **区分两种未知**：可能有不可撤销副作用的，必须人工核实；
+    /// 声明为无副作用的，只是"没跑完"，可以安全重试。
+    /// 把两者都拒掉会让只读工具的一次崩溃变成"会话无法恢复"。
+    /// </remarks>
     public string? DescribeBlockingReason()
     {
         if (RequiresReconciliation)
         {
-            var ids = string.Join(", ", Unknown.Select(u => $"{u.InvocationId}({u.ToolId})"));
-            return $"存在结果未知的工具调用：{ids}。必须先对账，不能自动重放。";
+            var blocking = Unknown
+                .Where(u => u.MayHaveIrreversibleEffects)
+                .Select(u => $"{u.InvocationId}({u.ToolId})")
+                .ToList();
+
+            if (blocking.Count > 0)
+            {
+                return $"存在结果未知且可能已产生副作用的工具调用：{string.Join(", ", blocking)}。"
+                    + "必须先对账，不能自动重放。";
+            }
+
+            // 剩下的都是声明为无副作用的：不阻塞恢复。
+            // 调用方仍可通过 Unknown 列表看到它们，自行决定是否重试。
         }
 
         if (HasSequenceGap)

@@ -22,6 +22,12 @@
 
 ### Added
 
+- `Dougong.Agent`：`ToolDescriptor.MayHaveIrreversibleEffects`（默认 false）
+  与 `UnknownOutcome.MayHaveIrreversibleEffects`（默认 true）+ `RecoveredSession.Retryable`。
+  恢复时据此区分「只读工具崩溃，可安全重试」与「可能已产生副作用，必须人工核实」。
+  **此前所有未知结果一律拒绝恢复**——一次只读工具崩溃会让整个会话报废。
+  用 `init` 属性而非构造参数，避免破坏已有调用的构造函数签名（ApiCompat 在 CI 上
+  精确报出了这一点，随后按 CP0002 修正）。
 - `Dougong.Kernel`：`PluginDiagnostic` 增加 `Stage` 与 `Hint`，
   用于把失败定位到阶段并给出下一步建议（M3 切片 3.4）
 - `Dougong.Agent`：`TodoWriteTool` 与 `PlanTool`，模型可显式维护计划；
