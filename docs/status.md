@@ -34,10 +34,17 @@
 
 ## 开工前置
 
-- [ ] SDK 10.0.402 已用于构建与测试；仍需固定仓库 SDK 选择以保证可复现，不把 SDK 11 当唯一选择。
-- [ ] 核实 NuGet 版本兼容并同步目标引用图：Kernel 抽象包、Agent M.E.AI.Abstractions、Mcp→Agent；Telemetry 在其里程碑创建。
-- [ ] restore/build/test 已通过，恒真测试已移除；pack 已产出 6 个 nupkg，包自述文件与 XML 文档待补；完整内核反例集待补齐。
-- [ ] 仓库已首次提交并推送；工程元数据仍有 placeholder，发布前需同步实际仓库 URL。提交仅在用户明确要求时执行。
+- [x] SDK 固定：`global.json` 锁 `10.0.402` + `rollForward: latestFeature`，
+      并指定 `Microsoft.Testing.Platform` 运行器。CI 用同一版本。
+- [x] NuGet 版本与引用图核对：`Directory.Packages.props`（CPM）4 个包版本统一管理；
+      引用图 Kernel 零依赖、Agent→Kernel、Ai/Mcp/Acp→Agent、Cli→全部。
+      由 `ArchitectureBoundaryTests` 断言，越界即失败。
+- [x] restore/build/test 全通过；恒真测试已移除；pack 产出 6 个 nupkg。
+      **XML 文档待补**（`GenerateDocumentationFile` 全未开启，见「已知未完成」）——
+      其余两项（包自述文件、完整内核反例集）已完成：每个包带仓库 README，
+      内核 178 项测试含 18 项对抗探针。
+- [x] 仓库已首次提交并推送；工程元数据已填实际 URL（`Directory.Build.props:12-13`）。
+      提交仅在用户明确要求时执行。
 
 ## M0 内核任务与验收
 
@@ -245,15 +252,42 @@
 
 - [x] 固定 AgentHost 直接内嵌 SDK，CLI 为另一宿主；内部命名管道与标准 ACP stdio 分开。
 - [x] 定义存活重连/崩溃恢复、审批连接失效、PTY 所有权与退出策略，以及显式提交/暂存流式边界。
-- [ ] SDK：提交/恢复、命令去重、未知结果和租约实现通过 M1 验证。
-- [ ] Desktop：启动/认证、附着与会话状态同步、有界增量队列；会话语义优先采用 ACP 标准方法。
-- [ ] Desktop：审批断线/重发/过期和重复答复不得重复执行。
-- [ ] Desktop：终端 ID、有界输出缓冲与输入去重；VT 屏幕状态恢复不纳入首版验收。
-- [ ] architecture.md §6.7 全部故障用例、标准 ACP stdout、干净 Windows 打包与 NativeAOT 兼容验证通过后才宣称完成。
+- [x] **SDK 侧**：提交/恢复、命令去重、未知结果和租约实现通过 M1 验证。
+      证据：`-- store` 8 项、`-- session` 9 项、`-- approval-log` 7 项、
+      内核 178 项（含 18 对抗探针）。
+- [ ] **Desktop 侧**（不在本仓库，由 Dougong Desktop 承担）：
+      启动/认证、附着与会话状态同步、有界增量队列；会话语义优先采用 ACP 标准方法。
+- [ ] **Desktop 侧**：审批断线/重发/过期和重复答复不得重复执行。
+      （SDK 侧已提供依据：审批绑定 8 维度 + 执行前复核 + `IsCurrentRegistration`，
+      但"断线重发不重复执行"属宿主行为，须由 Desktop 验证。）
+- [ ] **Desktop 侧**：终端 ID、有界输出缓冲与输入去重；VT 屏幕状态恢复不纳入首版验收。
+- [ ] §6.7 **SDK 侧三行已满足**（未知结果可见、不自动重放、存储失败不放行后续调用）；
+      其余四行依赖 Desktop 与 NativeAOT 打包验证，**不得据此宣称"支持恢复与重连"**。
+
+## 已知未完成（2026-10-25 汇总）
+
+台账里散落的未勾选项集中在这里，分三类。**判断哪个是欠账、哪个是边界，看"为什么"列。**
+
+| 项 | 类型 | 为什么没做 |
+|---|---|---|
+| Skill L1 记忆层 | **欠账**（M2 范围项） | 需独立数据源（真实任务记录 + 留出评测集）与 6 条验收，塞进 M2 尾巴会成半成品 |
+| 判据 1 真人验证 | **欠账**（M3 出口） | 指南已自我审查，但"没参与开发的人能完成"只有真人能证 |
+| XML 文档生成 | **欠账**（M0 前置项） | `GenerateDocumentationFile` 全未开启；注释已写好，只需开启 + 修 warning |
+| 断电级持久化（G7） | 边界 | 已调 `Flush(flushToDisk: true)`，缺掉电测试条件 |
+| 工具幂等键（G10 余项） | 边界 | 需远端工具配合识别重复请求 |
+| Desktop 侧 4 项（§6.7） | 边界 | 不在本仓库，由 Dougong Desktop 承担 |
+| 性能基线 5 项未覆盖 | 边界 | 刻意划定范围，各自写明何时该补 |
+
+**三类判据**：
+- **欠账**：计划里承诺过、能力已具备、只是没做——该做
+- **边界**：有明确的外部依赖或验证条件——不该假装能做
+- **设计限制**：做了会得到半成品或错误承诺——不该做
 
 ## M2/M3 后续验收入口
 
-- [ ] M2 ACP/MCP 按版本/能力联调，未知权限、schema 变化、审批取消和日志出口均覆盖。
+- [x] M2 ACP/MCP 按版本/能力联调，未知权限、schema 变化、审批取消和日志出口均覆盖。
+      （逐条核实：`McpAgentTool` 权限恒 `IsKnown=false`、版本为 schema 的 SHA-256、
+      `-- acp` 含取消用例、`stdout-carries-only-protocol-frames` 守卫日志出口。）
   - **MCP 工具桥接已实现**（`src/Dougong.Mcp/McpAgentTool.cs`，ModelContextProtocol 2.3.0）：
     远端工具包装为 `IAgentTool`，经过同一个 dispatcher。8 项验收（`-- mcp`）用**真实的
     MCP client + server 内存配对**，不是 mock。
@@ -282,7 +316,7 @@
   - **ACP Agent 端已实现**（`src/Dougong.Acp`）：按行分帧（无 Content-Length）、
     JSON-RPC 2.0 双向 id、`initialize` 版本协商、`session/new`、`session/prompt`、
     `session/cancel`、5 种 `session/update` 翻译、`AcpApprover` 权限请求。
-    10 项验收（`-- acp`）用真实流配对驱动，含三个硬约束：**stdout 只含协议帧**、
+    20 项验收（`-- acp`）用真实流配对驱动，含三个硬约束：**stdout 只含协议帧**、
     所有 update 先于 prompt 响应、未实现的 session 方法显式报错而非静默成功。
   - **修掉一个真缺陷**：`session/prompt` 会跑完整轮，原先在同一个读循环里 await，
     导致后续 `session/cancel` 通知读不到，取消永远无效。改为长请求登记后立即继续读取。
@@ -390,8 +424,20 @@
     `ChatOptions` 只被读了工具声明。接一家把思考放 `reasoning` 的 provider 会
     **静默丢失思考内容**（不报错，只是下一轮上下文少东西），这是这批缺口里唯一
     "出错但看不出来"的。判据见 `plan.md` G12/G13。
-- [ ] M2 L1 默认候选待审；受限自动启用需用户选择，来源/作用域/撤销/隐私双数据流和最小留出评测齐备。
-- [ ] M3 API/行为兼容、作者模板和卸载测试稳定化；完整 Skill 进化和评测优化按验证结果后续建设。
+- [ ] **M2 的 Skill L1 记忆层未实现**（`design.md:236` 把"Skill 最简 L1 候选/启用/撤销
+      与最小评测"列为 M2 范围，**实际未做**）。
+      现状：源码中除注释外无任何 Skill 相关类型。
+      为什么没做：它有独立的数据源依赖（需要真实任务记录 + 独立留出评测集），
+      且 `skills-evolution.md §7` 列了 6 条验收（含恶意指令注入、30 秒撤销生效、
+      未审批内容不得加载）。塞进 M2 尾巴会变成半成品。
+      **这是 M2 唯一未闭合的范围项**，不是文档债。
+- [x] M3 API/行为兼容、作者模板和卸载测试稳定化。
+      证据：`-- kernel-wiring` 10 + `-- kernel-path` 3 + `-- kernel-process` 5 +
+      `-- replaceability` 4 + `-- bare-hold`（12 处全说明）+ `-- workspace-lock` 8 +
+      `-- acp-plan` 6 + `-- elicitation` 10；ApiCompat + CHANGELOG + 基线脚本；
+      20 轮装卸 4 项；作者指南（经自我审查）+ 两个可运行样例；性能基线三场景。
+      **判据 1（外部作者只看文档能写插件）仍为"部分"**——需真人验证。
+      完整 Skill 进化和评测优化按验证结果后续建设（见下方"已知未完成"）。
 
 ## 依赖版本
 
