@@ -16,7 +16,17 @@ Dougong = 插件内核 + Agent 运行时 + 协议壳（ACP）
           全部站在微软官方基础件上，交付为 NuGet 包族
 ```
 
-1. **借架构，不搬实现**。从 dsh 借三样东西：一切皆插件、运行时启停、作用域生命周期。**不移植 Cordis**——.NET 无对应物，且"时空可组合"的完整响应式语义超出 harness 所需，只保留其中最有价值的一条（依赖方随提供方重启，见 §4.3）。
+**定位表述（2026-10-25 修正）**：不宣称"对等的 .NET dsh"。dsh 是 52 个 package、
+543 篇文档的团队项目，而"对等"本身无法判定。可判定的表述是：
+
+> Dougong 把"插件化 Agent Harness"在 .NET 上做到可判定正确：在 dsh 折叠掉的地方
+> （未知副作用、生命周期超时）给出更严格的语义，在 dsh 强的地方（变化传播、
+> 扩展点密度）明确承认差距并说明取舍。
+
+依据见 [kernel-vs-cordis.md](kernel-vs-cordis.md)——其中用 Cordis core v4.0.0-rc.12
+源码与 dsh 架构文档逐项对照，并记录了"不做插件热更新"的取舍。
+
+1. **借架构，不搬实现**。从 dsh 借三样东西：一切皆插件、运行时启停、作用域生命周期。**不移植 Cordis**——.NET 无对应物，且"时空可组合"的完整响应式语义超出 harness 所需，只保留其中最有价值的一条（依赖方随提供方重启，见 §4.3）。**例外**：Cordis 用 epoch 让消费者自动重载（热更新），这一条**明确不借**，理由见 §4.3 与 kernel-vs-cordis.md §六。
 2. **站在官方件上**。LLM 抽象 = `Microsoft.Extensions.AI`；MCP = 官方 `ModelContextProtocol` C# SDK；日志/配置/DI = `Microsoft.Extensions.*`；可观测 = OpenTelemetry。自研范围压缩到"内核 + 运行时 + ACP 壳"。
 3. **SDK 优先，宿主示范**。交付物是 NuGet 包族 + 一个 headless CLI 参考宿主（`dougong` dotnet tool）。桌面 UI、IDE 集成由宿主项目（如 Dougong Desktop）承担。
 

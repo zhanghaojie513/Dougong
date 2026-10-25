@@ -36,6 +36,7 @@ journey/ = 开发记录：各里程碑真实发生的问题与判断。复盘素
 | [plan.md](plan.md) | 下一步做什么：里程碑顺序、缺口台账、判定标准 | 决定优先级时读 |
 | [status.md](status.md) | 现在到哪了：已实现、测试基线、未完成验收、恢复入口 | 动手前必读；只认实测证据 |
 | [acp-reference-survey.md](acp-reference-survey.md) | M2.4 前置调查：TKCode（ACP Client）与 pi.net 的实际做法与可借鉴/不可借鉴项 | M2.4 实现者 |
+| [kernel-vs-cordis.md](kernel-vs-cordis.md) | 与 dsh/Cordis 内核的一手对比：租约/排空/超时/变化传播逐项对照，已定取舍（不做热更新），以及"对等的 .NET dsh"这个定位为何不成立 | 决定内核方向与对外表述时读 |
 | [m1-candidate-comparison.md](m1-candidate-comparison.md) | M1 候选对比：MAF 包装 vs 自研循环的同用例对比与选择理由 | M1 实现者；Agent 代码注释引用。M1 关闭后移入 `journey/` |
 
 ## 方向与理念（vision/）
