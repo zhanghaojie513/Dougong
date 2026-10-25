@@ -232,7 +232,11 @@ module 重求值。M0 已为"卸载后引用未释放导致程序集回收失败
 `KernelStoreAccessor`（内部走 `InvokeAsync`，替换后自动取新实现），直连路径传入
 `FixedStoreAccessor`（显式选择不参与替换）。
 契约留在 L1 而不是直接用内核的 `IServiceReference`，是为了让 `Dougong.Agent`
-不依赖 `Dougong.Kernel`（Agent 要能脱离内核单独工作）。
+不依赖 `Dougong.Kernel`（Agent 要能脱离内核单独工作）。这条独立性由
+`ArchitectureBoundaryTests.Agent_layer_does_not_depend_on_kernel` 守卫：
+同时检查工程图与已编译程序集的依赖，不只查源码。
+2026-10-25 清掉了 `Dougong.Agent.csproj` 里一行从 M0 起就存在、但源码从未使用的
+Kernel 工程引用——它让独立性"看起来不成立"。
 
 **已知未收口（G15）**：审批器与 dispatcher 仍被编排者存成字段。AI 见 `plan.md` G15。
 `-- bare-hold` 用反射列出所有持有点并要求逐条说明，新增未说明的持有会失败。

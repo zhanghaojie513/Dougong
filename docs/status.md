@@ -479,6 +479,15 @@ Agent 运行实现均由内核承载，组合根解析 `IAgentRuntime`」，这�
   ACP plan/elicitation（运行时没有数据源，做了是空壳）。
   （后项已于 2026-10-25 补齐 elicitation，见下。）
 
+- 2026-10-25：清掉 `Dougong.Agent.csproj` 里多余的 Kernel 工程引用。
+  它从 M0 建仓（`5c1bbe5`）起就存在，而 Agent 层源码从没用过 Kernel 的任何类型。
+  害处不只是冗余：它让"Agent 可脱离内核单独工作"这句话看起来不成立，
+  也让"L1 对 L0 零引用"需要额外解释。
+  移除后全量构建与 178 项测试通过，`deps.json` 也不再含 Kernel。
+  新增 `Agent_layer_does_not_depend_on_kernel` 守卫：同时查工程图与已编译程序集的
+  依赖（只查 csproj 不够，传递引用同样会破坏独立性）。
+  反证：把引用加回去，测试精确报出"Dougong.Agent 不得引用 Dougong.Kernel"。
+
 - 2026-10-25：修 G9（跨会话工作区互斥）。
   发现方式：核实缺口登记时发现 G9 不只是"等桌面宿主"——它是**现在就不成立**的
   承诺。`architecture.md` §4.4 要求同一工作区的串行/独占工具互斥，而

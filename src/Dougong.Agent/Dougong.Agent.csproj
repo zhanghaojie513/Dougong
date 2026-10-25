@@ -8,8 +8,4 @@
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" />
   </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\Dougong.Kernel\Dougong.Kernel.csproj" />
-  </ItemGroup>
-
 </Project>

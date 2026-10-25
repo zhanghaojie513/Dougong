@@ -21,6 +21,11 @@ namespace Dougong.Agent;
 /// <b>为什么不直接用内核的 <c>IServiceReference</c></b>：那会让 <c>Dougong.Agent</c>
 /// 依赖 <c>Dougong.Kernel</c>，破坏分层（Agent 要能脱离内核单独工作，
 /// spike 里的多数套件正是这样用的）。契约留在 L1，实现对接到 L0。
+/// <para>
+/// 现状核实（2026-10-25）：<c>Dougong.Agent</c> 源码对 Kernel **零引用**，
+/// csproj 里那行多余的工程引用也已移除。这条独立性有构建事实支撑，
+/// 不是仅靠约定。
+/// </para>
 /// </para>
 /// </remarks>
 public interface IStoreAccessor

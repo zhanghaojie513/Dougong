@@ -131,6 +131,57 @@ public sealed class ArchitectureBoundaryTests
             "SDK 工程不得引用桌面端工程或 UI 依赖：" + string.Join("；", violations));
     }
 
+    /// <summary>
+    /// Agent 层必须能脱离内核单独工作。
+    /// </summary>
+    /// <remarks>
+    /// 这条此前只靠约定：`Dougong.Agent.csproj` 从 M0 建仓起就引用了
+    /// `Dougong.Kernel`，而源码从没用过它的任何类型。那行引用让
+    /// "Agent 可脱离内核"看起来不成立，也让"L1 零引用"需要额外解释。
+    /// <para>
+    /// 断言两层：工程图上不许有这条引用；已编译程序集的依赖里也不许有。
+    /// 只查 csproj 不够——传递引用也可能把 Kernel 带进来。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Agent_layer_does_not_depend_on_kernel()
+    {
+        var agentProject = Path.Combine(RepoRoot, "src", "Dougong.Agent", "Dougong.Agent.csproj");
+
+        var declared = XDocument.Load(agentProject)
+            .Descendants("ProjectReference")
+            .Select(r => (string?)r.Attribute("Include") ?? string.Empty)
+            .Where(include => include.Contains("Dougong.Kernel", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        Assert.True(
+            declared.Length == 0,
+            "Dougong.Agent 不得引用 Dougong.Kernel（Agent 要能脱离内核单独工作）："
+                + string.Join(", ", declared));
+
+        // 传递依赖也要查：csproj 干净但某处间接引入同样破坏独立性。
+        // 注意本测试工程不引用 Dougong.Agent（这本身就是分层正确的体现），
+        // 所以只能按程序集名加载，不能用 typeof。
+        var agentPath = Path.Combine(
+            RepoRoot, "src", "Dougong.Agent", "bin", "Release", "net10.0", "Dougong.Agent.dll");
+        if (!File.Exists(agentPath))
+        {
+            agentPath = Path.Combine(
+                RepoRoot, "src", "Dougong.Agent", "bin", "Debug", "net10.0", "Dougong.Agent.dll");
+        }
+
+        Assert.True(File.Exists(agentPath), $"找不到 Dougong.Agent.dll：{agentPath}");
+
+        var kernelName = typeof(DougongKernel).Assembly.GetName().Name;
+        var agentAssembly = System.Reflection.Assembly.LoadFile(agentPath);
+
+        var referenced = agentAssembly.GetReferencedAssemblies()
+            .Select(a => a.Name)
+            .ToArray();
+
+        Assert.DoesNotContain(kernelName, referenced);
+    }
+
     [Fact]
     public void Kernel_has_no_packages_beyond_extensions_abstractions()
     {
