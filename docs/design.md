@@ -148,7 +148,10 @@ MCP 官方 SDK 保持拟采用底座；Tasks 等可选扩展按实际版本能�
 
 ### 4.6 版本与兼容
 
-加载前检查所有共享契约的支持范围，不只检查 Kernel 主版本；M3 使用 ApiCompat 和行为兼容测试。M0 验收覆盖 architecture.md §3.7 的全部反例后，才进入 Agent 实现；公共 API 在 M3 前保持 experimental。
+加载前检查所有共享契约的支持范围，不只检查 Kernel 主版本；M3 使用 ApiCompat 和行为兼容测试。M0 验收覆盖 architecture.md §3.7 的全部反例后，才进入 Agent 实现。
+
+**公共 API 的稳定性声明（2026-10-25 修订）**：先前写的是"公共 API 在 M3 前保持 experimental"，但**从未执行**——代码里 `[Experimental]` 是 0 处。核实后决定不补，理由见 `m3-plan.md` §五：该标记产生的是**编译错误而非警告**，第三方插件项目不自行 `NoWarn` 就装不上，与 M3 判据"外部作者照文档能写出插件"直接冲突；且它的受众（外部作者）在 M3 才出现，为一个还没有受众的时期补临时标记不划算。
+替代机制：ApiCompat 基线 + CHANGELOG + `[Obsolete]` 弃用窗口 + `0.x` 语义化版本约定。**结论：不做兼容承诺，但任何 API 变更都可被自动发现。**
 
 ## 5. Agent 运行时
 
@@ -246,7 +249,7 @@ DougongDesktop.PtyHost（按需启动，持有 PTY/shell 句柄）
 | M.E.AI 连接器覆盖不齐 | 工厂只依赖 `IChatClient` 抽象；Pi.Ai 逃生舱（§6.1） |
 | ACP 协议演进 | 锁协议版本 + 针对 TS SDK 的兼容测试集 |
 | dsh 上游高速演进的诱惑 | 参照冻结在其当前架构文档；本项目的"对齐对象"是思想，不是 commit |
-| 内核 API 过早公开被生态锁死 | M0–M2 API 全部标记 experimental；M3 才稳定化 |
+| 内核 API 过早公开被生态锁死 | `0.x` 期间不做兼容承诺，但所有公开 API 变更由 ApiCompat 在打包时自动检出并记入 CHANGELOG；删改前先 `[Obsolete]` 跨一个次版本。M3 结束时才宣称稳定 |
 | 单人项目巴士因子 | 设计文档即本文件；每里程碑附带可运行验收（CI 保活，学 pi.net） |
 | **MAF Harness 能力扩张侵蚀生态位** | 分水岭守在"运行时插件内核 + ACP 壳 + 权限自描述"；每季度复核 §2.1 基线，可吸收则吸收 |
 

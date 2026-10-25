@@ -183,9 +183,10 @@ status.md 的记录不够准确（写了"未实现真实模型摘要"，但没�
 一句话目标：一位没参与开发的人，能照着文档写出一个可信插件、跑起来、
 并知道它什么时候会失败。M3 不加功能，只把已有能力封成别人不会用错的形状。
 
-必须先回答的一个决策点：`Experimental` 标记**当前是 0 处**，而
-`design.md:249` 写着"公共 API 在 M3 前保持 experimental"。
-要么补标记，要么改文档承认未执行——不能悬着（见 m3-plan.md §五）。
+决策已完成：**不补 `Experimental` 标记**，改做实 ApiCompat + CHANGELOG + 弃用窗口。
+原 `design.md:249` 那条"公共 API 在 M3 前保持 experimental"从未执行（实测 0 处），
+已改为诚实表述。理由见 m3-plan.md §五——该标记产生编译错误而非警告，
+与"外部作者照文档能写出插件"直接冲突。
 
 M3 之前不启动 `vision/iteration-roadmap.md` 里的 I1–I6。
 
