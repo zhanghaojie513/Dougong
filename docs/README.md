@@ -37,7 +37,9 @@ journey/ = 开发记录：各里程碑真实发生的问题与判断。复盘素
 | [status.md](status.md) | 现在到哪了：已实现、测试基线、未完成验收、恢复入口 | 动手前必读；只认实测证据 |
 | [acp-reference-survey.md](acp-reference-survey.md) | M2.4 前置调查：TKCode（ACP Client）与 pi.net 的实际做法与可借鉴/不可借鉴项 | M2.4 实现者 |
 | [g14-kernel-wiring-plan.md](g14-kernel-wiring-plan.md) | G14 接线方案：租约粒度取舍（一回合一次）、目标装配、7 项验收与反证方式 | G14 实现者 |
+| [getting-started.md](getting-started.md) | 从零开始：装 SDK 到写出第一个插件，每条命令都写明"应该看到什么"。给没写过 .NET 的人 | 第一次动手时读 |
 | [plugin-author-guide.md](plugin-author-guide.md) | 插件作者指南：从工程文件到最小插件，含五个易犯错与失败定位 | 写插件时读 |
+| [skill-l1-plan.md](skill-l1-plan.md) | Skill L1 记忆层：实现范围、验收 2–6 的证据、验收 1 为何未做 | 看记忆层边界时读 |
 | [performance-baseline.md](performance-baseline.md) | 性能基线：大会话/长会话/并发会话的实测数字与环境。只记录不承诺 | 做性能对比时读 |
 | [m3-plan.md](m3-plan.md) | M3 计划：四条完成判据、七个切片顺序、`Experimental` 决策点、M2 遗留的三条待办登记 | 启动 M3 前读 |
 | [kernel-vs-cordis.md](kernel-vs-cordis.md) | 与 dsh/Cordis 内核的一手对比：租约/排空/超时/变化传播逐项对照，已定取舍（不做热更新），以及"对等的 .NET dsh"这个定位为何不成立 | 决定内核方向与对外表述时读 |
