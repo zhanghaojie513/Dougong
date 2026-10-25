@@ -479,6 +479,18 @@ Agent 运行实现均由内核承载，组合根解析 `IAgentRuntime`」，这�
   ACP plan/elicitation（运行时没有数据源，做了是空壳）。
   （后项已于 2026-10-25 补齐 elicitation，见下。）
 
+- 2026-10-25：收口"编排者裸持有存储"。新增 `IStoreAccessor`（Agent 层契约）：
+  `ToolDispatcher` 与 `LoopAgentRuntime` 不再接受 `IAgentStore` 实例，
+  改为接受"每次提交自己取实例"的访问点；内核路径传 `KernelStoreAccessor`
+  （走租约，替换后自动取新实现），直连路径传 `FixedStoreAccessor`（显式固定）。
+  保留旧构造签名（内部包一层），96 处调用点不受影响。
+  新增通用探针 `-- bare-hold`：反射扫描全部产品程序集，列出把可替换接口
+  存成实例字段的地方，**默认判违规**，合法持有必须在白名单登记理由。
+  首次运行扫出 45 条噪声（编译器生成的 async 状态机），排除后得到 8 条真实持有：
+  修掉 `ToolDispatcher._store` / `LoopAgentRuntime.store`，其余 6 条逐条说明。
+  反证：删掉白名单一条即精确失败。
+  如实记录未收口项：审批器与 dispatcher 仍被编排者持有（G15）。
+
 - 2026-10-25：按 P1 分析补齐三处缺口：
   ① **存储不再被宿主裸持有**——`SessionComposition` 的 `_store` 字段删除，
   改为方法参数；dispatcher/运行时插件在激活期内经内核解析 store。

@@ -56,7 +56,7 @@ public static class SessionChecks
 
             await using (var store = await JsonlAgentStore.OpenAsync(path, "s1"))
             {
-                var runtime = new LoopAgentRuntime(client, dispatcher, store);
+                var runtime = new LoopAgentRuntime(client, dispatcher, new FixedStoreAccessor(store));
                 await CollectAsync(runtime, "read a.txt");
             }
 

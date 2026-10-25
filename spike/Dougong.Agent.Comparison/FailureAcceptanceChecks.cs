@@ -184,7 +184,7 @@ public static class FailureAcceptanceChecks
             var runtime = new LoopAgentRuntime(
                 new OneToolCallClient("c1", "write_file",
                     """{"path":"must-not-exist.txt","content":"x"}"""),
-                dispatcher, store);
+                dispatcher, new FixedStoreAccessor(store));
 
             var events = new List<AgentEvent>();
             await foreach (var e in runtime.RunAsync(new AgentRunRequest("s", "t", [], "write it")))

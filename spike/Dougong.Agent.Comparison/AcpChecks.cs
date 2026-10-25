@@ -879,7 +879,8 @@ public static class AcpChecks
             await using (var store = await JsonlAgentStore.OpenAsync(path, "sess-plain"))
             {
                 var runtime = new LoopAgentRuntime(
-                    new FixedClient("这是助手的回复"), new ToolDispatcher(), store);
+                    new FixedClient("这是助手的回复"), new ToolDispatcher(),
+                    new FixedStoreAccessor(store));
 
                 await foreach (var _ in runtime.RunAsync(
                     new AgentRunRequest("sess-plain", "t1", [], "你好")))

@@ -25,7 +25,7 @@ namespace Dougong.Agent;
 public sealed class LoopAgentRuntime(
     IChatClient client,
     IToolDispatcher dispatcher,
-    IAgentStore? store = null,
+    IStoreAccessor? store = null,
     ContextLimits? limits = null,
     IContextCompactor? compactor = null,
     Func<string, CancellationToken, ValueTask<string>>? summarize = null) : IAgentRuntime

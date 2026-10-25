@@ -226,6 +226,17 @@ module 重求值。M0 已为"卸载后引用未释放导致程序集回收失败
 > 宿主自己构造的普通对象（例如会话装配器、UI 模型）不受此约束。
 > 换句话说：`new` 一个对象本身没问题，问题是**该对象本应由内核提供**时却绕开了服务注册。
 
+**存储访问点（2026-10-25）**：`Dougong.Agent` 定义 `IStoreAccessor`——"每次提交时
+自己决定取哪个存储实例"的契约。`ToolDispatcher` 与 `LoopAgentRuntime` 依赖它而
+不是 `IAgentStore`，因此"长期持有实现实例"在类型层面不可表达。内核路径传入
+`KernelStoreAccessor`（内部走 `InvokeAsync`，替换后自动取新实现），直连路径传入
+`FixedStoreAccessor`（显式选择不参与替换）。
+契约留在 L1 而不是直接用内核的 `IServiceReference`，是为了让 `Dougong.Agent`
+不依赖 `Dougong.Kernel`（Agent 要能脱离内核单独工作）。
+
+**已知未收口（G15）**：审批器与 dispatcher 仍被编排者存成字段。AI 见 `plan.md` G15。
+`-- bare-hold` 用反射列出所有持有点并要求逐条说明，新增未说明的持有会失败。
+
 **当前状态（2026-10-25）**：接线已实现，见 `Dougong.Cli/KernelAgentHost.cs`。
 `DOUGONG_KERNEL=1` 时存储、审批器、dispatcher、运行时都作为插件注册进内核，
 宿主经 `IServiceReference.InvokeAsync` 使用；**租约粒度是一回合一次**

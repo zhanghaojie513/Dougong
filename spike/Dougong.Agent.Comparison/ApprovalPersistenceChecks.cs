@@ -222,7 +222,7 @@ public static class ApprovalPersistenceChecks
             {
                 var client = new OneTurnClient();
                 var runtime = new LoopAgentRuntime(
-                    client, new ToolDispatcher(), store);
+                    client, new ToolDispatcher(), new FixedStoreAccessor(store));
 
                 await foreach (var _ in runtime.RunAsync(
                     new AgentRunRequest("s1", "turn-1", [], "hello")))

@@ -34,7 +34,7 @@ public static class StoreBarrierChecks
         var tool = new FakeTool("read_file", ["path"]);
         var dispatcher = new ToolDispatcher();
         dispatcher.Register(tool);
-        var runtime = new LoopAgentRuntime(client, dispatcher, store);
+        var runtime = new LoopAgentRuntime(client, dispatcher, new FixedStoreAccessor(store));
 
         var events = await CollectAsync(runtime, "Read /tmp/a.txt using the read_file tool.");
 
@@ -53,7 +53,7 @@ public static class StoreBarrierChecks
         var tool = new FakeTool("read_file", ["path"]);
         var dispatcher = new ToolDispatcher();
         dispatcher.Register(tool);
-        var runtime = new LoopAgentRuntime(client, dispatcher, store);
+        var runtime = new LoopAgentRuntime(client, dispatcher, new FixedStoreAccessor(store));
 
         var events = await CollectAsync(runtime, "Read /tmp/a.txt using the read_file tool.");
 
@@ -76,7 +76,7 @@ public static class StoreBarrierChecks
                 var tool = new FakeTool("read_file", ["path"]);
                 var dispatcher = new ToolDispatcher();
                 dispatcher.Register(tool);
-                var runtime = new LoopAgentRuntime(client, dispatcher, store);
+                var runtime = new LoopAgentRuntime(client, dispatcher, new FixedStoreAccessor(store));
                 await CollectAsync(runtime, "Read /tmp/a.txt using the read_file tool.");
             }
 

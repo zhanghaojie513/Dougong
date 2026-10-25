@@ -35,6 +35,24 @@ public sealed class ToolDispatcher : IToolDispatcher
         TimeSpan? approvalValidity = null,
         WorkspacePathGuard? pathGuard = null,
         IAgentStore? store = null)
+        : this(approver, gate, sessionId, turnId, workspace, approvalValidity, pathGuard,
+              store is null ? null : new FixedStoreAccessor(store))
+    {
+    }
+
+    /// <summary>
+    /// 用访问点建立 dispatcher。<b>推荐用法</b>：访问点可以每次取到当前有效的存储，
+    /// 而裸实例会被固定下来——替换存储后旧实例仍会被使用。
+    /// </summary>
+    public ToolDispatcher(
+        IToolApprover? approver,
+        ToolResourceGate? gate,
+        string sessionId,
+        string turnId,
+        string workspace,
+        TimeSpan? approvalValidity,
+        WorkspacePathGuard? pathGuard,
+        IStoreAccessor? storeAccessor)
     {
         _approver = approver;
         _gate = gate;
@@ -43,10 +61,12 @@ public sealed class ToolDispatcher : IToolDispatcher
         _workspace = workspace;
         _approvalValidity = approvalValidity ?? TimeSpan.FromMinutes(5);
         _pathGuard = pathGuard;
-        _store = store;
+        _storeAccessor = storeAccessor;
     }
 
-    private readonly IAgentStore? _store;
+    // 存的是"怎么取存储"，不是存储本身。裸实例在这里不可表达，
+    // 因此替换之后不会出现"dispatcher 还拿着旧 store"的路径。
+    private readonly IStoreAccessor? _storeAccessor;
 
     private readonly Dictionary<string, Registration> _tools = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Registration> _aliases = new(StringComparer.Ordinal);
@@ -370,7 +390,7 @@ public sealed class ToolDispatcher : IToolDispatcher
         ApprovalBinding binding,
         CancellationToken cancellationToken)
     {
-        if (_store is null) return null;
+        if (_storeAccessor is null) return null;
 
         var record = new ApprovalRecord(
             invocation.InvocationId,
@@ -384,7 +404,7 @@ public sealed class ToolDispatcher : IToolDispatcher
 
         try
         {
-            await _store.CommitAsync(
+            await _storeAccessor.CommitAsync(
                 new StoreRecord(0, StoreRecordKind.ApprovalDecision, record.ToJson()),
                 cancellationToken).ConfigureAwait(false);
             return null;

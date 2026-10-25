@@ -80,7 +80,11 @@ public sealed class SessionComposition
     /// 工具集是「最小可信集 + 显式开启」：文件读写默认有，shell 与 MCP 需要显式配置。
     /// 这一点两个入口必须一致，否则会出现"CLI 能做但桌面端不能做"的困惑。
     /// </remarks>
-    public IToolDispatcher CreateDispatcher(IAgentStore? store) => CreateDispatcher(_approver, store);
+    public IToolDispatcher CreateDispatcher(IAgentStore? store) =>
+        CreateDispatcher(_approver, store is null ? null : new FixedStoreAccessor(store));
+
+    /// <summary>用访问点建立 dispatcher：内核路径下传入，使替换后自动取新实现。</summary>
+    public IToolDispatcher CreateDispatcher(IToolApprover approver, IStoreAccessor? store)
 
     /// <summary>
     /// 用指定的审批器建立 dispatcher。
@@ -89,7 +93,6 @@ public sealed class SessionComposition
     /// 审批器。内核接线时传入的是**由内核解析得到的适配器**，
     /// 而不是构造本对象时那个实例——否则审批器又成了绕开内核的裸引用。
     /// </param>
-    public IToolDispatcher CreateDispatcher(IToolApprover approver, IAgentStore? store)
     {
         ArgumentNullException.ThrowIfNull(approver);
 
@@ -119,7 +122,13 @@ public sealed class SessionComposition
     /// 避免为摘要单独引入一个 provider 配置。
     /// </remarks>
     public LoopAgentRuntime CreateRuntime(
-        IToolDispatcher dispatcher, IAgentStore? store, UsageLedger? ledger = null)
+        IToolDispatcher dispatcher, IAgentStore? store, UsageLedger? ledger = null) =>
+        CreateRuntime(
+            dispatcher, store is null ? null : new FixedStoreAccessor(store), ledger);
+
+    /// <summary>用访问点建立运行时；语义同 <see cref="CreateDispatcher(IToolApprover, IStoreAccessor?)"/>。</summary>
+    public LoopAgentRuntime CreateRuntime(
+        IToolDispatcher dispatcher, IStoreAccessor? store, UsageLedger? ledger = null)
     {
         IChatClient effective = ledger is null
             ? _client

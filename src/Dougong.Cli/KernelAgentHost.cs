@@ -53,8 +53,8 @@ public sealed class KernelAgentHost : IAsyncDisposable
     /// </param>
     public static async Task<KernelAgentHost> CreateAsync(
         IAgentStore? store,
-        Func<IToolApprover, IAgentStore?, CancellationToken, Task<IToolDispatcher>> createDispatcher,
-        Func<IToolDispatcher, IAgentStore?, IAgentRuntime> createRuntime,
+        Func<IToolApprover, IStoreAccessor?, CancellationToken, Task<IToolDispatcher>> createDispatcher,
+        Func<IToolDispatcher, IStoreAccessor?, IAgentRuntime> createRuntime,
         IToolApprover approver,
         CancellationToken cancellationToken = default)
     {
@@ -190,7 +190,7 @@ public sealed class KernelAgentHost : IAsyncDisposable
     /// 否则审批器又变成裸引用，代次校验对它失效。
     /// </summary>
     private sealed class ToolPlugin(
-        Func<IToolApprover, IAgentStore?, CancellationToken, Task<IToolDispatcher>> factory,
+        Func<IToolApprover, IStoreAccessor?, CancellationToken, Task<IToolDispatcher>> factory,
         DougongKernel kernel) : IPlugin
     {
         public PluginManifest Manifest { get; } = PluginManifest.CreateWithDependencies(
@@ -204,12 +204,10 @@ public sealed class KernelAgentHost : IAsyncDisposable
             var reference = kernel.Resolver.Resolve<IToolApprover>()
                 ?? throw new InvalidOperationException("dispatcher 插件解析不到 IToolApprover。");
 
-            // store 同样必须经内核解析，不能由宿主传裸实例进来——
-            // 否则"内核承载存储"只说了一半：服务注册了，宿主自己也留着一份。
+            // 传 accessor 而不是解析出的实例：accessor 每次提交都会经内核重新取当前实例，
+            // 因此替换之后不会继续用旧 store。传裸实例会把"当前"冻结在激活这一刻。
             var store = kernel.Resolver.Resolve<IAgentStore>() is { } storeRef
-                ? await storeRef.InvokeAsync(
-                    (s, _) => ValueTask.FromResult<IAgentStore?>(s), cancellationToken)
-                    .ConfigureAwait(false)
+                ? new KernelStoreAccessor(storeRef)
                 : null;
 
             // 适配器只持有服务引用，不持有实例；每次审批都走新的租约。
@@ -226,7 +224,7 @@ public sealed class KernelAgentHost : IAsyncDisposable
     /// 运行时插件。<b>它必须解析 dispatcher，不能自己 new</b>，理由同审批器。
     /// </summary>
     private sealed class RuntimePlugin(
-        Func<IToolDispatcher, IAgentStore?, IAgentRuntime> factory,
+        Func<IToolDispatcher, IStoreAccessor?, IAgentRuntime> factory,
         DougongKernel kernel) : IPlugin
     {
         public PluginManifest Manifest { get; } = PluginManifest.CreateWithDependencies(
@@ -249,9 +247,7 @@ public sealed class KernelAgentHost : IAsyncDisposable
 
             // store 对运行时是可选依赖：没有持久化时传 null。
             var store = kernel.Resolver.Resolve<IAgentStore>() is { } storeRef
-                ? await storeRef.InvokeAsync(
-                    (s, _) => ValueTask.FromResult<IAgentStore?>(s), cancellationToken)
-                    .ConfigureAwait(false)
+                ? new KernelStoreAccessor(storeRef)
                 : null;
 
             context.Services.Register<IAgentRuntime>(
@@ -260,6 +256,23 @@ public sealed class KernelAgentHost : IAsyncDisposable
     }
 
     // ── 适配器：把服务引用包装成裸接口，避免宿主缓存实现实例 ─────────
+
+    /// <summary>把内核服务引用适配成 <see cref="IStoreAccessor"/>。</summary>
+    /// <remarks>
+    /// 每次提交都经 <c>InvokeAsync</c> 重新取实例并计入在途，因此：
+    /// ① 替换存储后自动用新实例；② 停用时会等这次提交完成再清理。
+    /// </remarks>
+    private sealed class KernelStoreAccessor(IServiceReference<IAgentStore> reference)
+        : IStoreAccessor
+    {
+        public async ValueTask CommitAsync(
+            StoreRecord record, CancellationToken cancellationToken = default)
+        {
+            await reference.InvokeAsync(
+                (store, token) => store.CommitAsync(record, token),
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>
     /// 把 <see cref="IServiceReference{IToolApprover}"/> 适配成 <see cref="IToolApprover"/>。
