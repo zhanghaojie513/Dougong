@@ -14,8 +14,10 @@
 | 5.3 注入器 + 快照语义 | 完成 | `revocation-takes-effect-next-turn`、`injection-is-observable-and-disableable` |
 | 5.4 CLI 展示与开关 | 完成 | `-- memory-cli` 4 项（真实进程） |
 | 5.5 复盘生成（假模型） | **未做** | 见下 |
+| 验收 1（留出任务对照） | **装置就绪，未运行** | `-- l1-harness` 6 项 + 6 条反证；`-- l1-effect` 待凭证，见 [skill-l1-acceptance-1.md](skill-l1-acceptance-1.md) |
 
-**反证**：`scripts/skill-l1-counterproofs.sh` 共 10 条，全部"改坏 → 如期变红"。
+**反证**：`scripts/skill-l1-counterproofs.sh` 共 10 条，全部"改坏 → 如期变红"；
+`scripts/l1-harness-counterproofs.sh` 共 6 条，验证效果测量装置本身。
 接入方式：`RUN_COUNTERPROOFS=1 bash scripts/all-checks.sh`（默认不跑，约 10 分钟）。
 
 ### 实现中发现并修掉的三个真实缺陷
@@ -196,7 +198,7 @@ public interface IMemoryInjector
 
 | 不做 | 理由 |
 |---|---|
-| **验收 1（留出任务对比）** | 需要真实模型 + 独立评测集 + 预先记录的指标与容许退化范围。这是独立的一片工作，不是"顺手能加"。**没有它就不能宣称"记忆有效"——只能说"记忆管道可用且安全"。** |
+| ~~**验收 1（留出任务对比）**~~ | **2026-10-26 已就绪装置**：见 [skill-l1-acceptance-1.md](skill-l1-acceptance-1.md)。判据、阈值、对照组、反证都已落地；**缺的只是一次真实模型运行**（需凭证与费用） |
 | L2 行为规则 | 需要"明确差异与评测结果"才能批准，同样依赖评测集 |
 | L3 技能内容（SKILL.md + 脚本） | 需要审批绑定不可变版本、加载前复核、脚本逐调用过权限管线——是比 L1 大得多的一片 |
 | L4 权限配置 | **明令禁止**由进化产物自动更改 |
