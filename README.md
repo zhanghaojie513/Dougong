@@ -37,7 +37,7 @@ Dougong 目前处于 **实验性 Alpha 阶段**，目标框架为 `net10.0`。
 
 - 6 个产品工程：`Kernel`、`Agent`、`Ai`、`Mcp`、`Acp`、`Cli`
 - 1 个内核测试工程
-- 3 个样例工程：基础插件、契约插件、共享契约
+- 5 个样例工程：基础插件、契约版本、共享契约、最小 Agent 循环、ACP+MCP
 - `Dougong.Telemetry` 尚未创建
 - `Dougong.Agent` 已实现循环、提交屏障、审批、资源协调、文件版本复核、上下文压缩与 shell 工具
 - `Dougong.Ai` 已实现三种线协议连接器与 `ChatClientFactory`
@@ -138,6 +138,14 @@ dotnet pack Dougong.slnx -c Release --output ./artifacts/packages
 ```
 
 当前 API 仍处于实验阶段。使用 `Dougong.Kernel` 前，请先阅读状态板和架构文档，并以实际 API 与测试结果为准。
+
+## 写第一个插件
+
+看 [docs/plugin-author-guide.md](docs/plugin-author-guide.md)：从工程文件到最小插件类，
+含五个最容易犯的错与失败定位方法。
+
+可运行的例子在 [samples/](samples/)——其中 `m1-minimal-agent` 与 `m2-acp-mcp`
+**不需要 API Key** 就能跑完整个循环。
 
 ## 文档
 

@@ -11,4 +11,6 @@
   <Project Path="samples/Dougong.Sample.Shared/Dougong.Sample.Shared.csproj" />
   <Project Path="samples/Dougong.Sample.Isolated/Dougong.Sample.Isolated.csproj" />
   <Project Path="samples/Dougong.Sample.IsolatedPlugin/Dougong.Sample.IsolatedPlugin.csproj" />
+  <Project Path="samples/m1-minimal-agent/m1-minimal-agent.csproj" />
+  <Project Path="samples/m2-acp-mcp/m2-acp-mcp.csproj" />
 </Solution>

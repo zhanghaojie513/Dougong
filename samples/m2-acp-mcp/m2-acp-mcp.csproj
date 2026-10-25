@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <Description>M2 样例：MCP server 桥接成工具 + 用 ACP 协议驱动一轮对话。</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dougong.Agent\Dougong.Agent.csproj" />
+    <ProjectReference Include="..\..\src\Dougong.Acp\Dougong.Acp.csproj" />
+    <ProjectReference Include="..\..\src\Dougong.Mcp\Dougong.Mcp.csproj" />
+  </ItemGroup>
+
+</Project>
