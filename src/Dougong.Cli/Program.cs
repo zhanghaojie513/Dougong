@@ -164,6 +164,15 @@ public static class Program
 
         await using var store = await JsonlAgentStore.OpenAsync(sessionPath, sessionId)
             .ConfigureAwait(false);
+
+        // 如实展示持久化等级：这是 IAgentStore 契约的一部分，
+        // 此前声明了却没有任何消费者——用户看不到自己在什么保证之下。
+        Console.WriteLine(
+            $"durability={DurabilityText.Tag(store.Durability)}（{DurabilityText.Describe(store.Durability)}）");
+        if (DurabilityText.NeedsWarning(store.Durability))
+        {
+            Console.WriteLine("  ⚠ 该存储不保留会话：退出后无法恢复。");
+        }
         // 用量记账：装饰器由共用装配包在连接器外面，不改变任何调用语义。
         // 账目随会话保存，`/usage` 可查；这里不猜单价，只汇总 token 与调用次数。
         var ledger = new UsageLedger();
@@ -547,7 +556,10 @@ public static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[acp] 会话存储打开失败，改用无持久化：{ex.Message}");
+            // 降级必须说清代价：不是"改用另一个选项"，而是"这次会话不会被保存"。
+            Console.Error.WriteLine(
+                "[acp] 会话存储打开失败，本次会话**不会持久化**（进程退出即丢失）："
+                + ex.Message);
             return null;
         }
     }
@@ -562,7 +574,10 @@ public static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[acp] 会话存储打开失败，改用无持久化：{ex.Message}");
+            // 降级必须说清代价：不是"改用另一个选项"，而是"这次会话不会被保存"。
+            Console.Error.WriteLine(
+                "[acp] 会话存储打开失败，本次会话**不会持久化**（进程退出即丢失）："
+                + ex.Message);
             return null;
         }
     }

@@ -35,6 +35,7 @@ public static class KernelWiringChecks
         failures += await CheckAsync("kernel-runtime-forwards-events-in-order", EventOrderAsync);
         failures += Check("host-does-not-cache-store-instance", HostDoesNotCacheStore);
         failures += Check("acp-composition-uses-kernel", AcpUsesKernel);
+        failures += Check("durability-levels-are-distinguishable", DurabilityLevels);
 
         Console.WriteLine(failures == 0
             ? "KERNEL-WIRING: ALL PASS"
@@ -398,6 +399,41 @@ public static class KernelWiringChecks
         return calls.Any(c => c.Contains("DougongKernel.RegisterAsync", StringComparison.Ordinal))
             ? null
             : "Dougong.Cli 未调用 DougongKernel.RegisterAsync：入口未接内核";
+    }
+
+    /// <summary>
+    /// 三种持久化等级的描述必须互相区分，且都不能含糊。
+    /// </summary>
+    /// <remarks>
+    /// 这条防的是"展示了一行字但没信息量"——例如三个等级都输出"持久化已启用"，
+    /// 用户仍然不知道自己的会话能不能扛住断电。
+    /// <para>
+    /// 判据：① 三者文本互不相同；② 仅内存那条必须含"丢失"字样；
+    /// ③ 进程崩溃那条必须明确"不保证断电"。
+    /// </para>
+    /// </remarks>
+    private static string? DurabilityLevels()
+    {
+        var type = typeof(Dougong.Cli.DurabilityText);
+        var describe = type.GetMethod("Describe");
+        if (describe is null) return "DurabilityText.Describe 缺失";
+
+        string Text(StoreDurability d) => (string)describe.Invoke(null, [d])!;
+
+        var memory = Text(StoreDurability.ProcessMemory);
+        var crash = Text(StoreDurability.SurvivesProcessCrash);
+        var power = Text(StoreDurability.SurvivesPowerLoss);
+
+        if (memory == crash || crash == power || memory == power)
+            return $"等级描述未区分：'{memory}' / '{crash}' / '{power}'";
+
+        if (!memory.Contains("丢失", StringComparison.Ordinal))
+            return $"仅内存实现未说明会丢失：{memory}";
+
+        if (!crash.Contains("不保证断电", StringComparison.Ordinal))
+            return $"进程崩溃级未明确「不保证断电」：{crash}";
+
+        return null;
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────

@@ -25,6 +25,7 @@ public static class KernelProcessChecks
         failures += await CheckAsync("acp-path-uses-kernel", AcpKernelAsync);
         failures += await CheckAsync("default-path-uses-kernel", DefaultUsesKernelAsync);
         failures += await CheckAsync("opt-out-restores-direct-path", OptOutAsync);
+        failures += await CheckAsync("durability-is-reported-to-user", DurabilityReportedAsync);
 
         Console.WriteLine(failures == 0
             ? "KERNEL-PROCESS: ALL PASS"
@@ -127,6 +128,31 @@ public static class KernelProcessChecks
 
         // 没打印任何标记也算失败：无法确认走的是哪条路径。
         return $"DOUGONG_KERNEL=0 时未报告路径标记；输出：{Truncate(agent.Transcript, 600)}";
+    }
+
+    /// <summary>
+    /// 存储的持久化等级必须被如实展示给用户（G7）。
+    /// </summary>
+    /// <remarks>
+    /// 这条针对一个真问题：`StoreDurability` 在**产品代码里零消费**——
+    /// 实现声明了等级，却没人读、没人展示。声明没人看就等于没声明，
+    /// 而 goal.md P3 明确要求"不能把进程崩溃存活说成断电安全"。
+    /// <para>
+    /// 断言的是启动横幅里出现机器可读标记，不是具体中文措辞——
+    /// 控制台编码在不同平台不一致，用 ASCII 标记让检查不依赖编码。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> DurabilityReportedAsync()
+    {
+        using var provider = new StubProvider();
+        await using var agent = StartAgent(provider.BaseUrl, kernel: null, acp: false);
+
+        var seen = await agent.WaitForOutputAsync(
+            "durability=process-crash", TimeSpan.FromSeconds(40));
+
+        return seen
+            ? null
+            : $"启动横幅未展示持久化等级。输出：{Truncate(agent.Transcript, 800)}";
     }
 
     /// <summary>
