@@ -18,10 +18,47 @@ namespace Dougong.Agent;
 /// </remarks>
 public sealed class ToolResourceGate : IDisposable
 {
+    /// <summary>
+    /// 进程内共享的工作区锁表。
+    /// </summary>
+    /// <remarks>
+    /// **为什么必须是进程级**：<c>architecture.md</c> §4.4 要求同一工作区的
+    /// 串行/独占工具互斥。而每个会话都会 <c>new ToolResourceGate()</c>
+    /// （CLI REPL 一次、ACP 每个 session 一次）。若锁表是实例字段，
+    /// 同一工作区的两个会话各持一把互不相干的锁——**跨会话互斥不成立**（G9）。
+    /// <para>
+    /// 用静态表而不是让宿主注入共享表：宿主很容易忘记注入，而忘记的后果
+    /// （两个会话同时写同一文件）静默且不可察觉。默认正确比配置正确可靠。
+    /// </para>
+    /// <para>
+    /// 锁按工作区**规范化路径**分键，避免 <c>./ws</c> 与 <c>ws</c> 被当成两个工作区。
+    /// </para>
+    /// </remarks>
+    private static readonly Dictionary<string, (SemaphoreSlim Gate, int RefCount)> SharedWorkspaceLocks =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly object SharedSync = new();
+
     private readonly object _sync = new();
     private readonly SemaphoreSlim _serial = new(1, 1);
-    private readonly Dictionary<string, SemaphoreSlim> _workspaceLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly bool _isolated;
+    private readonly Dictionary<string, SemaphoreSlim> _privateLocks = new(StringComparer.OrdinalIgnoreCase);
+
+    // 本实例在共享表里持有引用的工作区键，Dispose 时归还。
+    private readonly List<string> _sharedKeys = [];
     private bool _disposed;
+
+    /// <summary>
+    /// 建立独立的 gate：锁表私有，不与其他 gate 共享工作区互斥。
+    /// </summary>
+    /// <remarks>
+    /// 仅用于测试隔离。生产宿主应使用无参构造（共享进程级锁表），
+    /// 否则跨会话互斥不成立（G9）。
+    /// </remarks>
+    public ToolResourceGate(bool isolated = false)
+    {
+        _isolated = isolated;
+    }
 
     /// <summary>
     /// 取得执行权。<see cref="ToolConcurrency.Serial"/> 先取全局串行权、再取所属工作区的执行权；
@@ -39,14 +76,40 @@ public sealed class ToolResourceGate : IDisposable
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
 
+        // 规范化工作区键：./ws 与 ws 是同一个工作区，不能各给一把锁。
+        var key = NormalizeWorkspace(workspace);
+
         SemaphoreSlim gate;
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (!_workspaceLocks.TryGetValue(workspace, out gate!))
+            if (_isolated)
             {
-                gate = new SemaphoreSlim(1, 1);
-                _workspaceLocks[workspace] = gate;
+                if (!_privateLocks.TryGetValue(key, out gate!))
+                {
+                    gate = new SemaphoreSlim(1, 1);
+                    _privateLocks[key] = gate;
+                }
+            }
+            else
+            {
+                // 共享表要在自己的同步区里访问：多个 gate 实例会并发进来。
+                // 引用计数是为了让表能回收：工作区用一次就留一条，长期运行的宿主会泄漏。
+                lock (SharedSync)
+                {
+                    if (SharedWorkspaceLocks.TryGetValue(key, out var entry))
+                    {
+                        gate = entry.Gate;
+                        SharedWorkspaceLocks[key] = (entry.Gate, entry.RefCount + 1);
+                    }
+                    else
+                    {
+                        gate = new SemaphoreSlim(1, 1);
+                        SharedWorkspaceLocks[key] = (gate, 1);
+                    }
+
+                    _sharedKeys.Add(key);
+                }
             }
         }
 
@@ -70,16 +133,49 @@ public sealed class ToolResourceGate : IDisposable
         return new Releaser(gate);
     }
 
+    /// <summary>
+    /// 释放本实例的资源。
+    /// </summary>
+    /// <remarks>
+    /// **不清理共享锁表**：那是进程级资源，一个会话结束不代表其他会话不用它了。
+    /// 清理它会让仍在运行的会话拿到已释放的信号量。
+    /// 私有表（隔离模式）才随实例释放。
+    /// </remarks>
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         _serial.Dispose();
+
         lock (_sync)
         {
-            foreach (var gate in _workspaceLocks.Values) gate.Dispose();
-            _workspaceLocks.Clear();
+            if (_isolated)
+            {
+                foreach (var gate in _privateLocks.Values) gate.Dispose();
+                _privateLocks.Clear();
+                return;
+            }
+
+            // 归还引用：计数归零才从共享表移除。
+            // 注意**不 Dispose 信号量**——仍可能有其他实例在用同一个 gate 对象。
+            lock (SharedSync)
+            {
+                foreach (var key in _sharedKeys)
+                {
+                    if (!SharedWorkspaceLocks.TryGetValue(key, out var entry)) continue;
+                    if (entry.RefCount <= 1) SharedWorkspaceLocks.Remove(key);
+                    else SharedWorkspaceLocks[key] = (entry.Gate, entry.RefCount - 1);
+                }
+
+                _sharedKeys.Clear();
+            }
         }
+    }
+
+    private static string NormalizeWorkspace(string workspace)
+    {
+        try { return Path.GetFullPath(workspace); }
+        catch (Exception) { return workspace; }
     }
 
     /// <summary>
