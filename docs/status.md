@@ -422,7 +422,7 @@
 
 | 性质 | 状态 | 依据 |
 |---|---|---|
-| P1 可组合 | **达成（首项可替换能力）** | **默认即经内核**（REPL 与 ACP），`DOUGONG_KERNEL=0` 可退回对照。存储/审批器/dispatcher/运行时都不再被编排者裸持有。可替换性用真实现验证（`InMemoryAgentStore` 对齐 JSONL 语义）。`-- kernel-wiring` 9 + `-- kernel-path` 3 + `-- kernel-process` 4 + `-- bare-hold` 12 处全说明；共 7 条反证。剩余：第三方插件生态属 M3 |
+| P1 可组合 | **达成（四种可替换能力已验证）** | **默认即经内核**（REPL 与 ACP），`DOUGONG_KERNEL=0` 可退回对照。存储/审批器/dispatcher/运行时都不再被编排者裸持有。可替换性用真实现验证（`InMemoryAgentStore` 对齐 JSONL 语义）。`-- kernel-wiring` 9 + `-- kernel-path` 3 + `-- kernel-process` 4 + `-- bare-hold` 12 处全说明；共 7 条反证。剩余：第三方插件生态属 M3 |
 | P2 完整生命周期 | **内核内达成，产品路径未验证** | 177 项测试 + 20 项对抗探针，全部针对内核自身；无一项验证"插件在真实会话中被停用/替换后会话仍可继续"。断电级持久化未声明 |
 | P3 故障可解释 | 基本达成 | 四个提交屏障 + 审批记录 + 未知结果对账；缺工具幂等键 |
 | P4 真实可用 | **基本达成** | 3 协议 + 真实编码任务 + 压缩 + 恢复 + MCP/ACP 都验证过；协议内方言差异已走 `WireCompat`（G12/G13 已修）。剩余：更多真实 provider 的方言实测 |
@@ -478,6 +478,18 @@ Agent 运行实现均由内核承载，组合根解析 `IAgentRuntime`」，这�
   如实记录两项未做：MCP 断线重连（重试会重复副作用）、
   ACP plan/elicitation（运行时没有数据源，做了是空壳）。
   （后项已于 2026-10-25 补齐 elicitation，见下。）
+
+- 2026-10-25：补四种能力的替换实测（`-- replaceability` 4 项）。
+  此前只有存储有"换一种实现、不改内核、行为仍通过"的验收；`IChatClient`、
+  `IToolApprover`、`IToolDispatcher`、`IAgentRuntime` 虽然都是接口，
+  却**没有一条测试证明"换了还成立"**——"接口存在"和"可替换被证明"是两件事。
+  每种都用两份可观察行为不同的实现跑同一套断言。
+  过程中发现自己的检查有缺陷：`dispatcher-is-replaceable` 初版把替代实现传给
+  `LoopAgentRuntime` 的裸 `IToolDispatcher` 重载，被内部包成 `FixedDispatcherAccessor`，
+  于是"替换"实际发生在包装层之外，反证无法命中。改用 `IDispatcherAccessor` 重载后
+  反证才生效。这类缺陷只有靠反证才能发现。
+  另有一条期望写错（实现 B 两轮都有文本，累计是 "workdone" 不是 "done"）。
+  178 项测试 + 32 套件全绿。
 
 - 2026-10-25：让 `StoreDurability` 真正被消费（G7 的声明部分）。
   核实发现它在**产品代码里零消费**：只有定义处赋值和一处测试包装器转发，

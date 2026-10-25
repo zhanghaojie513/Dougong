@@ -108,6 +108,9 @@ public static class Program
         if (args.FirstOrDefault() == "acp-plan")
             return await AcpPlanChecks.RunAsync();
 
+        if (args.FirstOrDefault() == "replaceability")
+            return await ReplaceabilityChecks.RunAsync();
+
         // 供端到端测试使用的最小 stdio MCP server。
         if (args.FirstOrDefault() == "mcp-server")
             return await McpTestServer.RunAsync();
