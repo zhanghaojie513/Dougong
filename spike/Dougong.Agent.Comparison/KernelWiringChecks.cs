@@ -33,6 +33,8 @@ public static class KernelWiringChecks
         failures += await CheckAsync("blocked-consumer-recovers-when-provider-returns", BlockedRecoversAsync);
         failures += await CheckAsync("abandoned-enumeration-releases-lease", AbandonedEnumerationAsync);
         failures += await CheckAsync("kernel-runtime-forwards-events-in-order", EventOrderAsync);
+        failures += Check("host-does-not-cache-store-instance", HostDoesNotCacheStore);
+        failures += Check("acp-composition-uses-kernel", AcpUsesKernel);
 
         Console.WriteLine(failures == 0
             ? "KERNEL-WIRING: ALL PASS"
@@ -126,33 +128,72 @@ public static class KernelWiringChecks
     {
         await using var kernel = new DougongKernel();
 
-        var first = new RecordingStore("first");
-        var handle = await kernel.RegisterAsync(() => new StorePlugin("dougong.store", first));
+        // 用**真实的第二种实现**（语义对齐 JsonlAgentStore），不是只有计数器的假 store。
+        // P1 要回答的是"把 JSONL 换成另一种存储，产品还能跑吗"，
+        // 而不是"服务键能否换提供方"——后者是必要条件，不是充分条件。
+        var memory = new InMemoryAgentStore("first");
+        var handle = await kernel.RegisterAsync(() => new StorePlugin("dougong.store", memory));
         await kernel.ActivateAsync(handle.Id);
 
-        // 第一次解析并使用。
+        // 走真实存储语义：序号由存储分配，调用方传入的值应被忽略。
         var committed = await InvokeStoreAsync(kernel, (store, ct) => store.CommitAsync(
-            new StoreRecord(1, StoreRecordKind.UserInput, EmptyJson()), ct));
+            new StoreRecord(999, StoreRecordKind.UserInput, Payload("hello")), ct));
         if (committed is not null) return committed;
-        if (first.CommitCount != 1) return $"第一个实现应提交 1 次，实际 {first.CommitCount}";
+        if (memory.Count != 1) return $"第一个实现应提交 1 条，实际 {memory.Count}";
 
-        // 替换：停用旧插件，换一个 Id 注册新实现——同一个 IAgentStore 服务键，
-        // 不同提供方。内核代码一行不改，这才是"可替换"的含义。
-        // 注意：静态注册的插件不能 Unload（只有 LoadAsync 加载的动态插件可以），
-        // 同名重复登记也会被拒绝——这两条都是正确的保护，不是缺陷。
+        // 读回：序号必须是存储分配的 1，而不是调用方传的 999。
+        var read = await ReadAllAsync(kernel);
+        if (read.Count != 1) return $"读回应为 1 条，实际 {read.Count}";
+        if (read[0].Sequence != 1)
+            return $"序号应由存储分配（期望 1），实际 {read[0].Sequence}";
+
+        // 提交失败不得留下半条。
+        memory.FailNextCommit = true;
+        var failed = await InvokeStoreAsync(kernel, (store, ct) => store.CommitAsync(
+            new StoreRecord(0, StoreRecordKind.ModelResponse, Payload("boom")), ct));
+        if (failed is null) return "模拟失败没有传播成异常：提交失败必须可见";
+        if (memory.Count != 1) return $"失败后应仍是 1 条，实际 {memory.Count}";
+
+        // 替换成另一种实现：同一个服务键、不同提供方，内核代码一行不改。
         await kernel.DeactivateAsync(handle.Id);
-        var second = new RecordingStore("second");
+        var second = new InMemoryAgentStore("second");
         var handle2 = await kernel.RegisterAsync(() => new StorePlugin("dougong.store.v2", second));
         await kernel.ActivateAsync(handle2.Id);
 
         committed = await InvokeStoreAsync(kernel, (store, ct) => store.CommitAsync(
-            new StoreRecord(2, StoreRecordKind.UserInput, EmptyJson()), ct));
+            new StoreRecord(0, StoreRecordKind.UserInput, Payload("switched")), ct));
         if (committed is not null) return $"替换后调用失败：{committed}";
 
-        if (second.CommitCount != 1) return $"第二个实现应提交 1 次，实际 {second.CommitCount}";
-        if (first.CommitCount != 1) return "旧实现被再次调用：替换没有真正切走";
+        if (second.Count != 1) return $"第二个实现应提交 1 条，实际 {second.Count}";
+        if (memory.Count != 1) return "旧实现被再次调用：替换没有真正切走";
+
+        // 新实现读到的是自己的内容，不是旧实现的历史——证明真的换了实例。
+        var after = await ReadAllAsync(kernel);
+        if (after.Count != 1) return $"替换后读回应为 1 条，实际 {after.Count}";
+        if (after[0].Payload.GetProperty("text").GetString() != "switched")
+            return "替换后读到的不是新实现的内容";
 
         return null;
+    }
+
+    private static System.Text.Json.JsonElement Payload(string text)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(new { text }));
+        return document.RootElement.Clone();
+    }
+
+    private static async Task<List<StoreRecord>> ReadAllAsync(DougongKernel kernel)
+    {
+        var reference = kernel.Resolver.Resolve<IAgentStore>()
+            ?? throw new InvalidOperationException("解析不到 IAgentStore");
+
+        return await reference.InvokeAsync(async (store, ct) =>
+        {
+            var list = new List<StoreRecord>();
+            await foreach (var record in store.ReadCommittedAsync(ct)) list.Add(record);
+            return list;
+        });
     }
 
     /// <summary>停用之后，旧引用必须拒绝调用——这是"不缓存实现对象"的证据。</summary>
@@ -298,6 +339,65 @@ public static class KernelWiringChecks
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// 宿主不得长期缓存可替换实现（architecture.md §3.3）。
+    /// </summary>
+    /// <remarks>
+    /// 这条针对一个真实漏洞：`SessionComposition` 把 `IAgentStore` 存在字段里，
+    /// 并在 `CreateDispatcher`/`CreateRuntime` 时直接传裸实例。于是"内核承载存储"
+    /// 只对了一半——服务被注册进内核了，宿主自己也留着一份，替换后旧实例仍会被用。
+    /// <para>
+    /// 断言方式：读 <c>SessionComposition</c> 的实例字段，只要存在
+    /// <see cref="IAgentStore"/> 类型（或其后备字段）就判失败。这是结构断言，
+    /// 不依赖运行时行为——因为"宿主还留着引用"这件事本身就是问题。
+    /// </para>
+    /// </remarks>
+    private static string? HostDoesNotCacheStore()
+    {
+        var type = Type.GetType("Dougong.Cli.SessionComposition, Dougong.Cli");
+        if (type is null) return "找不到 SessionComposition（先构建 CLI）";
+
+        var cached = type.GetFields(
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            .Where(f => typeof(IAgentStore).IsAssignableFrom(f.FieldType))
+            .Select(f => f.Name)
+            .ToArray();
+
+        return cached.Length == 0
+            ? null
+            : $"SessionComposition 仍有 IAgentStore 实例字段：{string.Join(", ", cached)}；" +
+              "宿主长期缓存可替换实现，替换后旧实例仍会被使用";
+    }
+
+    /// <summary>
+    /// ACP 入口也必须经内核，否则内核只在一种入口上被验证过。
+    /// </summary>
+    /// <remarks>
+    /// 这条针对一个真实缺口：`AcpComposition.ComposeAsync` 此前直接
+    /// `new ToolDispatcher` / `new LoopAgentRuntime`，全程不碰内核。
+    /// 于是"内核接线"只在 REPL 入口成立，而 `-- parity` 套件存在的理由
+    /// 正是"两个入口能力必须一致"。
+    /// <para>
+    /// 断言方式：扫描 <c>AcpComposition.ComposeAsync</c> 所在程序集的
+    /// 成员引用里是否存在 <c>KernelAgentHost.CreateAsync</c>。用元数据而非源码文本，
+    /// 避免被注释误导。
+    /// </para>
+    /// </remarks>
+    private static string? AcpUsesKernel()
+    {
+        var path = ProductAssemblyPath("Dougong.Cli");
+        if (path is null) return "找不到 Dougong.Cli.dll（先构建产品工程）";
+
+        // 注意：CreateAsync 是 KernelAgentHost 的成员，但 KernelAgentHost 定义在
+        // Dougong.Cli 自己里，因此它不是"对 Dougong.Kernel 的引用"。
+        // 判据改成"存在对内核 RegisterAsync 的调用"——那才是真正的接线证据，
+        // 且 ACP 与 REPL 只要有一个走内核就会命中。
+        var calls = KernelMemberReferences(path);
+        return calls.Any(c => c.Contains("DougongKernel.RegisterAsync", StringComparison.Ordinal))
+            ? null
+            : "Dougong.Cli 未调用 DougongKernel.RegisterAsync：入口未接内核";
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────

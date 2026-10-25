@@ -173,7 +173,7 @@ public static class Program
             ? new AutoApproveApprover()
             : new ConsoleApprover();
         var composition = SessionComposition.FromEnvironment(
-            sessionId, workspace, ChatClientFactory.Create(config), store, approver);
+            sessionId, workspace, ChatClientFactory.Create(config), approver);
 
         // 内核接线（G14）：DOUGONG_KERNEL=1 时运行能力由内核解析，
         // 宿主不直接持有 dispatcher/runtime 实例。默认关闭，避免结构改动
@@ -191,11 +191,11 @@ public static class Program
             {
                 kernelHost = await KernelAgentHost.CreateAsync(
                     store,
-                    async (resolvedApprover, ct) =>
+                    async (resolvedApprover, resolvedStore, ct) =>
                     {
                         // dispatcher 在插件激活期内构造：MCP 工具注册属于它的构造，
                         // 不能被推到激活之后（届时服务快照已提交）。
-                        var built = composition.CreateDispatcher(resolvedApprover);
+                        var built = composition.CreateDispatcher(resolvedApprover, resolvedStore);
                         var (registries, clients) = await composition
                             .ConnectMcpAsync(built, Console.Out, ct)
                             .ConfigureAwait(false);
@@ -203,7 +203,8 @@ public static class Program
                         mcpClients = clients;
                         return built;
                     },
-                    resolvedDispatcher => composition.CreateRuntime(resolvedDispatcher, ledger),
+                    (resolvedDispatcher, resolvedStore) =>
+                        composition.CreateRuntime(resolvedDispatcher, resolvedStore, ledger),
                     approver).ConfigureAwait(false);
 
                 runtime = kernelHost.ResolveRuntime();
@@ -211,13 +212,13 @@ public static class Program
             }
             else
             {
-                var dispatcher = composition.CreateDispatcher();
+                var dispatcher = composition.CreateDispatcher(store);
                 var (registries, clients) = await composition
                     .ConnectMcpAsync(dispatcher, Console.Out)
                     .ConfigureAwait(false);
                 mcpRegistries = registries;
                 mcpClients = clients;
-                runtime = composition.CreateRuntime(dispatcher, ledger);
+                runtime = composition.CreateRuntime(dispatcher, store, ledger);
             }
         }
         catch (Exception ex) when (useKernel)
@@ -241,7 +242,7 @@ public static class Program
 
             if (input.StartsWith('/'))
             {
-                if (!HandleCommand(input, store, messages, sessionPath, ledger, sessionId))
+                if (!HandleCommand(input, messages, sessionPath, ledger, sessionId))
                 {
                     foreach (var registry in mcpRegistries) registry.Dispose();
                     foreach (var mcpClient in mcpClients) await mcpClient.DisposeAsync();
@@ -310,7 +311,7 @@ public static class Program
     }
 
     private static bool HandleCommand(
-        string input, IAgentStore store, List<AgentMessage> history, string sessionPath,
+        string input, List<AgentMessage> history, string sessionPath,
         UsageLedger ledger, string sessionId)
     {
         switch (input.Trim().ToLowerInvariant())
@@ -327,7 +328,7 @@ public static class Program
                 return true;
 
             case "/history":
-                Console.WriteLine($"  内存历史 {history.Count} 条；持久化记录见会话 {store.SessionId}。");
+                Console.WriteLine($"  内存历史 {history.Count} 条；持久化记录见会话 {sessionId}。");
                 return true;
 
             case "/where":

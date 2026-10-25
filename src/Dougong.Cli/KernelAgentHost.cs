@@ -53,8 +53,8 @@ public sealed class KernelAgentHost : IAsyncDisposable
     /// </param>
     public static async Task<KernelAgentHost> CreateAsync(
         IAgentStore? store,
-        Func<IToolApprover, CancellationToken, Task<IToolDispatcher>> createDispatcher,
-        Func<IToolDispatcher, IAgentRuntime> createRuntime,
+        Func<IToolApprover, IAgentStore?, CancellationToken, Task<IToolDispatcher>> createDispatcher,
+        Func<IToolDispatcher, IAgentStore?, IAgentRuntime> createRuntime,
         IToolApprover approver,
         CancellationToken cancellationToken = default)
     {
@@ -115,6 +115,26 @@ public sealed class KernelAgentHost : IAsyncDisposable
     public IServiceReference<IToolDispatcher>? ResolveToolReference() =>
         _kernel.Resolver.Resolve<IToolDispatcher>();
 
+    /// <summary>
+    /// 取一个只读视图：可派发，但注册面关闭。
+    /// </summary>
+    /// <remarks>
+    /// 给会话层做一致性检查与诊断用。<see cref="IToolDispatcher.Register"/> 会抛
+    /// <see cref="NotSupportedException"/>——注册属于插件激活期，运行期注册会绕过
+    /// 内核的生命周期协调。
+    /// </remarks>
+    public IToolDispatcher? ResolveDispatcherView()
+    {
+        var reference = _kernel.Resolver.Resolve<IToolDispatcher>();
+        if (reference is null) return null;
+
+        var tools = reference.InvokeAsync(
+            (dispatcher, _) => ValueTask.FromResult(dispatcher.Tools)).AsTask()
+            .GetAwaiter().GetResult();
+
+        return new LeasedDispatcher(reference, tools);
+    }
+
     /// <summary>解析存储的服务引用。</summary>
     public IServiceReference<IAgentStore>? ResolveStoreReference() =>
         _kernel.Resolver.Resolve<IAgentStore>();
@@ -170,7 +190,7 @@ public sealed class KernelAgentHost : IAsyncDisposable
     /// 否则审批器又变成裸引用，代次校验对它失效。
     /// </summary>
     private sealed class ToolPlugin(
-        Func<IToolApprover, CancellationToken, Task<IToolDispatcher>> factory,
+        Func<IToolApprover, IAgentStore?, CancellationToken, Task<IToolDispatcher>> factory,
         DougongKernel kernel) : IPlugin
     {
         public PluginManifest Manifest { get; } = PluginManifest.CreateWithDependencies(
@@ -184,12 +204,20 @@ public sealed class KernelAgentHost : IAsyncDisposable
             var reference = kernel.Resolver.Resolve<IToolApprover>()
                 ?? throw new InvalidOperationException("dispatcher 插件解析不到 IToolApprover。");
 
+            // store 同样必须经内核解析，不能由宿主传裸实例进来——
+            // 否则"内核承载存储"只说了一半：服务注册了，宿主自己也留着一份。
+            var store = kernel.Resolver.Resolve<IAgentStore>() is { } storeRef
+                ? await storeRef.InvokeAsync(
+                    (s, _) => ValueTask.FromResult<IAgentStore?>(s), cancellationToken)
+                    .ConfigureAwait(false)
+                : null;
+
             // 适配器只持有服务引用，不持有实例；每次审批都走新的租约。
             // 工厂是异步的：MCP 工具注册要在激活期内完成，那是异步的（子进程/HTTP 握手），
             // 而"工具注册"属于 dispatcher 的构造，不能被推到激活之后——
             // 激活后内核已发布服务快照，再往里塞注册会绕过生命周期协调。
-            var dispatcher = await factory(new LeasedApprover(reference), cancellationToken)
-                .ConfigureAwait(false);
+            var dispatcher = await factory(
+                new LeasedApprover(reference), store, cancellationToken).ConfigureAwait(false);
             context.Services.Register<IToolDispatcher>(dispatcher);
         }
     }
@@ -198,7 +226,7 @@ public sealed class KernelAgentHost : IAsyncDisposable
     /// 运行时插件。<b>它必须解析 dispatcher，不能自己 new</b>，理由同审批器。
     /// </summary>
     private sealed class RuntimePlugin(
-        Func<IToolDispatcher, IAgentRuntime> factory,
+        Func<IToolDispatcher, IAgentStore?, IAgentRuntime> factory,
         DougongKernel kernel) : IPlugin
     {
         public PluginManifest Manifest { get; } = PluginManifest.CreateWithDependencies(
@@ -219,8 +247,15 @@ public sealed class KernelAgentHost : IAsyncDisposable
                 (dispatcher, _) => ValueTask.FromResult(dispatcher.Tools),
                 cancellationToken).ConfigureAwait(false);
 
+            // store 对运行时是可选依赖：没有持久化时传 null。
+            var store = kernel.Resolver.Resolve<IAgentStore>() is { } storeRef
+                ? await storeRef.InvokeAsync(
+                    (s, _) => ValueTask.FromResult<IAgentStore?>(s), cancellationToken)
+                    .ConfigureAwait(false)
+                : null;
+
             context.Services.Register<IAgentRuntime>(
-                factory(new LeasedDispatcher(reference, tools)));
+                factory(new LeasedDispatcher(reference, tools), store));
         }
     }
 

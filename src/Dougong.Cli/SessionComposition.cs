@@ -22,7 +22,6 @@ public sealed class SessionComposition
     private readonly string _workspace;
     private readonly string _sessionId;
     private readonly IChatClient _client;
-    private readonly IAgentStore? _store;
     private readonly IToolApprover _approver;
     private readonly bool _shellEnabled;
     private readonly int _contextWindow;
@@ -32,7 +31,6 @@ public sealed class SessionComposition
         string sessionId,
         string workspace,
         IChatClient client,
-        IAgentStore? store,
         IToolApprover approver,
         bool shellEnabled,
         int contextWindow,
@@ -41,7 +39,6 @@ public sealed class SessionComposition
         _sessionId = sessionId;
         _workspace = workspace;
         _client = client;
-        _store = store;
         _approver = approver;
         _shellEnabled = shellEnabled;
         _contextWindow = contextWindow;
@@ -54,8 +51,7 @@ public sealed class SessionComposition
     /// 因此作为参数传入；其余全部从环境读取。
     /// </remarks>
     public static SessionComposition FromEnvironment(
-        string sessionId, string workspace, IChatClient client,
-        IAgentStore? store, IToolApprover approver)
+        string sessionId, string workspace, IChatClient client, IToolApprover approver)
     {
         var shellEnabled = Environment.GetEnvironmentVariable("DOUGONG_SHELL") is "1" or "true";
         var contextWindow = int.TryParse(
@@ -64,7 +60,7 @@ public sealed class SessionComposition
             : 0;
 
         return new SessionComposition(
-            sessionId, workspace, client, store, approver,
+            sessionId, workspace, client, approver,
             shellEnabled, contextWindow, ParseMcpServers());
     }
 
@@ -84,7 +80,7 @@ public sealed class SessionComposition
     /// 工具集是「最小可信集 + 显式开启」：文件读写默认有，shell 与 MCP 需要显式配置。
     /// 这一点两个入口必须一致，否则会出现"CLI 能做但桌面端不能做"的困惑。
     /// </remarks>
-    public IToolDispatcher CreateDispatcher() => CreateDispatcher(_approver);
+    public IToolDispatcher CreateDispatcher(IAgentStore? store) => CreateDispatcher(_approver, store);
 
     /// <summary>
     /// 用指定的审批器建立 dispatcher。
@@ -93,7 +89,7 @@ public sealed class SessionComposition
     /// 审批器。内核接线时传入的是**由内核解析得到的适配器**，
     /// 而不是构造本对象时那个实例——否则审批器又成了绕开内核的裸引用。
     /// </param>
-    public IToolDispatcher CreateDispatcher(IToolApprover approver)
+    public IToolDispatcher CreateDispatcher(IToolApprover approver, IAgentStore? store)
     {
         ArgumentNullException.ThrowIfNull(approver);
 
@@ -105,7 +101,7 @@ public sealed class SessionComposition
             _sessionId, "turn-1", _workspace,
             TimeSpan.FromMinutes(5),
             new WorkspacePathGuard(_workspace),
-            _store);
+            store);
 
         dispatcher.Register(new ReadFileTool(_workspace));
         dispatcher.Register(new WriteFileTool(_workspace));
@@ -122,7 +118,8 @@ public sealed class SessionComposition
     /// 压缩的摘要器复用同一个连接器：压缩与对话用同一模型，
     /// 避免为摘要单独引入一个 provider 配置。
     /// </remarks>
-    public LoopAgentRuntime CreateRuntime(IToolDispatcher dispatcher, UsageLedger? ledger = null)
+    public LoopAgentRuntime CreateRuntime(
+        IToolDispatcher dispatcher, IAgentStore? store, UsageLedger? ledger = null)
     {
         IChatClient effective = ledger is null
             ? _client
@@ -131,10 +128,10 @@ public sealed class SessionComposition
                 _client.ProtocolName(), _client.ModelName(), ChatProtocol.OpenAiChatCompletions);
 
         if (_contextWindow <= 0)
-            return new LoopAgentRuntime(effective, dispatcher, _store);
+            return new LoopAgentRuntime(effective, dispatcher, store);
 
         return new LoopAgentRuntime(
-            effective, dispatcher, _store,
+            effective, dispatcher, store,
             new ContextLimits
             {
                 ContextWindowTokens = _contextWindow,
@@ -306,28 +303,73 @@ public static class AcpComposition
         var store = storePath is null ? null : OpenStore(storePath, context.SessionId);
 
         var composition = SessionComposition.FromEnvironment(
-            context.SessionId, context.Workspace, client, store, approver);
-
-        var dispatcher = composition.CreateDispatcher();
-
-        // 提问工具只在有 ACP 客户端可问时注册：没有 host 就没有人回答，
-        // 注册一个永远失败的工具有害无益。
-        if (hostAccessor is not null)
-            dispatcher.Register(new AcpElicitationTool(hostAccessor(), context.SessionId));
-
-        // MCP 工具：与 REPL 同一套 DOUGONG_MCP_SERVERS 配置。
-        var (registries, clients) = await composition
-            .ConnectMcpAsync(dispatcher, onMcpError, cancellationToken)
-            .ConfigureAwait(false);
+            context.SessionId, context.Workspace, client, approver);
 
         // 账目：与 REPL 一样包一层装饰器。
         var ledger = new UsageLedger();
-        var runtime = composition.CreateRuntime(dispatcher, ledger);
+
+        // 内核接线（G14）：ACP 入口此前完全不经过内核，因此内核的租约与排空
+        // 只在一个入口上被验证过。这里为**每个会话**建一个内核：
+        // 与 MCP 连接、存储句柄的生命周期一致（都是会话级资源）。
+        var useKernel = Environment.GetEnvironmentVariable("DOUGONG_KERNEL") is "1" or "true";
+
+        IReadOnlyList<McpToolRegistry> registries = [];
+        IReadOnlyList<ModelContextProtocol.Client.McpClient> clients = [];
+        KernelAgentHost? kernelHost = null;
+        IAgentRuntime runtime;
+        IToolDispatcher dispatcher;
+
+        if (useKernel)
+        {
+            kernelHost = await KernelAgentHost.CreateAsync(
+                store,
+                async (resolvedApprover, resolvedStore, ct) =>
+                {
+                    var built = composition.CreateDispatcher(resolvedApprover, resolvedStore);
+                    // 提问工具只在有 ACP 客户端可问时注册：没有 host 就没有人回答。
+                    if (hostAccessor is not null)
+                        built.Register(new AcpElicitationTool(hostAccessor(), context.SessionId));
+
+                    var (connectedRegistries, connectedClients) =
+                        await composition.ConnectMcpAsync(built, onMcpError, ct)
+                            .ConfigureAwait(false);
+                    registries = connectedRegistries;
+                    clients = connectedClients;
+                    return built;
+                },
+                (resolvedDispatcher, resolvedStore) =>
+                    composition.CreateRuntime(resolvedDispatcher, resolvedStore, ledger),
+                approver,
+                cancellationToken).ConfigureAwait(false);
+
+            runtime = kernelHost.ResolveRuntime();
+            // 会话记录里的 dispatcher 与 runtime 出自**同一次**内核装配，
+            // 因此仍由内核托管：它只用于诊断/一致性检查，不在会话层派发工具
+            // （派发发生在运行时内部，已经过内核租约）。
+            dispatcher = kernelHost.ResolveDispatcherView()
+                ?? throw new InvalidOperationException(
+                    "内核已启用但解析不到 IToolDispatcher：插件装配不完整。");
+            onMcpError.WriteLine("[acp] kernel=enabled（运行能力由内核解析）");
+        }
+        else
+        {
+            dispatcher = composition.CreateDispatcher(store);
+            if (hostAccessor is not null)
+                dispatcher.Register(new AcpElicitationTool(hostAccessor(), context.SessionId));
+
+            var (connectedRegistries, connectedClients) = await composition
+                .ConnectMcpAsync(dispatcher, onMcpError, cancellationToken)
+                .ConfigureAwait(false);
+            registries = connectedRegistries;
+            clients = connectedClients;
+            runtime = composition.CreateRuntime(dispatcher, store, ledger);
+        }
 
         // 注册器与客户端都要随会话释放：否则子进程与注册长期挂着。
-        // 释放顺序与创建相反：先注销工具注册，再断开客户端。
+        // 释放顺序与创建相反：先注销工具注册，再断开客户端，最后释放内核。
         List<IAsyncDisposable> resources = [.. registries];
         resources.AddRange(clients);
+        if (kernelHost is not null) resources.Add(kernelHost);
 
         return new AcpSessionRuntime(runtime, dispatcher) { SessionResources = resources };
     }

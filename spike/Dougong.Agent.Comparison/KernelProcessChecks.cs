@@ -22,6 +22,7 @@ public static class KernelProcessChecks
     {
         var failures = 0;
         failures += await CheckAsync("kernel-path-runs-a-turn-with-a-tool", KernelTurnAsync);
+        failures += await CheckAsync("acp-path-uses-kernel", AcpKernelAsync);
 
         Console.WriteLine(failures == 0
             ? "KERNEL-PROCESS: ALL PASS"
@@ -79,6 +80,48 @@ public static class KernelProcessChecks
         {
             await agent.StopAsync();
         }
+    }
+
+    /// <summary>
+    /// ACP 入口在 DOUGONG_KERNEL=1 时应声明内核已启用（走 stderr）。
+    /// </summary>
+    /// <remarks>
+    /// 为什么必须跨进程分开验：REPL 与 ACP 共用同一个程序集，
+    /// 元数据检查无法区分是哪个入口调了内核。只有真起 `--acp` 进程才分得清。
+    /// </remarks>
+    private static async Task<string?> AcpKernelAsync()
+    {
+        using var provider = new StubProvider();
+        await using var agent = StartAgent(provider.BaseUrl, kernel: true, acp: true);
+
+        // ACP 会话是**懒创建**的：不发 session/new 就不会装配，也就不会碰内核。
+        // 先走一遍 initialize + session/new，装配才会发生。
+        await agent.WriteRawAsync("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}""");
+        // cwd 必须是绝对路径（宿主的校验要求）。
+        var newSession = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = 2,
+            ["method"] = "session/new",
+            ["params"] = new JsonObject
+            {
+                ["cwd"] = Directory.GetCurrentDirectory(),
+                ["mcpServers"] = new JsonArray(),
+            },
+        };
+        await agent.WriteRawAsync(newSession.ToJsonString());
+
+        // ACP 模式的日志走 stderr（stdout 归协议）。
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(40);
+        while (DateTime.UtcNow < deadline)
+        {
+            var log = agent.ReadLog();
+            if (log.Contains("kernel=enabled", StringComparison.Ordinal)) return null;
+            await Task.Delay(150);
+        }
+
+        return $"ACP 进程 stderr 未出现 kernel=enabled；stderr：{Truncate(agent.ReadLog(), 600)}；" +
+            $"stdout：{Truncate(agent.Transcript, 600)}";
     }
 
     private sealed class StubProvider : IDisposable
@@ -300,7 +343,7 @@ public static class KernelProcessChecks
         }
     }
 
-    private static AgentProcess StartAgent(string baseUrl, bool kernel)
+    private static AgentProcess StartAgent(string baseUrl, bool kernel, bool acp = false)
     {
         var dll = Path.Combine(
             AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar),
@@ -329,6 +372,7 @@ public static class KernelProcessChecks
         };
 
         info.ArgumentList.Add(dll);
+        if (acp) info.ArgumentList.Add("--acp");
 
         info.Environment["DOUGONG_PROVIDER_BASE"] = baseUrl;
         info.Environment["DOUGONG_PROVIDER_KEY"] = "stub-key-not-a-real-secret";

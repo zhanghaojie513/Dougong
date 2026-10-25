@@ -422,7 +422,7 @@
 
 | 性质 | 状态 | 依据 |
 |---|---|---|
-| P1 可组合 | **部分（已接线，未默认）** | 内核接线已实现（`KernelAgentHost`），`DOUGONG_KERNEL=1` 时运行能力由内核解析、每回合取租约；`-- kernel-wiring` 7 项 + `-- kernel-process` 1 项，含"换一种 IAgentStore 不改内核仍通过"。**但默认仍走旧路径**，所以还不能勾 P1 判定第 1 条 |
+| P1 可组合 | **部分（已接线，未默认）** | 内核接线在 **REPL 与 ACP 两个入口**都成立（`DOUGONG_KERNEL=1`）；存储不再被宿主裸持有（`SessionComposition` 只收参数不收字段）；可替换性验收换成**真实现**（`InMemoryAgentStore`，对齐 JSONL 的序号分配/失败不留半条/释放后拒绝）。`-- kernel-wiring` 9 项 + `-- kernel-process` 2 项 + 4 条反证。**缺口**：默认路径仍是直接 `new` |
 | P2 完整生命周期 | **内核内达成，产品路径未验证** | 177 项测试 + 20 项对抗探针，全部针对内核自身；无一项验证"插件在真实会话中被停用/替换后会话仍可继续"。断电级持久化未声明 |
 | P3 故障可解释 | 基本达成 | 四个提交屏障 + 审批记录 + 未知结果对账；缺工具幂等键 |
 | P4 真实可用 | 部分 | 3 协议 + 真实编码任务 + 压缩 + 恢复；MCP/ACP 已接入；协议内字段名差异无开关（G12/G13） |
@@ -478,6 +478,19 @@ Agent 运行实现均由内核承载，组合根解析 `IAgentRuntime`」，这�
   如实记录两项未做：MCP 断线重连（重试会重复副作用）、
   ACP plan/elicitation（运行时没有数据源，做了是空壳）。
   （后项已于 2026-10-25 补齐 elicitation，见下。）
+
+- 2026-10-25：按 P1 分析补齐三处缺口：
+  ① **存储不再被宿主裸持有**——`SessionComposition` 的 `_store` 字段删除，
+  改为方法参数；dispatcher/运行时插件在激活期内经内核解析 store。
+  新增结构探针 `host-does-not-cache-store-instance`（反射查实例字段）。
+  ② **ACP 入口接入内核**——此前 `--acp` 完全不经过内核，是"只在一个入口验证"的盲区。
+  新增 `acp-path-uses-kernel`：真起 `--acp` 进程、走 initialize + session/new，
+  断言 stderr 出现 kernel=enabled（元数据检查分不清两个入口，只有跨进程能）。
+  ③ **可替换性验收升级为真实现**——原 `RecordingStore` 只有一个计数器，
+  验的是"服务键能换提供方"，不是"换一种存储产品还能跑"。新增
+  `InMemoryAgentStore`，对齐 JSONL 的序号分配（忽略调用方传入值）、
+  提交失败不留半条、释放后拒绝；验收改为断言这些真实语义。
+  三处各配一条反证。177 项测试 + 29 套件全绿。
 
 - 2026-10-25：内核接线（G14）：新增 `KernelAgentHost`/`KernelAgentRuntime`，
   把存储、审批器、dispatcher、运行时作为插件注册进内核，宿主通过
