@@ -111,6 +111,10 @@ public static class Program
         if (args.FirstOrDefault() == "replaceability")
             return await ReplaceabilityChecks.RunAsync();
 
+        // 性能基线只输出数字，不参与通过/失败判定——因此不进 all-checks.sh。
+        if (args.FirstOrDefault() == "perf")
+            return await PerformanceBaselineChecks.RunAsync();
+
         // 供端到端测试使用的最小 stdio MCP server。
         if (args.FirstOrDefault() == "mcp-server")
             return await McpTestServer.RunAsync();
