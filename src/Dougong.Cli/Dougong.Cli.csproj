@@ -7,6 +7,17 @@
     <Description>dougong——headless 参考宿主（dotnet tool）</Description>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <!-- CLI 是 `dotnet tool` 包，公开面是命令行参数而不是 API；
+         它的类型是参考宿主的装配细节，不产生 XML 文档。
+         这与 SDK 包（Kernel/Agent/Ai/Mcp/Acp）不同——那些要给插件作者看。 -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- 必须同时清 DocumentationFile：Directory.Build.targets 按 IsPackable 设了它，
+         而 CLI 的 IsPackable 为 true（PackAsTool）。只设 GenerateDocumentationFile=false
+         不够——编译器仍会按 DocumentationFile 报注释语法错误。 -->
+    <DocumentationFile></DocumentationFile>
+  </PropertyGroup>
+
   <ItemGroup>
     <!-- 验收套件要检查真实工具的资源键声明（G5）。
          工具本身是 internal——它们不该是 SDK 的公开面，但"是否声明了资源键"

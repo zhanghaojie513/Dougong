@@ -81,7 +81,7 @@ public abstract record AgentEvent
     /// 用户需要知道"模型看到的不再是完整历史"。
     /// </summary>
     /// <remarks>
-    /// <see cref="Summary"/> 为 null 表示压缩已决定但未完成（失败或预算不足），
+    /// <see cref="ContextCompacted.Applied"/> 为 false 表示压缩已决定但未完成（失败或预算不足），
     /// 此时历史未被替换，必须继续按原历史运行。
     /// </remarks>
     public sealed record ContextCompacted(

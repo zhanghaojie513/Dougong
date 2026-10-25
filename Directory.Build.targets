@@ -1,0 +1,23 @@
+<Project>
+
+  <!--
+    XML 文档：NuGet 包附带 .xml，IDE 里能看到类型级提示（M0 前置项的欠账）。
+    **必须放在 targets 而不是 props**：props 在 csproj 之前求值，
+    此时 IsPackable 还没设置，条件永远成立——samples/spike/tests 也会被要求写 XML 文档。
+    targets 在 csproj 之后求值，条件才准确。
+  -->
+  <PropertyGroup Condition="'$(IsPackable)' != 'false' and '$(MSBuildProjectName)' != 'Dougong.Cli'">
+    <!-- 要同时设 DocumentationFile：编译器只看它；
+         GenerateDocumentationFile 是给 NuGet/打包 targets 的信号。
+         只设后者时编译器不会产出注释文件（实测过）。 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DocumentationFile>$(MSBuildProjectDirectory)/bin/$(Configuration)/$(TargetFramework)/$(AssemblyName).xml</DocumentationFile>
+  </PropertyGroup>
+
+  <!-- CS1591 = 公开成员缺少 XML 注释。当前不强制（注释已很密，缺的是少数），
+       只保证已有的注释语法正确——CS1572/1573/1574/1570 仍然报错。 -->
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+</Project>

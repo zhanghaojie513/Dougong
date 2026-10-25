@@ -98,7 +98,7 @@ public sealed class KernelAdversarialTests
     /// 用 <c>await Task.Delay(...)</c> 而不是 <c>ManualResetEventSlim.Wait</c> 制造阻塞：
     /// 前者让回调在首个 await 处让出线程，超时机制才有机会介入；
     /// 后者会在调用线程上同步卡死（连超时都无法启动），那是另一个更严重的问题，
-    /// 单独用 <see cref="Sync_blocking_activation_freezes_evaluation"/> 覆盖。
+    /// 单独用 "同步阻塞的激活回调" 覆盖。
     /// </remarks>
     [Fact]
     public async Task Blocking_activation_is_isolated_after_timeout()

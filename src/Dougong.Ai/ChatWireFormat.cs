@@ -24,7 +24,7 @@ public interface IChatWireFormat
     void ApplyHeaders(HttpRequestMessage request, string apiKey);
 
     /// <summary>
-    /// 构造请求体。工具声明从 <see cref="ToolDeclarations.OptionsKey"/> 读取，
+    /// 构造请求体。工具声明从 <see cref="Dougong.Agent.ToolDeclarations.OptionsKey"/> 读取，
     /// 连接器不自行推断"该给模型看哪些工具"。
     /// </summary>
     JsonObject BuildBody(

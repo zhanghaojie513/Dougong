@@ -37,6 +37,7 @@ public sealed class KernelAgentHost : IAsyncDisposable
     private readonly IDisposable? _stateSubscription;
     private readonly TextWriter _diagnostics;
 
+    /// <param name="kernel">内核实例。</param>
     /// <param name="diagnostics">
     /// 诊断输出。必须是 stderr（ACP 模式下 stdout 归协议）。
     /// </param>
@@ -93,10 +94,12 @@ public sealed class KernelAgentHost : IAsyncDisposable
     /// <param name="createRuntime">
     /// 构造运行时的委托。它接受 dispatcher 实例；dispatcher 同样由内核解析。
     /// </param>
+    /// <param name="approver">审批器；会作为插件注册进内核。</param>
     /// <param name="diagnostics">
     /// 诊断输出出口，默认 <see cref="Console.Error"/>。ACP 模式下必须传 stderr：
     /// stdout 归协议所有。
     /// </param>
+    /// <param name="cancellationToken">取消令牌。</param>
     public static async Task<KernelAgentHost> CreateAsync(
         IAgentStore? store,
         Func<IToolApprover, IStoreAccessor?, CancellationToken, Task<IToolDispatcher>> createDispatcher,

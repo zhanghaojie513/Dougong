@@ -12,6 +12,8 @@ namespace Dougong.Acp;
 /// <c>Dougong.Agent</c>（L1），拿不到 <c>Dougong.Ai</c> 的连接器工厂。
 /// 因此模型连接由宿主注入，ACP 层只负责协议。
 /// </remarks>
+/// <param name="SessionId">会话标识。</param>
+/// <param name="Workspace">会话的工作区根目录。</param>
 /// <param name="RestoredHistory">
 /// 从已提交日志恢复出的历史。新建会话时为空；<c>session/load</c> 与
 /// <c>session/resume</c> 会带上它，宿主据此重建上下文。
@@ -29,6 +31,8 @@ public sealed record AcpSessionContext(
 /// <summary>
 /// 一个会话的运行时与工具入口。
 /// </summary>
+/// <param name="Runtime">该会话的运行时。</param>
+/// <param name="Dispatcher">该会话的工具入口，与运行时出自同一次装配。</param>
 /// <remarks>
 /// 两者必须由**同一次**工厂调用产出：dispatcher 里挂着审批器与资源闸门，
 /// 若 runtime 与 dispatcher 分别构造，工具执行会绕过审批。
@@ -64,9 +68,15 @@ internal sealed class AcpSession
     private readonly List<AgentMessage> _history;
     private int _running;
 
+    /// <param name="sessionId">会话标识。</param>
+    /// <param name="workspace">工作区根目录。</param>
+    /// <param name="runtime">该会话的运行时。</param>
+    /// <param name="host">所属宿主，用于向客户端发请求。</param>
+    /// <param name="log">日志出口（必须走 stderr）。</param>
     /// <param name="restoredHistory">
     /// 恢复出的历史。非空表示这是一次恢复，后续轮次必须接着它继续。
     /// </param>
+    /// <param name="sessionResources">随会话释放的资源（MCP 注册器等）。</param>
     public AcpSession(
         string sessionId,
         string workspace,

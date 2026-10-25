@@ -96,7 +96,8 @@ public sealed class FixedApproverAccessor(IToolApprover approver) : IApproverAcc
 /// 这是 G15 的另一半：<see cref="LoopAgentRuntime"/> 此前把 <see cref="IToolDispatcher"/>
 /// 存成字段，替换 dispatcher 后仍用旧实例。
 /// <para>
-/// <see cref="Tools"/> 与 <see cref="DispatchAsync"/> 分开是必要的：
+/// <see cref="IDispatcherAccessor.GetToolsAsync"/> 与
+/// <see cref="IDispatcherAccessor.DispatchAsync"/> 分开是必要的：
 /// 前者每回合读一次（构造工具声明），后者每次调用读一次。合成一个方法会让
 /// "读声明"也背上派发的语义。
 /// </para>

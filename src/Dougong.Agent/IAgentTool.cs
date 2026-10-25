@@ -28,24 +28,11 @@ public interface IAgentTool
 }
 
 /// <summary>冻结后的工具描述符；<see cref="InputSchema"/> 必须是宿主侧可校验的 JSON Schema。</summary>
-/// <param name="MayHaveIrreversibleEffects">
-/// 该工具是否可能产生**不可撤销**的副作用（写外部系统、发请求、改远端状态）。
-/// 默认 false 表示"只读或可安全重放"。
-/// <para>
-/// <b>唯一用途</b>：恢复会话时发现某调用「有开始记录、无终态」
-/// （<see cref="ToolCallOutcome.OutcomeUnknown"/>），宿主据此决定：
-/// false → 可安全重试；true → 必须人工核实，不得自动重放。
-/// </para>
-/// <para>
-/// <b>默认 false 的理由</b>：只读工具占多数，不该为它们逐个加声明。
-/// 但会改外部状态的工具**必须显式声明 true**——不声明而实际有副作用的工具，
-/// 会让宿主错误地重试。框架无法从参数推断工具会做什么，这是使用方的责任。
-/// </para>
-/// <para>
-/// <b>它不是幂等键</b>：幂等键让外部系统识别重复请求，需要远端配合。
-/// 这个声明只表达"要不要人工看一眼"。
-/// </para>
-/// </param>
+/// <param name="Id">稳定 ID，注册表用它索引；同一内核内必须唯一。</param>
+/// <param name="Name">模型可见名。必须匹配 provider 的字符集（`^[a-zA-Z0-9_-]+$`）。</param>
+/// <param name="Version">版本。工具被替换时版本变化会使旧审批失效。</param>
+/// <param name="Description">给模型看的说明，决定它何时会调用这个工具。</param>
+/// <param name="InputSchema">宿主侧可校验的 JSON Schema；不支持的构造必须报错而非静默跳过。</param>
 public sealed record ToolDescriptor(
     string Id,
     string Name,
@@ -54,12 +41,27 @@ public sealed record ToolDescriptor(
     JsonElement InputSchema)
 {
     /// <summary>
-    /// 是否可能产生不可撤销副作用。默认 false（只读或可安全重放）。
+    /// 是否可能产生**不可撤销**的副作用（写外部系统、发请求、改远端状态）。
+    /// 默认 false 表示"只读或可安全重放"。
     /// </summary>
     /// <remarks>
+    /// <b>唯一用途</b>：恢复会话时发现某调用「有开始记录、无终态」
+    /// （<see cref="ToolCallOutcome.OutcomeUnknown"/>），宿主据此决定：
+    /// false → 可安全重试；true → 必须人工核实，不得自动重放。
+    /// <para>
+    /// <b>默认 false 的理由</b>：只读工具占多数，不该为它们逐个加声明。
+    /// 但会改外部状态的工具**必须显式声明 true**——不声明而实际有副作用的工具，
+    /// 会让宿主错误地重试。框架无法从参数推断工具会做什么，这是使用方的责任。
+    /// </para>
+    /// <para>
+    /// <b>它不是幂等键</b>：幂等键让外部系统识别重复请求，需要远端配合。
+    /// 这个声明只表达"要不要人工看一眼"。
+    /// </para>
+    /// <para>
     /// 用 <c>init</c> 属性而不是构造参数：后者会改变构造函数签名，
     /// 破坏已有的 <c>new ToolDescriptor(a, b, c, d, e)</c> 调用。
     /// ApiCompat 在 CI 上精确报出了这一点（CP0002）。
+    /// </para>
     /// </remarks>
     public bool MayHaveIrreversibleEffects { get; init; }
 }

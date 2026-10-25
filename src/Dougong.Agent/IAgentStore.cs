@@ -103,14 +103,9 @@ public sealed class StoreCommitException(string stage, string message, Exception
 /// 拒绝"预先冻结资源键格式"同一判据。
 /// </para>
 /// </remarks>
-/// <param name="MayHaveIrreversibleEffects">
-/// 该工具是否声明了可能不可撤销的副作用。宿主据此决定处置方式：
-/// <c>false</c> 表示可安全重试；<c>true</c> 表示必须人工核实。
-/// <para>
-/// 旧会话记录不含此信息时按 <c>true</c> 处理——宁可要求人工核实，
-/// 也不要让宿主误以为可以安全重放。
-/// </para>
-/// </param>
+/// <param name="InvocationId">产生未知结果的那次调用 ID。</param>
+/// <param name="ToolId">调用的工具 ID。</param>
+/// <param name="Reason">人可读的说明，区分"可安全重试"与"须人工核实"。</param>
 public sealed record UnknownOutcome(
     string InvocationId,
     string ToolId,
@@ -121,8 +116,15 @@ public sealed record UnknownOutcome(
     /// 该工具是否声明了可能不可撤销的副作用。默认 <c>true</c>。
     /// </summary>
     /// <remarks>
-    /// 默认 true（保守）：旧代码构造的 UnknownOutcome 会被当作"需人工核实"。
-    /// 用 <c>init</c> 属性而不是构造参数，避免破坏已有调用的构造函数签名。
+    /// 宿主据此决定处置方式：<c>false</c> 表示可安全重试；<c>true</c> 表示必须人工核实。
+    /// <para>
+    /// 默认 true（保守）：旧代码构造的 UnknownOutcome、以及旧会话记录（不含此字段）
+    /// 都会被当作"需人工核实"——宁可多让人看一眼，也不要让宿主误以为可以安全重放。
+    /// </para>
+    /// <para>
+    /// 用 <c>init</c> 属性而不是构造参数，避免破坏已有调用的构造函数签名
+    /// （ApiCompat 在 CI 上会报 CP0002）。
+    /// </para>
     /// </remarks>
     public bool MayHaveIrreversibleEffects { get; init; } = true;
 }

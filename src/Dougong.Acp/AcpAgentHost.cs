@@ -34,10 +34,15 @@ public sealed class AcpAgentHost
     private readonly CancellationTokenSource _lifetime = new();
     private long _nextRequestId;
 
+    /// <param name="input">协议输入流（stdin）。</param>
+    /// <param name="output">协议输出流（stdout）。**只能有协议帧**。</param>
+    /// <param name="runtimeFactory">会话工厂：为每个会话建立运行时与 dispatcher。</param>
     /// <param name="log">
     /// 日志出口。**必须是 stderr**：stdout 归协议所有。
     /// 默认写 <see cref="Console.Error"/>。
     /// </param>
+    /// <param name="storeResolver">按会话 ID 解析已有的会话文件路径；返回 null 表示新建。</param>
+    /// <param name="listRoots">`session/list` 允许扫描的根目录。</param>
     public AcpAgentHost(
         Stream input,
         Stream output,

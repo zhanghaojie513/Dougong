@@ -19,9 +19,13 @@ public static class SessionBranch
     /// <summary>
     /// 从 <paramref name="sourcePath"/> 的 <paramref name="atSequence"/> 处复制出新会话。
     /// </summary>
+    /// <param name="sourcePath">源会话文件路径。</param>
+    /// <param name="targetPath">新会话文件路径；必须与源不同。</param>
+    /// <param name="newSessionId">新会话的标识。</param>
     /// <param name="atSequence">
     /// 保留到哪一条（含）。传 null 表示保留全部已提交记录，只换一个新身份。
     /// </param>
+    /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>新会话文件的路径与它的会话标识。</returns>
     /// <exception cref="InvalidOperationException">
     /// 指定序号不存在，或该点之后还有记录但调用方意图不明（例如序号落在半条记录里）。
