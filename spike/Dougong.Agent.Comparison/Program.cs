@@ -111,6 +111,12 @@ public static class Program
         if (args.FirstOrDefault() == "replaceability")
             return await ReplaceabilityChecks.RunAsync();
 
+        if (args.FirstOrDefault() == "skill-l1")
+            return await SkillL1Checks.RunAsync();
+
+        if (args.FirstOrDefault() == "memory-cli")
+            return await MemoryCliChecks.RunAsync();
+
         // 性能基线只输出数字，不参与通过/失败判定——因此不进 all-checks.sh。
         if (args.FirstOrDefault() == "perf")
             return await PerformanceBaselineChecks.RunAsync();

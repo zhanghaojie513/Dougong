@@ -31,6 +31,24 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     private readonly IContextCompactor? _compactor;
     private readonly Func<string, CancellationToken, ValueTask<string>>? _summarize;
 
+    /// <summary>
+    /// L1 偏好注入器。为 null 时不注入任何偏好。
+    /// </summary>
+    /// <remarks>
+    /// 用 <c>init</c> 属性而不是构造参数：后者会改变构造签名
+    /// （ApiCompat 会报 CP0002，破坏已有调用的兼容性）。
+    /// </remarks>
+    public IMemoryInjector? Memory { get; init; }
+
+    /// <summary>
+    /// 当前工作区。memory 注入按它过滤作用域。
+    /// </summary>
+    /// <remarks>
+    /// 只在使用 <see cref="Memory"/> 时才有意义；默认空串表示"未指定"，
+    /// 此时只注入 <see cref="MemoryScope.User"/> 级偏好——跨工作区默认不传播。
+    /// </remarks>
+    public string MemoryWorkspace { get; init; } = string.Empty;
+
     /// <summary>用裸 dispatcher 构造：内部包成固定访问点（不参与替换）。</summary>
     public LoopAgentRuntime(
         IChatClient client,
@@ -119,8 +137,12 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             // 工具声明是运行时对连接器的正式输出，不是循环拼的提示文本。
             var chatOptions = new ChatOptions().Attach(await _dispatcher.GetToolsAsync(cancellationToken).ConfigureAwait(false));
 
+            // L1 偏好注入：**每轮取一次快照**，整轮使用它。
+            // 运行中撤销不影响当前轮——已发送给模型的内容无法撤回。
+            var requestHistory = await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false);
+
             await using var enumerator = _client
-                .GetStreamingResponseAsync(history, chatOptions, cancellationToken)
+                .GetStreamingResponseAsync(requestHistory, chatOptions, cancellationToken)
                 .GetAsyncEnumerator(cancellationToken);
 
             while (true)
@@ -411,6 +433,48 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         }
 
         yield return await FinishAsync(AgentRunOutcome.ToolRoundLimitReached, null, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 若有注入器，把启用中的偏好拼成一条 system 消息放在最前。
+    /// </summary>
+    /// <remarks>
+    /// **拼在最前**：偏好是背景资料，不应插在对话中间打断上下文连续性。
+    /// <para>
+    /// 注入失败（存储读不到等）**不阻断本轮**：记忆是增强，不是必需品。
+    /// 但失败必须有痕迹——静默丢偏好会让用户以为它生效了。
+    /// </para>
+    /// </remarks>
+    private async ValueTask<List<ChatMessage>> WithMemoryAsync(
+        List<ChatMessage> history, CancellationToken cancellationToken)
+    {
+        if (Memory is null) return history;
+
+        IReadOnlyList<MemoryArtifact> snapshot;
+        try
+        {
+            snapshot = await Memory.SnapshotAsync(MemoryWorkspace, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // 读不到偏好时按"没有偏好"继续，不中断会话。
+            return history;
+        }
+
+        var prompt = MemoryPrompt.Compose(snapshot, out _);
+        if (prompt is null) return history;
+
+        var withMemory = new List<ChatMessage>(history.Count + 1)
+        {
+            new(ChatRole.System, prompt),
+        };
+        withMemory.AddRange(history);
+        return withMemory;
     }
 
     /// <summary>
