@@ -235,7 +235,8 @@ public static class FailureAcceptanceChecks
         var root = NewRoot();
         try
         {
-            var sessionPath = Path.Combine(root, "runtime-args.jsonl");
+            // 用内存存储：文件版有单写者租约，重放前必须先关闭，
+            // 而本用例要在同一个存储上跑完再重放，用文件反而绕。
             var recording = new InMemoryAgentStore("s-args");
 
             // 让"终态"提交失败，而"开始"已落盘——这才是真实的崩溃窗口。

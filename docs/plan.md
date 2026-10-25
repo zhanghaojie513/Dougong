@@ -219,7 +219,7 @@ status.md 的记录不够准确（写了"未实现真实模型摘要"，但没�
 | G11 | ACP `plan` 无数据源 | P4 | 低 | **已修** | 数据源是**工具**不是推测：`todo_write` 让模型显式声明计划，运行时投影为 `PlanUpdated`，ACP 翻译为全量替换的 plan 条目。`-- acp-plan` 6 项，反证确认去掉投影后两条精确失败 |
 | G12 | 思考字段名硬编码 | P4/P3 | 中 | **已修** | `AgentPropertyKeys.Reasoning`（中性键）+ `WireCompat.ReasoningField`（方言开关）。Agent 层不再出现任何 provider 字段名；连接器负责翻译。`-- wire` 三条：默认方言、覆盖方言、方言隔离（防"两个字段都读"）。反证：编码写死旧字段名时精确失败 |
 | G13 | 输出上限不可配置 | P4 | 低 | **已修** | `WireCompat.MaxTokensField`（null=不发，保持已验证端点行为）+ `ChatOptions.MaxOutputTokens`。Anthropic format 改为 `options?.MaxOutputTokens ?? 4096`。`-- wire` 的 `max-output-tokens-is-configurable` 三条 |
-| G14 | **内核未接入产品路径** | P1 | **阻断** | **已修（默认启用）** | `-- kernel-wiring` 9 项 + `-- kernel-path` 3 项 + `-- kernel-process` 4 项 + `-- bare-hold`；7 条反证。`DOUGONG_KERNEL=0` 可退回直连对照 |
+| G14 | **内核未接入产品路径** | P1 | **阻断** | **已修（默认启用）** | `-- kernel-wiring` 10 项 + `-- kernel-path` 3 项 + `-- kernel-process` 5 项 + `-- bare-hold`；7 条反证。`DOUGONG_KERNEL=0` 可退回直连对照 |
 | G15 | 编排者持有可替换实现（审批器/dispatcher） | P3/P1 | 中 | **已修** | `IApproverAccessor` / `IDispatcherAccessor`：`ToolDispatcher` 与 `LoopAgentRuntime` 不再持有实现实例。内核路径传 `KernelApproverAccessor`/`KernelDispatcherAccessor`（走租约），直连路径传 `Fixed*`（显式固定）。`-- bare-hold` 12 处持有全部有说明，两条已知缺口条目已从白名单消失 |
 
 **G12/G13 为什么不是"自研 provider 矩阵"**：`goal.md` §3 把 provider 矩阵列为反目标，
