@@ -10,12 +10,29 @@ DOTNET="${DOTNET:-dotnet}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "== 构建 spike（必须，不能用全量构建代替）=="
+echo "== 构建（solution + spike）=="
+# solution 必须先构建：后面的 pack 用 --no-build，
+# 不重建就会拿旧 DLL 做 API 比对，得到"零差异"的假结论。
+"$DOTNET" build Dougong.slnx -c Release
 "$DOTNET" build spike/Dougong.Agent.Comparison -c Release
 
 echo
 echo "== 内核测试 =="
 "$DOTNET" test Dougong.slnx -c Release --no-build
+
+echo
+echo "== API 兼容检查（pack 时由 ApiCompat 执行）=="
+# 为什么必须在这里跑：ApiCompat 只在 pack 阶段生效，
+# `dotnet build` 与 `dotnet test` 都不会触发它。
+# 少了这一步，破坏公开 API 的改动会一路绿灯到提交之后才被发现——
+# 本项目的基线就在 3.4 之后腐化过一次（改了 PluginDiagnostic 却没更新基线）。
+if ! pack_output=$("$DOTNET" pack Dougong.slnx -c Release --no-build 2>&1); then
+  echo "$pack_output" | grep -E "error CP" | head -5
+  echo "API 兼容检查失败：详见上方 error CP****。"
+  echo "  有意变更 → scripts/update-api-baseline.sh 并更新 CHANGELOG.md"
+  exit 1
+fi
+echo "API: ALL PASS"
 
 echo
 echo "== 自检套件 =="

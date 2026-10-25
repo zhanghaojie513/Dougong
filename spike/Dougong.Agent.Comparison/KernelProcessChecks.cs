@@ -26,6 +26,7 @@ public static class KernelProcessChecks
         failures += await CheckAsync("default-path-uses-kernel", DefaultUsesKernelAsync);
         failures += await CheckAsync("opt-out-restores-direct-path", OptOutAsync);
         failures += await CheckAsync("durability-is-reported-to-user", DurabilityReportedAsync);
+        failures += await CheckAsync("kernel-failures-are-reported-with-hint", FailureDiagnosticsAsync);
 
         Console.WriteLine(failures == 0
             ? "KERNEL-PROCESS: ALL PASS"
@@ -153,6 +154,57 @@ public static class KernelProcessChecks
         return seen
             ? null
             : $"启动横幅未展示持久化等级。输出：{Truncate(agent.Transcript, 800)}";
+    }
+
+    /// <summary>
+    /// 内核失败时必须把「阶段 + 建议」真的打到诊断出口。
+    /// </summary>
+    /// <remarks>
+    /// 这条补一个真实缺口：`KernelAgentHost.ReportFailure` 写了输出逻辑，
+    /// 但**没有任何验收断言输出内容**——它可能因为订阅没接上、
+    /// 或 Hint 为空而静默失效，而所有测试仍然全绿。
+    /// <para>
+    /// 初版这条只断言"正常启动时不输出诊断"，那是假通过：它没验证
+    /// 失败时**是否**输出、输出得对不对。改成真的让一个插件失败。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> FailureDiagnosticsAsync()
+    {
+        var log = new StringWriter();
+
+        // 构造一个必然激活失败的插件，通过 host 的公开构造路径注册。
+        var host = await Dougong.Cli.KernelAgentHost.CreateAsync(
+            store: null,
+            createDispatcher: (_, _, _) => throw new InvalidOperationException("故意失败"),
+            createRuntime: (_, _) => throw new InvalidOperationException("不该被调用"),
+            approver: new AlwaysAllowApprover(),
+            diagnostics: log).ConfigureAwait(false);
+
+        try
+        {
+            var text = log.ToString();
+            if (!text.Contains("[kernel]", StringComparison.Ordinal))
+                return $"插件激活失败但没有输出内核诊断。实际输出：{Truncate(text, 400)}";
+
+            if (!text.Contains("[Activate]", StringComparison.Ordinal))
+                return $"诊断缺少阶段标记。实际输出：{Truncate(text, 400)}";
+
+            if (!text.Contains("建议：", StringComparison.Ordinal))
+                return $"诊断缺少可操作建议。实际输出：{Truncate(text, 400)}";
+
+            return null;
+        }
+        finally
+        {
+            await host.DisposeAsync();
+        }
+    }
+
+    private sealed class AlwaysAllowApprover : IToolApprover
+    {
+        public ValueTask<ToolApprovalDecision> RequestApprovalAsync(
+            ToolApprovalRequest request, CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(ToolApprovalDecision.Allow("测试"));
     }
 
     /// <summary>
