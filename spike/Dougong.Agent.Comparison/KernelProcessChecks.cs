@@ -23,6 +23,8 @@ public static class KernelProcessChecks
         var failures = 0;
         failures += await CheckAsync("kernel-path-runs-a-turn-with-a-tool", KernelTurnAsync);
         failures += await CheckAsync("acp-path-uses-kernel", AcpKernelAsync);
+        failures += await CheckAsync("default-path-uses-kernel", DefaultUsesKernelAsync);
+        failures += await CheckAsync("opt-out-restores-direct-path", OptOutAsync);
 
         Console.WriteLine(failures == 0
             ? "KERNEL-PROCESS: ALL PASS"
@@ -80,6 +82,51 @@ public static class KernelProcessChecks
         {
             await agent.StopAsync();
         }
+    }
+
+    /// <summary>
+    /// **不设任何环境变量**时，默认就走内核。
+    /// </summary>
+    /// <remarks>
+    /// 默认转正之后必须单独立一条：原先 <c>acp-path-uses-kernel</c> 显式设了
+    /// <c>DOUGONG_KERNEL=1</c>，所以默认值改没改它都通过——那就测不出默认行为。
+    /// </remarks>
+    private static async Task<string?> DefaultUsesKernelAsync()
+    {
+        using var provider = new StubProvider();
+        await using var agent = StartAgent(
+            provider.BaseUrl, kernel: null, acp: false);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(40);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (agent.Transcript.Contains("kernel=enabled", StringComparison.Ordinal)) return null;
+            await Task.Delay(150);
+        }
+
+        return $"未设置 DOUGONG_KERNEL 时默认未走内核；输出：{Truncate(agent.Transcript, 600)}";
+    }
+
+    /// <summary>
+    /// <c>DOUGONG_KERNEL=0</c> 必须退回直连路径——这是排查手段，不能失效。
+    /// </summary>
+    private static async Task<string?> OptOutAsync()
+    {
+        using var provider = new StubProvider();
+        await using var agent = StartAgent(
+            provider.BaseUrl, kernel: false, acp: false);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (agent.Transcript.Contains("kernel=disabled", StringComparison.Ordinal)) return null;
+            if (agent.Transcript.Contains("kernel=enabled", StringComparison.Ordinal))
+                return "DOUGONG_KERNEL=0 未生效，仍走了内核路径";
+            await Task.Delay(150);
+        }
+
+        // 没打印任何标记也算失败：无法确认走的是哪条路径。
+        return $"DOUGONG_KERNEL=0 时未报告路径标记；输出：{Truncate(agent.Transcript, 600)}";
     }
 
     /// <summary>
@@ -343,7 +390,10 @@ public static class KernelProcessChecks
         }
     }
 
-    private static AgentProcess StartAgent(string baseUrl, bool kernel, bool acp = false)
+    /// <param name="kernel">
+    /// true=显式启用，false=显式关闭，null=不设置（验证默认值）。
+    /// </param>
+    private static AgentProcess StartAgent(string baseUrl, bool? kernel, bool acp = false)
     {
         var dll = Path.Combine(
             AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar),
@@ -380,7 +430,7 @@ public static class KernelProcessChecks
         info.Environment["DOUGONG_PROVIDER_PROTOCOL"] = "openai";
         info.Environment["DOUGONG_SESSION_DIR"] = storeDir;
         info.Environment["DOUGONG_WORKSPACE"] = workspace;
-        if (kernel) info.Environment["DOUGONG_KERNEL"] = "1";
+        if (kernel is { } enabled) info.Environment["DOUGONG_KERNEL"] = enabled ? "1" : "0";
         info.Environment["DOUGONG_AUTO_APPROVE"] = "1";
         // 控制台编码固定为 UTF-8：子进程的 stdin 由测试写入，若编码不一致，
         // 非 ASCII 输入会被逐字节误读（本机上表现为"0 次模型调用"）。

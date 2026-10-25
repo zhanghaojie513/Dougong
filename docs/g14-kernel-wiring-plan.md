@@ -164,7 +164,8 @@ public async IAsyncEnumerable<AgentEvent> RunAsync(AgentRunRequest request, ...)
 ### 步骤 4：CLI 切换 + 开关回退
 
 `SessionComposition` 增加 `CreateFromKernelAsync(...)`，`Program.cs` 用环境变量
-`DOUGONG_KERNEL=1` 切换。**默认仍走旧路径**，直到验收全部通过再改默认值。
+`DOUGONG_KERNEL` 切换。**已完成（2026-10-25）**：验收全部通过后默认已转为内核路径，
+`DOUGONG_KERNEL=0` 退回直连作为对照手段。
 
 理由：接线是结构改动，一次性切默认值会让 27 个套件同时受影响，失败时无法归因。
 
@@ -191,7 +192,7 @@ public async IAsyncEnumerable<AgentEvent> RunAsync(AgentRunRequest request, ...)
 
 - **不做插件热更新**（`architecture.md` §3.3 已定为契约）。
 - **不新增工程**，接线代码放 `Dougong.Cli`。
-- **不改默认路径**，直到步骤 5 的全部验收通过。
+- ~~不改默认路径~~ → 已于 2026-10-25 转正（全部验收通过后）。
 - **不把 `IChatClient` 也做成插件**。它是宿主的模型连接配置，
   不是"运行能力"；强行插件化会让 `DOUGONG_PROVIDER_*` 那套配置无处安放。
   这一条留作后续判断，先记录为"有意不做"。

@@ -320,10 +320,8 @@ public static class AcpComposition
         // 账目：与 REPL 一样包一层装饰器。
         var ledger = new UsageLedger();
 
-        // 内核接线（G14）：ACP 入口此前完全不经过内核，因此内核的租约与排空
-        // 只在一个入口上被验证过。这里为**每个会话**建一个内核：
-        // 与 MCP 连接、存储句柄的生命周期一致（都是会话级资源）。
-        var useKernel = Environment.GetEnvironmentVariable("DOUGONG_KERNEL") is "1" or "true";
+        // 内核接线（G14）：默认启用，与 REPL 一致。DOUGONG_KERNEL=0 退回直连。
+        var useKernel = Environment.GetEnvironmentVariable("DOUGONG_KERNEL") is not "0" and not "false";
 
         IReadOnlyList<McpToolRegistry> registries = [];
         IReadOnlyList<ModelContextProtocol.Client.McpClient> clients = [];

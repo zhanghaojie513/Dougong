@@ -175,10 +175,10 @@ public static class Program
         var composition = SessionComposition.FromEnvironment(
             sessionId, workspace, ChatClientFactory.Create(config), approver);
 
-        // 内核接线（G14）：DOUGONG_KERNEL=1 时运行能力由内核解析，
-        // 宿主不直接持有 dispatcher/runtime 实例。默认关闭，避免结构改动
-        // 一次性影响全部既有套件。
-        var useKernel = Environment.GetEnvironmentVariable("DOUGONG_KERNEL") is "1" or "true";
+        // 内核接线（G14）：默认启用——运行能力由内核解析，宿主不直接持有
+        // dispatcher/runtime 实例。DOUGONG_KERNEL=0 可退回直连路径，
+        // 保留给"怀疑内核接线本身有问题"时的对照手段。
+        var useKernel = Environment.GetEnvironmentVariable("DOUGONG_KERNEL") is not "0" and not "false";
 
         IAgentRuntime runtime;
         IReadOnlyList<McpToolRegistry> mcpRegistries = [];
@@ -212,6 +212,7 @@ public static class Program
             }
             else
             {
+                Console.WriteLine("kernel=disabled（DOUGONG_KERNEL=0，直连路径）");
                 var dispatcher = composition.CreateDispatcher(store);
                 var (registries, clients) = await composition
                     .ConnectMcpAsync(dispatcher, Console.Out)
