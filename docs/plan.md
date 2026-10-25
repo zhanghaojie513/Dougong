@@ -220,7 +220,7 @@ status.md 的记录不够准确（写了"未实现真实模型摘要"，但没�
 | G12 | 思考字段名硬编码，无方言开关 | P4/P3 | 中 | 设计缺口 | `reasoning_content` 在**七处**被写成"协议本身的行为"：`LoopAgentRuntime.cs:126`（读流）/`:206`、`:382`（写回历史）；`OpenAiChatCompletionsFormat.cs:71`（读历史）、`:74`（写入线上）、`:157`（读流）、`:224`（写回历史）。接一家把思考放 `reasoning` 或 `reasoning_text` 的 provider 时，**思考内容静默丢失**；若对方是思考模式要求回传，下一轮直接 400 且错误信息通常不含字段名。**触发条件**：首次接入非 `reasoning_content` 风格的 provider |
 | G13 | 输出上限不可配置 | P4 | 低 | 设计缺口 | `AnthropicMessagesFormat.cs:99` 硬编码 `max_tokens = 4096`；两个 OpenAI format 从不发送该字段（`ChatOptions` 只被读了 `ReadToolDeclarations`）。既无法限制输出，也无法提高上限，长输出任务会被端点默认值截断。**触发条件**：出现需要长输出或需要设上限的任务 |
 | G14 | **内核未接入产品路径** | P1 | **阻断** | **已修（开关默认关）** | `-- kernel-wiring` 7 项 + `-- kernel-process` 1 项；3 条反证。默认仍走旧路径，`DOUGONG_KERNEL=1` 启用 |
-| G15 | 编排者持有可替换实现（审批器/dispatcher） | P3/P1 | 中 | 设计缺口 | `ToolDispatcher._approver` 与 `LoopAgentRuntime.dispatcher` 被存成字段：替换审批器或 dispatcher 后旧实例仍会被使用。**为什么难修**：审批是 dispatcher 每次调用都要发生的事，dispatcher 又必须被运行时持有——两者互为编排者，没有"每次重新解析"的自然断点。**触发条件**：出现运行时替换审批器的真实需求；目前由 `-- bare-hold` 显式登记为已知持有，不掩盖 |
+| G15 | 编排者持有可替换实现（审批器/dispatcher） | P3/P1 | 中 | **已修** | `IApproverAccessor` / `IDispatcherAccessor`：`ToolDispatcher` 与 `LoopAgentRuntime` 不再持有实现实例。内核路径传 `KernelApproverAccessor`/`KernelDispatcherAccessor`（走租约），直连路径传 `Fixed*`（显式固定）。`-- bare-hold` 12 处持有全部有说明，两条已知缺口条目已从白名单消失 |
 
 **G12/G13 为什么不是"自研 provider 矩阵"**：`goal.md` §3 把 provider 矩阵列为反目标，
 但那条针对的是"重造 LLM 抽象与 42 家厂商目录"。G12/G13 是**同一协议内部的字段名差异**，

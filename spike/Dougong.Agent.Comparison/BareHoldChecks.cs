@@ -60,19 +60,16 @@ public static class BareHoldChecks
             "装配器：它不参与运行，只在构造 dispatcher/runtime 时把审批器交出去；"
             + "内核路径下该字段未被使用（改用了内核解析的适配器）。",
 
-        ["ToolDispatcher._approver"] =
-            "执行器：审批是 dispatcher 的**每次调用**都要发生的事，"
-            + "而 dispatcher 本身由宿主/内核持有。这是已知缺口（G15）："
-            + "替换审批器后 dispatcher 仍用旧实例。",
+        ["FixedDispatcherAccessor._dispatcher"] =
+            "显式不参与替换：调用方主动选择固定 dispatcher（测试、单机场景）。",
+
+        ["FixedApproverAccessor._approver"] =
+            "显式不参与替换：调用方主动选择固定审批器（测试、单机 CLI）。"
+            + "与'接口收裸实例、悄悄存下来'不同，这个选择写在类型名里。",
 
         ["FixedStoreAccessor._store"] =
             "显式不参与替换：调用方主动选择固定实例（测试、无插件替换的单机场景）。"
             + "与'接口收裸实例、悄悄存下来'不同，这个选择是可见的、写在类型名里的。",
-
-        ["LoopAgentRuntime.<dispatcher>P"] =
-            "主构造函数参数生成的字段：运行时在一次 RunAsync 内需要多次派发工具，"
-            + "且它自己就是这次运行的编排者。已知缺口（G15）同 ToolDispatcher._approver——"
-            + "dispatcher 被替换后运行时仍用旧实例。",
 
         ["RegistrationHandle.<owner>P"] =
             "注册句柄：它持有的是 dispatcher 的**身份**用于注销，不是调用能力；"

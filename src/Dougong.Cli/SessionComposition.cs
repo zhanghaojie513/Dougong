@@ -98,8 +98,10 @@ public sealed class SessionComposition
 
         // 已知无访问的工具（如 ask_user）不产生审批项：让用户先批准"允许提问"、
         // 再看到问题，等于把一次交互拆成两次。策略收得很窄，见 PermissionPolicyApprover。
+        // 显式走 accessor 重载：审批器与存储都经访问点，避免重载解析产生歧义。
         var dispatcher = new ToolDispatcher(
-            new PermissionPolicyApprover(approver),
+            new PermissionPolicyApprover(approver) is var policy
+                ? new FixedApproverAccessor(policy) : null,
             new ToolResourceGate(),
             _sessionId, "turn-1", _workspace,
             TimeSpan.FromMinutes(5),
@@ -124,11 +126,12 @@ public sealed class SessionComposition
     public LoopAgentRuntime CreateRuntime(
         IToolDispatcher dispatcher, IAgentStore? store, UsageLedger? ledger = null) =>
         CreateRuntime(
-            dispatcher, store is null ? null : new FixedStoreAccessor(store), ledger);
+            new FixedDispatcherAccessor(dispatcher),
+            store is null ? null : new FixedStoreAccessor(store), ledger);
 
     /// <summary>用访问点建立运行时；语义同 <see cref="CreateDispatcher(IToolApprover, IStoreAccessor?)"/>。</summary>
     public LoopAgentRuntime CreateRuntime(
-        IToolDispatcher dispatcher, IStoreAccessor? store, UsageLedger? ledger = null)
+        IDispatcherAccessor dispatcher, IStoreAccessor? store, UsageLedger? ledger = null)
     {
         IChatClient effective = ledger is null
             ? _client

@@ -22,14 +22,47 @@ namespace Dougong.Agent;
 /// ——中断一个本来能跑的任务，比让它带着过长的上下文被 provider 拒绝更糟，也更难诊断。
 /// </para>
 /// </remarks>
-public sealed class LoopAgentRuntime(
-    IChatClient client,
-    IToolDispatcher dispatcher,
-    IStoreAccessor? store = null,
-    ContextLimits? limits = null,
-    IContextCompactor? compactor = null,
-    Func<string, CancellationToken, ValueTask<string>>? summarize = null) : IAgentRuntime
+public sealed class LoopAgentRuntime : IAgentRuntime
 {
+    private readonly IChatClient _client;
+    private readonly IDispatcherAccessor _dispatcher;
+    private readonly IStoreAccessor? _store;
+    private readonly ContextLimits? _limits;
+    private readonly IContextCompactor? _compactor;
+    private readonly Func<string, CancellationToken, ValueTask<string>>? _summarize;
+
+    /// <summary>用裸 dispatcher 构造：内部包成固定访问点（不参与替换）。</summary>
+    public LoopAgentRuntime(
+        IChatClient client,
+        IToolDispatcher dispatcher,
+        IStoreAccessor? store = null,
+        ContextLimits? limits = null,
+        IContextCompactor? compactor = null,
+        Func<string, CancellationToken, ValueTask<string>>? summarize = null)
+        : this(client, new FixedDispatcherAccessor(dispatcher), store, limits, compactor, summarize)
+    {
+    }
+
+    /// <summary>
+    /// 用访问点构造：每回合/每次派发都重新取当前 dispatcher。
+    /// 内核路径下传入，使替换 dispatcher 后不再用旧实例。
+    /// </summary>
+    public LoopAgentRuntime(
+        IChatClient client,
+        IDispatcherAccessor dispatcher,
+        IStoreAccessor? store = null,
+        ContextLimits? limits = null,
+        IContextCompactor? compactor = null,
+        Func<string, CancellationToken, ValueTask<string>>? summarize = null)
+    {
+        _client = client;
+        _dispatcher = dispatcher;
+        _store = store;
+        _limits = limits;
+        _compactor = compactor;
+        _summarize = summarize;
+    }
+
     public async IAsyncEnumerable<AgentEvent> RunAsync(
         AgentRunRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -57,7 +90,7 @@ public sealed class LoopAgentRuntime(
         for (var round = 0; round < request.MaxToolRounds; round++)
         {
             // 每轮调用模型前检查预算。压缩失败不中断运行——见类型注释。
-            if (limits is not null && compactor is not null)
+            if (_limits is not null && _compactor is not null)
             {
                 var compaction = await TryCompactAsync(baseline, cancellationToken)
                     .ConfigureAwait(false);
@@ -84,9 +117,9 @@ public sealed class LoopAgentRuntime(
             var fragmentCount = new Dictionary<string, int>(StringComparer.Ordinal);
 
             // 工具声明是运行时对连接器的正式输出，不是循环拼的提示文本。
-            var chatOptions = new ChatOptions().Attach(dispatcher.Tools);
+            var chatOptions = new ChatOptions().Attach(await _dispatcher.GetToolsAsync(cancellationToken).ConfigureAwait(false));
 
-            await using var enumerator = client
+            await using var enumerator = _client
                 .GetStreamingResponseAsync(history, chatOptions, cancellationToken)
                 .GetAsyncEnumerator(cancellationToken);
 
@@ -308,7 +341,7 @@ public sealed class LoopAgentRuntime(
                 }
 
                 var invocation = new ToolInvocation(call.Id, call.ToolId, args);
-                var result = await dispatcher.DispatchAsync(invocation, cancellationToken);
+                var result = await _dispatcher.DispatchAsync(invocation, cancellationToken);
 
                 // 屏障 4：终态也要提交，否则恢复时无法判断副作用是否发生。
                 // 结果内容同样入库：恢复出的 tool 消息必须有内容，
@@ -418,7 +451,7 @@ public sealed class LoopAgentRuntime(
     private async ValueTask<AgentEvent.RunFinished> FinishAsync(
         AgentRunOutcome outcome, string? diagnostic, CancellationToken cancellationToken)
     {
-        if (store is null) return new AgentEvent.RunFinished(outcome, diagnostic);
+        if (_store is null) return new AgentEvent.RunFinished(outcome, diagnostic);
 
         var payload = JsonSerializer.SerializeToElement(new
         {
@@ -428,7 +461,7 @@ public sealed class LoopAgentRuntime(
 
         try
         {
-            await store.CommitAsync(
+            await _store.CommitAsync(
                 new StoreRecord(0, StoreRecordKind.RunFinished, payload),
                 cancellationToken).ConfigureAwait(false);
             return new AgentEvent.RunFinished(outcome, diagnostic);
@@ -449,11 +482,11 @@ public sealed class LoopAgentRuntime(
     private async ValueTask<AgentEvent.RunFinished?> CommitOrNullAsync(
         StoreRecordKind kind, JsonElement payload, CancellationToken cancellationToken)
     {
-        if (store is null) return null;
+        if (_store is null) return null;
 
         try
         {
-            await store.CommitAsync(
+            await _store.CommitAsync(
                 new StoreRecord(0, kind, payload),
                 cancellationToken).ConfigureAwait(false);
             return null;
@@ -511,10 +544,10 @@ public sealed class LoopAgentRuntime(
     {
         try
         {
-            var plan = compactor!.Plan(limits!.ToInput(baseline));
+            var plan = _compactor!.Plan(_limits!.ToInput(baseline));
             if (plan is null) return (null, null);
 
-            if (summarize is null)
+            if (_summarize is null)
             {
                 // 只能选区、无法摘要：如实报告"未压缩"，不产出半成品历史。
                 return (null, new AgentEvent.ContextCompacted(
@@ -526,7 +559,7 @@ public sealed class LoopAgentRuntime(
             }
 
             var task = new SummarizingCompactionTask(
-                plan, baseline, summarize, RenderForSummary);
+                plan, baseline, _summarize, RenderForSummary);
 
             // 逐阶段推进到终态；中间态可序列化，崩溃后能续跑（由宿主决定是否持久化）。
             var steps = 0;

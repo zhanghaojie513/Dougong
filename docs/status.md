@@ -479,6 +479,23 @@ Agent 运行实现均由内核承载，组合根解析 `IAgentRuntime`」，这�
   ACP plan/elicitation（运行时没有数据源，做了是空壳）。
   （后项已于 2026-10-25 补齐 elicitation，见下。）
 
+- 2026-10-25：补两条此前未实现的验收 + 收口 G15。
+  ① **验收 3（内核路径下审批仍生效）**：新增 `-- kernel-path` 三项。
+  此前 `-- kernel-wiring` 里一个审批相关断言都没有——如果 `LeasedApprover`
+  吞掉异常或把"取不到审批器"误判为批准，内核路径下审批会静默失效而测试全绿。
+  反证：让 `LeasedApprover` 不调用真实审批器，两项断言精确失败。
+  ② **验收 7（停用运行时后旧引用不能静默跑完）**：同套件。
+  首版断言写错了——只看是否抛异常，而 `KernelAgentRuntime` 会把异常转成
+  `RunFinished(Failed)` 事件（与"流永不抛异常"取向一致），所以永远"通过"。
+  改为断言终态后暴露真实行为：`Failed` + `ObjectDisposedException` 诊断。
+  ③ **G15 收口**：新增 `IApproverAccessor` / `IDispatcherAccessor`，
+  `ToolDispatcher._approver` 与 `LoopAgentRuntime.dispatcher` 字段消失；
+  `LoopAgentRuntime` 从主构造函数改为显式构造函数以承载两种注入方式。
+  内核路径传 `KernelApproverAccessor`/`KernelDispatcherAccessor`（每次走租约），
+  直连路径传 `Fixed*`（显式选择不参与替换）。96 处旧调用点不受影响。
+  `-- bare-hold` 白名单从 14 条降到 12 条，两条缺口条目已消失。
+  177 项测试 + 31 套件全绿。
+
 - 2026-10-25：收口"编排者裸持有存储"。新增 `IStoreAccessor`（Agent 层契约）：
   `ToolDispatcher` 与 `LoopAgentRuntime` 不再接受 `IAgentStore` 实例，
   改为接受"每次提交自己取实例"的访问点；内核路径传 `KernelStoreAccessor`

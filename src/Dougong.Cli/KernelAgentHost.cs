@@ -54,7 +54,7 @@ public sealed class KernelAgentHost : IAsyncDisposable
     public static async Task<KernelAgentHost> CreateAsync(
         IAgentStore? store,
         Func<IToolApprover, IStoreAccessor?, CancellationToken, Task<IToolDispatcher>> createDispatcher,
-        Func<IToolDispatcher, IStoreAccessor?, IAgentRuntime> createRuntime,
+        Func<IDispatcherAccessor, IStoreAccessor?, IAgentRuntime> createRuntime,
         IToolApprover approver,
         CancellationToken cancellationToken = default)
     {
@@ -224,7 +224,7 @@ public sealed class KernelAgentHost : IAsyncDisposable
     /// 运行时插件。<b>它必须解析 dispatcher，不能自己 new</b>，理由同审批器。
     /// </summary>
     private sealed class RuntimePlugin(
-        Func<IToolDispatcher, IStoreAccessor?, IAgentRuntime> factory,
+        Func<IDispatcherAccessor, IStoreAccessor?, IAgentRuntime> factory,
         DougongKernel kernel) : IPlugin
     {
         public PluginManifest Manifest { get; } = PluginManifest.CreateWithDependencies(
@@ -238,24 +238,64 @@ public sealed class KernelAgentHost : IAsyncDisposable
             var reference = kernel.Resolver.Resolve<IToolDispatcher>()
                 ?? throw new InvalidOperationException("运行时插件解析不到 IToolDispatcher。");
 
-            // 描述符快照必须在租约内取：InvokeAsync 是唯一能接触实例的入口。
-            // 取到的是冻结副本（Register 时已 clone），不含实现对象，
-            // 因此之后长期持有它不构成"捕获实现实例"。
-            var tools = await reference.InvokeAsync(
-                (dispatcher, _) => ValueTask.FromResult(dispatcher.Tools),
-                cancellationToken).ConfigureAwait(false);
+
 
             // store 对运行时是可选依赖：没有持久化时传 null。
             var store = kernel.Resolver.Resolve<IAgentStore>() is { } storeRef
                 ? new KernelStoreAccessor(storeRef)
                 : null;
 
+            // 传 accessor 而非裸实例：每次读声明/派发都经租约重新取当前 dispatcher，
+            // 因此替换后不再用旧实现（G15 的一半）。
             context.Services.Register<IAgentRuntime>(
-                factory(new LeasedDispatcher(reference, tools), store));
+                factory(new KernelDispatcherAccessor(reference), store));
         }
     }
 
     // ── 适配器：把服务引用包装成裸接口，避免宿主缓存实现实例 ─────────
+
+    /// <summary>把内核服务引用适配成 <see cref="IDispatcherAccessor"/>。</summary>
+    /// <remarks>
+    /// 每次读声明或派发都经 <c>InvokeAsync</c>：替换 dispatcher 后自动用新实例，
+    /// 停用时会等这次调用完成再清理。
+    /// </remarks>
+    private sealed class KernelDispatcherAccessor(IServiceReference<IToolDispatcher> reference)
+        : IDispatcherAccessor
+    {
+        public async ValueTask<IReadOnlyList<ToolDescriptor>> GetToolsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                return await reference.InvokeAsync(
+                    (dispatcher, _) => ValueTask.FromResult(dispatcher.Tools),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                // 已停用：没有工具可用是正确结果，而不是"沿用上次的声明"。
+                return [];
+            }
+        }
+
+        public async ValueTask<ToolDispatchResult> DispatchAsync(
+            ToolInvocation invocation, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                return await reference.InvokeAsync(
+                    (dispatcher, token) => dispatcher.DispatchAsync(invocation, token),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                return new ToolDispatchResult(
+                    invocation.InvocationId, invocation.ToolId,
+                    ToolCallOutcome.CancelledBeforeExecution,
+                    Diagnostic: "工具提供方已停用，调用未执行。");
+            }
+        }
+    }
 
     /// <summary>把内核服务引用适配成 <see cref="IStoreAccessor"/>。</summary>
     /// <remarks>

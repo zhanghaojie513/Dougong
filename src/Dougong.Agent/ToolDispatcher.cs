@@ -14,7 +14,8 @@ namespace Dougong.Agent;
 public sealed class ToolDispatcher : IToolDispatcher
 {
     private readonly object _sync = new();
-    private readonly IToolApprover? _approver;
+    // 存的是"怎么取审批器"，不是审批器本身。
+    private readonly IApproverAccessor? _approverAccessor;
     private readonly ToolResourceGate? _gate;
     private readonly string _sessionId;
     private readonly string _turnId;
@@ -35,7 +36,8 @@ public sealed class ToolDispatcher : IToolDispatcher
         TimeSpan? approvalValidity = null,
         WorkspacePathGuard? pathGuard = null,
         IAgentStore? store = null)
-        : this(approver, gate, sessionId, turnId, workspace, approvalValidity, pathGuard,
+        : this(approver is null ? null : new FixedApproverAccessor(approver),
+              gate, sessionId, turnId, workspace, approvalValidity, pathGuard,
               store is null ? null : new FixedStoreAccessor(store))
     {
     }
@@ -45,7 +47,7 @@ public sealed class ToolDispatcher : IToolDispatcher
     /// 而裸实例会被固定下来——替换存储后旧实例仍会被使用。
     /// </summary>
     public ToolDispatcher(
-        IToolApprover? approver,
+        IApproverAccessor? approverAccessor,
         ToolResourceGate? gate,
         string sessionId,
         string turnId,
@@ -54,7 +56,7 @@ public sealed class ToolDispatcher : IToolDispatcher
         WorkspacePathGuard? pathGuard,
         IStoreAccessor? storeAccessor)
     {
-        _approver = approver;
+        _approverAccessor = approverAccessor;
         _gate = gate;
         _sessionId = sessionId;
         _turnId = turnId;
@@ -185,10 +187,10 @@ public sealed class ToolDispatcher : IToolDispatcher
             FileVersions = files.ToBindingValue(),
         };
 
-        if (_approver is not null)
+        if (_approverAccessor is { IsConfigured: true })
         {
             // 等待审批期间不持任何锁：慢审批不应阻塞整个工作区。
-            var decision = await _approver.RequestApprovalAsync(
+            var decision = await _approverAccessor.RequestApprovalAsync(
                 new ToolApprovalRequest(
                     _sessionId, _turnId, invocation.InvocationId,
                     registration.Descriptor, invocation.Arguments, permission,
