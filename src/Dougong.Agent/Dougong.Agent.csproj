@@ -2,6 +2,11 @@
 
   <PropertyGroup>
     <Description>Dougong Agent 运行时——agent loop、append-only JSONL 会话、工具管线、审批、上下文压缩</Description>
+      <!-- API 兼容检查（M3 切片 3.2）：与 artifacts/baseline 下的上一版 nupkg 比对。
+         基线用本地文件而非 PackageValidationBaselineVersion——后者会去 NuGet 找已发布包，
+         而本项目尚未发布（实测 NU1101）。 -->
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselinePath>$(MSBuildThisFileDirectory)../../artifacts/baseline/$(AssemblyName).nupkg</PackageValidationBaselinePath>
   </PropertyGroup>
 
   <ItemGroup>

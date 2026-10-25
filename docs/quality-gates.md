@@ -195,6 +195,15 @@ M1 结束了 15 个真实缺陷之后，最有价值的一条教训是：
 非 spike）中确实存在调用点；断言方式是扫描编译产物中的引用，而不是读源码文本。
 这条与"公开面检查"互补：前者防"没接线"，后者防"接进去了但走不到"。
 
+**门 6 的自动化部分（2026-10-25，M3 切片 3.2）**：`Dougong.Kernel` 与
+`Dougong.Agent` 启用 `EnablePackageValidation`，与 `artifacts/baseline/` 下的基线包
+比对公开 API。`dotnet pack` 报 `error CP****` 表示破坏性变更，**不是打包故障**。
+- 有意变更：跑 `scripts/update-api-baseline.sh` 更新基线，并在 `CHANGELOG.md` 记录
+- 基线必须与代码同步更新，否则真正的破坏会淹没在历史差异里
+- 基线目录与产物目录分开：共用会让"上次 pack 的结果"成为基线，等于没有基线
+**这一条替代了原计划的 `[Experimental]` 标记**——后者产生编译错误而非警告，
+会让第三方插件项目装不上（见 `m3-plan.md` §五）。
+
 **门 5（断言必须真读输入）补充一条实测教训（2026-10-25）**：
 `KernelStateCommitTests.Snapshot_plus_deltas_rebuilds...` 用 `await Task.Delay(100)`
 等待后台读取器消费增量，然后断言。全量套件并行跑时这 100ms 不够，`added` 为空，

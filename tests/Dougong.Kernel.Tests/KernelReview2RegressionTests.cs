@@ -91,12 +91,14 @@ public sealed class KernelReview2RegressionTests
         var kernel = new DougongKernel { CancellationTimeout = TimeSpan.FromMilliseconds(100) };
         var callbackEntered = Signal();
         var releaseCallback = Signal();
+        var callbackExited = Signal();
         var plugin = new P("r2.cancel", (ctx, _) =>
         {
             ctx.Lifetime.Register(() =>
             {
                 callbackEntered.TrySetResult();
                 releaseCallback.Task.GetAwaiter().GetResult();
+                callbackExited.TrySetResult();
             });
             return ValueTask.CompletedTask;
         });
@@ -112,6 +114,16 @@ public sealed class KernelReview2RegressionTests
         finally
         {
             releaseCallback.TrySetResult();
+
+            // 先确认回调真的退出，再 dispose。
+            // 只 TrySetResult 不够：被唤醒的回调还要跑完剩余部分，
+            // 而 dispose 第一步就用 CancellationTimeout(100ms) 去等它。
+            //
+            // 诚实记录：这个握手是**加固而非修复已验证缺陷**。观察到过一次
+            // 全量并行下的"取消阶段超时"失败，但单独压测 6 轮无法复现，
+            // 因此无法用反证证明它必需。保留的理由是该同步点让测试的时序
+            // 假设明确（"回调已退出"），而不是依赖"TrySetResult 后立刻能跑完"。
+            await callbackExited.Task.WaitAsync(Limit);
         }
 
         try { await kernel.DisposeAsync().AsTask().WaitAsync(Limit); }

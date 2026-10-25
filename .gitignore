@@ -1,7 +1,12 @@
 # 构建产物
 bin/
 obj/
-artifacts/
+# artifacts/ 整体忽略，但基线必须入库——否则 CI 上没有可比对的对象。
+# git 的否定规则要求父目录先不被整体排除，所以这里逐级放开。
+artifacts/*
+!artifacts/baseline
+artifacts/baseline/*
+!artifacts/baseline/*.nupkg
 TestResults/
 
 # IDE

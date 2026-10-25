@@ -43,8 +43,21 @@ jobs:
         if: failure()
         run: dotnet test Dougong.slnx -c Release --no-build --output Detailed
 
-      - name: Pack (verify packaging works)
+      # 这一步同时做两件事：验证能打包，以及 **API 兼容检查**。
+      # Dougong.Kernel 与 Dougong.Agent 启用了 EnablePackageValidation，
+      # 与 artifacts/baseline/ 下的基线包比对（见 docs/m3-plan.md §五）。
+      # 因此 `error CP****` 表示公开 API 被破坏性修改，**不是打包故障**：
+      # 要么改回兼容形状，要么按 scripts/update-api-baseline.sh 更新基线并在
+      # CHANGELOG.md 记录。
+      - name: Pack (packaging + API compatibility)
         run: dotnet pack Dougong.slnx -c Release --no-build -o artifacts/packages
+
+      # 基线缺失时不让它悄悄变成"无基线=不校验"。
+      - name: Verify API baselines exist
+        run: |
+          for pkg in Dougong.Kernel Dougong.Agent; do
+            test -f "artifacts/baseline/$pkg.nupkg" || { echo "缺少基线：artifacts/baseline/$pkg.nupkg（见 scripts/update-api-baseline.sh）" >&2; exit 1; }
+          done
 
       - name: Upload packages
         if: always()
