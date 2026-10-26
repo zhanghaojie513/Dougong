@@ -128,8 +128,14 @@ public static class ApiCompatChecks
         }
         finally
         {
-            // 无论成败都必须还原，否则后续检查会跑在被污染的代码上。
+            // 还原源码**之后必须重建**。
+            // 只还原源码是不够的：bin/ 里留着被探测版编译出的 DLL，
+            // 而后续步骤（CI 里的 dotnet pack --no-build）会直接用那个产物，
+            // 于是"我改过了又改回来"变成了"最终产物被永久污染"。
+            // 这个缺陷真实发生过一次：CI 在 pack 阶段报 CP0002，
+            // 而源码与基线都是干净的。
             await File.WriteAllTextAsync(target, text).ConfigureAwait(false);
+            await RebuildAsync(Path.Combine(root, "src", "Dougong.Ai")).ConfigureAwait(false);
         }
     }
 
@@ -151,6 +157,43 @@ public static class ApiCompatChecks
             return "Dougong.Cli 不应启用 ApiCompat：它是工具不是库，见 docs/compat-policy.md §二";
 
         return null;
+    }
+
+    /// <summary>
+    /// 还原源码后重建，使 bin/ 里的产物与源码一致。
+    /// </summary>
+    /// <remarks>
+    /// 返回值不重要——这里只关心"产物被刷新了"。若构建失败，
+    /// 后续检查会以各自的方式失败，比吞掉错误更好诊断。
+    /// </remarks>
+    private static async Task RebuildAsync(string projectDir)
+    {
+        var startInfo = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("build");
+        startInfo.ArgumentList.Add(projectDir);
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("Release");
+        startInfo.Environment["DOTNET_CLI_UI_LANGUAGE"] = "en";
+
+        using var process = new Process { StartInfo = startInfo };
+        process.Start();
+        _ = process.StandardOutput.ReadToEndAsync();
+        _ = process.StandardError.ReadToEndAsync();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+        }
     }
 
     private static async Task<(int ExitCode, string Output)> RunPackAsync(string projectDir)
