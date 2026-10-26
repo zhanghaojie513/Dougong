@@ -111,6 +111,21 @@ public static class Program
         if (args.FirstOrDefault() == "replaceability")
             return await ReplaceabilityChecks.RunAsync();
 
+        if (args.FirstOrDefault() == "skill-l1")
+            return await SkillL1Checks.RunAsync();
+
+        if (args.FirstOrDefault() == "memory-cli")
+            return await MemoryCliChecks.RunAsync();
+
+        // 验收 1：需要真实模型与费用。缺配置时明确报"未运行"并返回非零，
+        // 因此不能进 all-checks.sh（那会让无凭证环境永远红）。
+        if (args.FirstOrDefault() == "l1-effect")
+            return await L1EffectChecks.RunAsync();
+
+        // 验收 1 的装置自检：验证"尺子准不准"，不需要真实模型。进 all-checks.sh。
+        if (args.FirstOrDefault() == "l1-harness")
+            return await L1HarnessChecks.RunAsync();
+
         // 性能基线只输出数字，不参与通过/失败判定——因此不进 all-checks.sh。
         if (args.FirstOrDefault() == "perf")
             return await PerformanceBaselineChecks.RunAsync();

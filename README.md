@@ -105,6 +105,9 @@ Dougong 关注的是 Agent 的**承托层**，而不是某一个模型或某一�
 
 ## 快速开始
 
+**完全没写过 .NET 或没写过代码？** 先看 [从零开始：第一次动手](docs/getting-started.md)
+——那里每条命令都写全，并说明"应该看到什么"。
+
 ### 环境要求
 
 - .NET SDK `10.0.402`
@@ -114,8 +117,8 @@ Dougong 关注的是 Agent 的**承托层**，而不是某一个模型或某一�
 ### 构建和测试
 
 ```bash
-git clone https://github.com/zhanghaojie513/Dougong.git
-cd Dougong
+git clone https://github.com/zhanghaojie513/Dougong.git dougong
+cd dougong
 
 dotnet restore Dougong.slnx
 dotnet build Dougong.slnx -c Release
@@ -143,6 +146,9 @@ dotnet pack Dougong.slnx -c Release --output ./artifacts/packages
 
 看 [docs/plugin-author-guide.md](docs/plugin-author-guide.md)：从工程文件到最小插件类，
 含五个最容易犯的错与失败定位方法。
+
+完全没写过 .NET 的话，从 [docs/getting-started.md](docs/getting-started.md) 开始：
+它从"装什么软件"讲起，每条命令都写明"应该看到什么"。
 
 可运行的例子在 [samples/](samples/)——其中 `m1-minimal-agent` 与 `m2-acp-mcp`
 **不需要 API Key** 就能跑完整个循环。

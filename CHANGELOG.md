@@ -22,6 +22,32 @@
 
 ### Added
 
+- `Dougong.Agent`：L1 偏好记忆层（`MemoryArtifact`、`MemoryStore`、`StoreMemoryInjector`、
+  `MemoryPrompt`、`MemoryDiagnostics`）。产物与启用严格分离，白名单硬编码
+  （`PreferenceKeys`：`language` / `output.format` / `naming.convention`），
+  审批绑定内容 SHA-256，跨工作区默认不传播。
+  **这是 `design.md:236` 列出但此前从未实现的切片**，也是 M2 唯一的范围欠账。
+  验证范围要说清：验收 2–6（安全性质）已实现并逐项反证；
+  **验收 1（记忆是否改善任务表现）需要真实模型 + 独立评测集 + 预先记录的指标，
+  本切片不做**——所以只能说"管道安全且可撤销"，不能说"记忆有效"。
+- `Dougong.Agent`：`LoopAgentRuntime.Memory` / `MemoryWorkspace`（`init` 属性）
+  与 `IMemoryInjector`。为 null 即关闭该数据流，不产生任何偏好注入。
+  用 `init` 属性而非构造参数，避免破坏已有构造函数签名。
+- `Dougong.Agent`：`MemoryStore.PutAsync` 拒绝版本倒退。
+  允许倒退等于允许"用旧快照覆盖撤销"，而旧快照最常见的来源是中断后重放。
+- `Dougong.Agent`：`MemoryStore.ReadArtifactsAsync` 改为"最后写入胜"而非"最高版本胜"。
+  按版本选胜会让版本号未递增的撤销被**静默忽略**，而调用方以为成功。
+- `Dougong.Cli`：`/memory` 命令，列出**全部**产物（含未生效）并说明每条不生效的原因。
+  原因文本与注入器共用 `MemoryDiagnostics`，避免展示与实际注入漂移。
+- `Dougong.Cli`：`DOUGONG_MEMORY` 开关（默认关闭）。启用即意味着偏好内容进入
+  后续每次 prompt、可能发给远端模型——按 `skills-evolution.md §4` 必须显式开启。
+- 验收 1（记忆效果对照）的测量装置与实测结果：`spike` 的 `-- l1-effect`
+  （10 个留出任务、有/无记忆两组、机械化判据、预先登记的最小提升 50%）
+  与 `-- l1-harness`（装置自检 6 项，不需要真实模型）。
+  缺凭证时 `-- l1-effect` 明确报"未运行"并返回非零，绝不算通过。
+  **实测：6 家 provider × 2 种协议共 14 个组合，提升 60%–90%（中位数 80%），
+  14/14 超过 50% 阈值。** 适用范围仅限被测模型与这 10 个任务。
+  见 [skill-l1-acceptance-1.md](docs/skill-l1-acceptance-1.md)。
 - `Dougong.Agent`：`ToolDescriptor.MayHaveIrreversibleEffects`（默认 false）
   与 `UnknownOutcome.MayHaveIrreversibleEffects`（默认 true）+ `RecoveredSession.Retryable`。
   恢复时据此区分「只读工具崩溃，可安全重试」与「可能已产生副作用，必须人工核实」。

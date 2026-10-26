@@ -34,7 +34,9 @@ public sealed class SessionComposition
         IToolApprover approver,
         bool shellEnabled,
         int contextWindow,
-        IReadOnlyList<McpServerSpec> mcpServers)
+        IReadOnlyList<McpServerSpec> mcpServers,
+        IMemoryInjector? memory = null,
+        MemoryStore? memoryStore = null)
     {
         _sessionId = sessionId;
         _workspace = workspace;
@@ -43,15 +45,84 @@ public sealed class SessionComposition
         _shellEnabled = shellEnabled;
         _contextWindow = contextWindow;
         _mcpServers = mcpServers;
+        Memory = memory;
+        MemoryStore = memoryStore;
     }
 
-    /// <summary>从环境变量读取共用配置，构造装配器。</summary>
+    /// <summary>
+    /// 按 <c>DOUGONG_MEMORY</c> 决定记忆目录。
+    /// </summary>
+    /// <remarks>
+    /// 默认**关闭**。这不是保守，是数据流决定的：启用记忆意味着
+    /// 用户的历史偏好会被写进后续每一次 prompt，并且可能发给远端模型。
+    /// `skills-evolution.md §4` 要求这条数据流"分别可观察、可禁用"，
+    /// 因此它必须显式开启。
+    /// <para>
+    /// 取值：<c>1</c>/<c>true</c> 开启（用默认目录），或一个目录路径。
+    /// </para>
+    /// </remarks>
+    /// <param name="sessionDirectory">会话目录，用于推出默认记忆目录。</param>
+    public static string? MemoryDirectoryFromEnvironment(string sessionDirectory)
+    {
+        var value = Environment.GetEnvironmentVariable("DOUGONG_MEMORY");
+        return value switch
+        {
+            null or "" or "0" or "false" => null,
+            "1" or "true" => Path.Combine(sessionDirectory, "..", "memory"),
+            _ => value,
+        };
+    }
+
+    /// <summary>从环境变量读取共用配置，构造装配器（不启用记忆）。</summary>
     /// <remarks>
     /// 环境变量是当前两个入口唯一的共同配置来源。ACP 模式的审批器由协议实现，
     /// 因此作为参数传入；其余全部从环境读取。
+    /// <para>
+    /// 本重载不启用 L1 记忆。需要记忆时用 <see cref="CreateAsync"/>。
+    /// 保留它是为了不破坏已有调用点与检查项——"加能力"不该顺手改掉旧签名。
+    /// </para>
     /// </remarks>
     public static SessionComposition FromEnvironment(
-        string sessionId, string workspace, IChatClient client, IToolApprover approver)
+        string sessionId, string workspace, IChatClient client, IToolApprover approver) =>
+        Create(sessionId, workspace, client, approver, memory: null, memoryStore: null);
+
+    /// <summary>
+    /// 从环境变量读取共用配置，并按需启用 L1 记忆。
+    /// </summary>
+    /// <param name="sessionId">会话标识。</param>
+    /// <param name="workspace">工作区绝对路径。</param>
+    /// <param name="client">模型连接器。</param>
+    /// <param name="approver">审批器。</param>
+    /// <param name="memoryDirectory">
+    /// 记忆文件目录；null 表示不启用记忆。启用与否由调用方按
+    /// <c>DOUGONG_MEMORY</c> 决定，这里不读该变量——两个入口的默认值可能不同，
+    /// 而"是否启用数据流"必须是显式决定，不能藏在第二个地方。
+    /// </param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public static async Task<SessionComposition> CreateAsync(
+        string sessionId, string workspace, IChatClient client, IToolApprover approver,
+        string? memoryDirectory = null, CancellationToken cancellationToken = default)
+    {
+        // 记忆按工作区分文件：跨工作区默认不传播（skills-evolution.md §3）。
+        // 用路径哈希而不是文件名，避免不同工作区撞到同一个文件。
+        IMemoryInjector? memory = null;
+        MemoryStore? memoryStore = null;
+        if (!string.IsNullOrWhiteSpace(memoryDirectory))
+        {
+            var key = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(workspace))))[..16];
+            var path = Path.Combine(memoryDirectory, $"{key}.jsonl");
+            memoryStore = await MemoryStore.OpenAsync(path, cancellationToken).ConfigureAwait(false);
+            memory = new StoreMemoryInjector(memoryStore);
+        }
+
+        return Create(sessionId, workspace, client, approver, memory, memoryStore);
+    }
+
+    private static SessionComposition Create(
+        string sessionId, string workspace, IChatClient client, IToolApprover approver,
+        IMemoryInjector? memory, MemoryStore? memoryStore)
     {
         var shellEnabled = Environment.GetEnvironmentVariable("DOUGONG_SHELL") is "1" or "true";
         var contextWindow = int.TryParse(
@@ -61,7 +132,7 @@ public sealed class SessionComposition
 
         return new SessionComposition(
             sessionId, workspace, client, approver,
-            shellEnabled, contextWindow, ParseMcpServers());
+            shellEnabled, contextWindow, ParseMcpServers(), memory, memoryStore);
     }
 
     /// <summary>本次会话是否启用了 shell 工具。</summary>
@@ -72,6 +143,19 @@ public sealed class SessionComposition
 
     /// <summary>本次会话配置的 MCP server 列表。</summary>
     public IReadOnlyList<McpServerSpec> McpServers => _mcpServers;
+
+    /// <summary>L1 偏好注入器；未启用记忆时为 null。</summary>
+    /// <remarks>
+    /// 为 null 就是"这两条数据流关闭"的表达：运行时完全不读记忆，
+    /// 也不会有任何偏好内容进入提示（验收 6 的"可禁用"）。
+    /// </remarks>
+    public IMemoryInjector? Memory { get; }
+
+    /// <summary>记忆存储；未启用记忆时为 null。<c>/memory</c> 用它列出全部产物（含未启用）。</summary>
+    public MemoryStore? MemoryStore { get; }
+
+    /// <summary>当前工作区。<c>/memory</c> 用它判断作用域是否匹配。</summary>
+    public string MemoryWorkspace => _workspace;
 
     /// <summary>
     /// 建立 dispatcher 并注册全部工具。
@@ -142,8 +226,14 @@ public sealed class SessionComposition
                 _client, ledger, _sessionId,
                 _client.ProtocolName(), _client.ModelName(), ChatProtocol.OpenAiChatCompletions);
 
+        // 偏好在两条返回路径上都要接：漏掉一条就会出现
+        // "开了压缩就没偏好"这类分支相关的怪事。
         if (_contextWindow <= 0)
-            return new LoopAgentRuntime(effective, dispatcher, store);
+            return new LoopAgentRuntime(effective, dispatcher, store)
+            {
+                Memory = Memory,
+                MemoryWorkspace = _workspace,
+            };
 
         return new LoopAgentRuntime(
             effective, dispatcher, store,
@@ -153,7 +243,11 @@ public sealed class SessionComposition
                 MaxOutputTokens = 4_096,
             },
             new SlidingWindowCompactor(preservedHead: 2, preservedTail: 6),
-            (transcript, ct) => SummarizeAsync(effective, transcript, ct));
+            (transcript, ct) => SummarizeAsync(effective, transcript, ct))
+        {
+            Memory = Memory,
+            MemoryWorkspace = _workspace,
+        };
     }
 
     /// <summary>
@@ -330,8 +424,13 @@ public static class AcpComposition
     {
         var store = storePath is null ? null : OpenStore(storePath, context.SessionId);
 
-        var composition = SessionComposition.FromEnvironment(
-            context.SessionId, context.Workspace, client, approver);
+        var composition = await SessionComposition.CreateAsync(
+            context.SessionId, context.Workspace, client, approver,
+            SessionComposition.MemoryDirectoryFromEnvironment(
+                storePath is null
+                    ? Path.Combine(context.Workspace, ".dougong")
+                    : (Path.GetDirectoryName(Path.GetFullPath(storePath)) ?? context.Workspace)),
+            cancellationToken).ConfigureAwait(false);
 
         // 账目：与 REPL 一样包一层装饰器。
         var ledger = new UsageLedger();

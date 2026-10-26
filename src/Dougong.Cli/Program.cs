@@ -24,6 +24,9 @@ namespace Dougong.Cli;
 /// <item><c>DOUGONG_MCP_SERVERS</c> 可选：MCP server 列表（默认不连）。三种形态：
 /// <c>name=/path/server args</c>（stdio）、<c>name=http://host/mcp</c>、
 /// <c>name=https://host/mcp</c>（Streamable HTTP）</item>
+/// <item><c>DOUGONG_MEMORY</c> 可选：启用 L1 偏好记忆。<c>1</c>/<c>true</c> 用默认目录，
+/// 或直接给目录路径。**默认关闭**——启用意味着历史偏好会进入后续每次 prompt，
+/// 可能发给远端模型，因此必须显式开启。开启后 <c>/memory</c> 可查看全部产物</item>
 /// </list>
 /// 会话参数：
 /// <list type="bullet">
@@ -181,8 +184,9 @@ public static class Program
         IToolApprover approver = AutoApproveApprover.IsEnabled
             ? new AutoApproveApprover()
             : new ConsoleApprover();
-        var composition = SessionComposition.FromEnvironment(
-            sessionId, workspace, ChatClientFactory.Create(config), approver);
+        var composition = await SessionComposition.CreateAsync(
+            sessionId, workspace, ChatClientFactory.Create(config), approver,
+            SessionComposition.MemoryDirectoryFromEnvironment(sessionDir));
 
         // 内核接线（G14）：默认启用——运行能力由内核解析，宿主不直接持有
         // dispatcher/runtime 实例。DOUGONG_KERNEL=0 可退回直连路径，
@@ -252,7 +256,7 @@ public static class Program
 
             if (input.StartsWith('/'))
             {
-                if (!HandleCommand(input, messages, sessionPath, ledger, sessionId))
+                if (!HandleCommand(input, messages, sessionPath, ledger, sessionId, composition))
                 {
                     foreach (var registry in mcpRegistries) registry.Dispose();
                     foreach (var mcpClient in mcpClients) await mcpClient.DisposeAsync();
@@ -322,7 +326,7 @@ public static class Program
 
     private static bool HandleCommand(
         string input, List<AgentMessage> history, string sessionPath,
-        UsageLedger ledger, string sessionId)
+        UsageLedger ledger, string sessionId, SessionComposition composition)
     {
         switch (input.Trim().ToLowerInvariant())
         {
@@ -335,6 +339,7 @@ public static class Program
                 Console.WriteLine("  /history  查看内存中的历史条数（会话日志以 JSONL 为准）");
                 Console.WriteLine("  /where    显示当前会话文件");
                 Console.WriteLine("  /usage    显示本会话的 token 用量与调用次数");
+                Console.WriteLine("  /memory   显示 L1 偏好记忆（含未启用的候选）");
                 return true;
 
             case "/history":
@@ -345,6 +350,10 @@ public static class Program
                 Console.WriteLine($"  {sessionPath}");
                 return true;
 
+            case "/memory":
+                PrintMemory(composition);
+                return true;
+
             case "/usage":
                 PrintUsage(ledger, sessionId);
                 return true;
@@ -353,6 +362,81 @@ public static class Program
                 Console.WriteLine($"  未知命令：{input}");
                 return true;
         }
+    }
+
+    /// <summary>
+    /// 列出记忆产物。
+    /// </summary>
+    /// <remarks>
+    /// 列出**全部**状态而不只是启用中的：候选为什么没生效（未审批？篡改？过期？）
+    /// 是用户最需要看到的信息，只显示启用项等于把诊断信息藏起来。
+    /// 每条都带来源、版本、作用域——验收 6 要求"用户能查看当前启用内容、
+    /// 来源、版本及作用域"。
+    /// </remarks>
+    private static void PrintMemory(SessionComposition composition)
+    {
+        if (composition.MemoryStore is null)
+        {
+            Console.WriteLine("  记忆未启用。设置 DOUGONG_MEMORY=1 开启。");
+            Console.WriteLine("  开启后，历史任务中的偏好会被注入后续对话——"
+                + "这是外发数据流，因此默认关闭。");
+            return;
+        }
+
+        // 同步等待：这是用户主动输入的命令，不是后台路径。
+        var all = composition.MemoryStore.ReadArtifactsAsync().GetAwaiter().GetResult();
+        if (all.Count == 0)
+        {
+            Console.WriteLine("  记忆为空。");
+            return;
+        }
+
+        Console.WriteLine($"  记忆产物 {all.Count} 条（未生效项会说明原因）：");
+        Console.WriteLine();
+
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var artifact in all.Values
+            .OrderByDescending(a => MemoryDiagnostics.WhyInactive(a, composition.MemoryWorkspace, now) is null)
+            .ThenBy(a => a.Key, StringComparer.Ordinal))
+        {
+            // 判定与原因都取自与注入器同一处，展示不会与实际注入漂移。
+            var reason = MemoryDiagnostics.WhyInactive(
+                artifact, composition.MemoryWorkspace, now);
+
+            Console.WriteLine($"  [{(reason is null ? "生效" : "未生效")}] {artifact.Key} = {artifact.Value}");
+            Console.WriteLine($"      状态 {artifact.State} · 版本 {artifact.Version}"
+                + $" · 作用域 {artifact.Scope}"
+                + (string.IsNullOrEmpty(artifact.Workspace) ? "" : $"({artifact.Workspace})"));
+            Console.WriteLine($"      来源任务 {artifact.SourceTaskId}"
+                + (artifact.ExpiresAt is { } expires ? $" · 有效至 {expires:yyyy-MM-dd HH:mm}" : ""));
+
+            if (reason is not null) Console.WriteLine($"      原因：{reason}");
+        }
+    }
+
+    /// <summary>说明一条产物为什么不生效。顺序与注入器的校验顺序一致。</summary>
+    private static string ExplainInactive(MemoryArtifact artifact)
+    {
+        if (artifact.State is not MemoryArtifactState.Enabled)
+            return artifact.State switch
+            {
+                MemoryArtifactState.Candidate => "尚为候选，未审批启用",
+                MemoryArtifactState.Approved => "已审批但未启用",
+                MemoryArtifactState.Revoked => "已撤销",
+                MemoryArtifactState.Expired => "已过期",
+                _ => artifact.State.ToString(),
+            };
+
+        if (!artifact.IsIntact) return "内容与审批时的哈希不符（可能被改动）";
+        if (artifact.ExpiresAt is { } expires && expires <= DateTimeOffset.UtcNow)
+            return $"已过期（{expires:yyyy-MM-dd HH:mm}）";
+        if (!PreferenceKeys.IsAllowed(artifact.Key))
+            return "键不在白名单内";
+        if (!PreferenceKeys.IsValid(artifact.Key, artifact.Value))
+            return "取值不符合该键的约束";
+
+        return "作用域不匹配当前工作区";
     }
 
     /// <summary>

@@ -36,7 +36,7 @@ echo "API: ALL PASS"
 
 echo
 echo "== 自检套件 =="
-suites="surface parity acp elicitation elicitation-process kernel-wiring kernel-path kernel-process bare-hold workspace-lock acp-plan replaceability telemetry recheck token schema tool-replacement mcp mcp-reload reachability approval-log wiring wire session usage shell failure store approval fileversion compaction contract"
+suites="surface parity acp elicitation elicitation-process kernel-wiring kernel-path kernel-process bare-hold workspace-lock acp-plan replaceability telemetry recheck token schema tool-replacement mcp mcp-reload reachability approval-log wiring wire session usage shell failure store approval fileversion compaction contract skill-l1 l1-harness memory-cli"
 
 failed=0
 failed_names=""
@@ -56,4 +56,12 @@ if [ "$failed" -eq 0 ]; then
 else
   echo "FAILED SUITES:$failed_names"
   exit 1
+fi
+
+# 反证：默认不跑（要反复重建，约 10 分钟），但必须能一键跑。
+# 全绿只说明"没发现失败"，反证才说明"检查确实在验证该行为"。
+if [ "${RUN_COUNTERPROOFS:-0}" = "1" ]; then
+  echo
+  echo "== 反证 =="
+  bash scripts/skill-l1-counterproofs.sh
 fi
