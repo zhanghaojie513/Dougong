@@ -12,7 +12,9 @@ DOTNET="${DOTNET:-dotnet}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PACKAGES=(Dougong.Kernel Dougong.Agent)
+# 五个公开发布的 SDK 包。Cli 不在其中：它是工具（PackAsTool），
+# 面向命令行用户而非 API 消费者，公开类型不是契约。
+PACKAGES=(Dougong.Kernel Dougong.Agent Dougong.Ai Dougong.Mcp Dougong.Acp)
 
 echo "== 1. 临时关闭校验，从当前 HEAD 打包 =="
 # 校验开着的话，pack 会因为"与基线不一致"失败——而我们正是要更新基线。

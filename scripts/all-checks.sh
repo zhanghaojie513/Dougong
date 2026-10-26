@@ -36,7 +36,7 @@ echo "API: ALL PASS"
 
 echo
 echo "== 自检套件 =="
-suites="surface parity acp elicitation elicitation-process kernel-wiring kernel-path kernel-process bare-hold workspace-lock acp-plan replaceability telemetry recheck token schema tool-replacement mcp mcp-reload reachability approval-log wiring wire session usage shell failure store approval fileversion compaction contract skill-l1 l1-harness memory-cli context-hygiene doctor report"
+suites="surface parity acp elicitation elicitation-process kernel-wiring kernel-path kernel-process bare-hold workspace-lock acp-plan replaceability telemetry recheck token schema tool-replacement mcp mcp-reload reachability approval-log wiring wire session usage shell failure store approval fileversion compaction contract skill-l1 l1-harness memory-cli context-hygiene doctor report apicompat"
 
 failed=0
 failed_names=""

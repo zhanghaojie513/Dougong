@@ -89,6 +89,12 @@ public sealed class MyPlugin : IPlugin
 }
 
 public interface IClock { DateTimeOffset Now { get; } }
+
+// 上面用到的实现。真实项目里换成你自己的；这个只是让示例能独立编译。
+public sealed class SystemClock : IClock
+{
+    public DateTimeOffset Now => DateTimeOffset.UtcNow;
+}
 ```
 
 ### 1.3 服务契约必须放在共享程序集里
@@ -297,6 +303,7 @@ using var subscription = kernel.SubscribeStateChanges(change =>
 | 照抄 §1.1 的 csproj **编译不过**——缺 `ImplicitUsings`/`Nullable`，报"找不到 DateTimeOffset"。原因是 Dougong 仓库根的 `Directory.Build.props` 提供了这两个属性，但外部插件工程不在那个目录下 | 在 §1.1 显式写出并说明原因 |
 | 服务契约定义在插件程序集里时，宿主无法按类型解析 | 补 §1.3 |
 | 未说明"什么时候不需要共享契约" | 在 §1.3 末尾说明：只提供工具时不需要 |
+| §1.2 的代码调用了 `new SystemClock()`，但全文没有定义这个类型——照抄必报 `CS0246: 未能找到类型或命名空间名"SystemClock"` | 在 §1.2 代码块末尾补上 `SystemClock` 的实现 |
 
 验证结果：按修正后的指南建工程 → 编译通过 → 内核加载到 `Active` →
 `UnloadAsync` 成功。

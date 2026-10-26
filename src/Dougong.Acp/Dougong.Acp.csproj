@@ -3,6 +3,14 @@
   <PropertyGroup>
     <Description>Dougong Acp 层——ACP Agent 端实现（JSON-RPC over stdio，M2 引入）</Description>
   </PropertyGroup>
+  <!-- API 兼容检查：与上一个发布版本比对公开 API。
+       本项目 0.x 不做向后兼容承诺，但**变更必须可见**——
+       没有检出的话，破坏性改动会一路绿灯到发布之后才被发现。 -->
+  <PropertyGroup>
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselinePath>$(MSBuildThisFileDirectory)../../artifacts/baseline/$(AssemblyName).nupkg</PackageValidationBaselinePath>
+  </PropertyGroup>
+
 
   <ItemGroup>
     <ProjectReference Include="..\Dougong.Agent\Dougong.Agent.csproj" />

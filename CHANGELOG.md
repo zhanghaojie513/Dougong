@@ -7,12 +7,13 @@
 
 ## 关于兼容性
 
-本项目处于 `0.x`，**不做向后兼容承诺**。但所有公开 API 的变更都会被检出并记录：
+本项目处于 `0.x`，**不做向后兼容承诺**，但**每条公开 API 变更都会被自动检出并记录**。
+完整规则见 [docs/compat-policy.md](docs/compat-policy.md)，要点：
 
-- `Dougong.Kernel` 与 `Dougong.Agent` 启用了 `EnablePackageValidation`，
-  任何公开 API 的增删改会在 `dotnet pack` 时报 `CP****` 错误（见 `docs/m3-plan.md` §五）
-- 删改公开 API 前先标 `[Obsolete]`，至少跨一个次版本
-- 每条变更记入下面的对应版本
+- 五个 SDK 包（Kernel / Agent / Ai / Mcp / Acp）都启用了 `EnablePackageValidation`，
+  公开 API 的增删改会在 `dotnet pack` 时报 `CP****` 错误
+- 删改公开 API 前先标 `[Obsolete]` 并写清替代方案，至少跨一个次版本
+- **行为变化**（默认值、语义、输出格式）ApiCompat 检不出，必须在这里单独记一行
 
 **这里只写"对使用者有影响"的变化**，不写内部重构。
 

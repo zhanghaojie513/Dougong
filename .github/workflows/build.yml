@@ -49,7 +49,7 @@ jobs:
       - name: Verify API baselines exist
         shell: pwsh
         run: |
-          foreach ($pkg in @('Dougong.Kernel', 'Dougong.Agent')) {
+          foreach ($pkg in @('Dougong.Kernel', 'Dougong.Agent', 'Dougong.Ai', 'Dougong.Mcp', 'Dougong.Acp')) {
             $path = "artifacts/baseline/$pkg.nupkg"
             if (-not (Test-Path $path)) {
               Write-Error "缺少基线：$path（见 scripts/update-api-baseline.sh）"

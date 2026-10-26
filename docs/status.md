@@ -671,6 +671,21 @@ Agent 运行实现均由内核承载，组合根解析 `IAgentRuntime`」，这�
   ③ 收紧后连抓到两处测试自身缺陷（async iterator 里 yield 之后注册的取消回调永不执行；
   `Task.WhenAny(...) == task` 比较的是 Task<Task> 引用，永远为 false）。
 
+- 2026-10-26：**兼容策略成文 + ApiCompat 覆盖补齐**。
+  此前只有 Kernel 与 Agent 配了 `EnablePackageValidation`，**Ai / Mcp / Acp 三个包
+  共 37 个公开类型完全没有保护**——破坏性改动不会被发现。现在五个 SDK 包全部纳入，
+  基线在 `artifacts/baseline/`；Cli 明确排除（它是工具不是库，公开类型不是契约）。
+  `docs/compat-policy.md`：承诺什么/不承诺什么、哪些包属于契约面、
+  破坏性变更分三档（直接破坏 / 行为破坏 / 不算破坏）、弃用流程（`[Obsolete]` 必须写
+  替代方案与预期移除版本，至少跨一个次版本）、实验性边界（本项目不用
+  `[Experimental]`，理由是它产生 error 而非 warning）、版本号规则、以及四条已知不完善。
+  验收：`-- apicompat` 4 项 + 反证 2 条全部变红。其中 `breaking-change-is-detected`
+  **真的改代码再改回来**（给 `ChatClientFactory.Create` 加必填参数 → 断言 `CP0002` 出现），
+  不是只检查配置属性存在——那属于"检查配置而不是检查行为"。
+  期间修掉自己的两处错误：跨行字符串在 CRLF 文件上匹配不上（本项一度"永远跳过"）、
+  注释里写 `
+` 被当成真实换行导致编译失败。
+
 - 2026-10-26：**I0 补齐：`--report` 可复现信息包**（doctor/日志/故障排查三块之后的第四块）。
   把排查需要的事实收成一份可整段粘贴的文本：版本与 commit（取自程序集
   `InformationalVersion`，不是硬编码——顺带发现 `Program.cs` 里版本号重复硬编码了两处）、
