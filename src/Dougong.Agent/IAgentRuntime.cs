@@ -104,6 +104,23 @@ public abstract record AgentEvent
     /// </remarks>
     public sealed record PlanUpdated(IReadOnlyList<PlanEntry> Entries) : AgentEvent;
 
+    /// <summary>
+    /// 某个工具结果因为过长，进入上下文时被裁剪过。
+    /// </summary>
+    /// <remarks>
+    /// 这是**必须让宿主知道**的事：模型看到的不是完整输出。静默裁剪会让
+    /// "为什么模型没注意到那段错误信息"这类问题无从排查。
+    /// <para>
+    /// 注意作用范围：只裁剪**模型上下文**，会话日志与会话恢复仍使用完整原文。
+    /// 所以这不是数据丢失，是上下文卫生。
+    /// </para>
+    /// </remarks>
+    public sealed record ToolResultTruncated(
+        string InvocationId,
+        string ToolId,
+        int OriginalChars,
+        int KeptChars) : AgentEvent;
+
     /// <summary>运行结束，携带终止原因。</summary>
     public sealed record RunFinished(AgentRunOutcome Outcome, string? Diagnostic = null) : AgentEvent;
 }

@@ -43,6 +43,11 @@ public sealed class SlidingWindowCompactor(
         // 不把工具调用与它的结果拆开：若区间边界切在 Tool 消息上，向前扩展到 Assistant。
         (first, last) = ExpandToKeepToolPairs(input.CommittedHistory, first, last);
 
+        // 绝不压缩最近一次计划更新。
+        // 计划是模型自己写的全局目标，被摘要掉之后模型就"忘了自己在做什么"——
+        // 这正是长任务在第 N 步跑偏的典型机制。保留它对长任务最有用。
+        last = TrimToExcludeLatestPlan(input.CommittedHistory, first, last);
+
         var compressedCount = last - first + 1;
         if (compressedCount <= 0) return null;
 
@@ -53,6 +58,49 @@ public sealed class SlidingWindowCompactor(
             first, last, head, before, after,
             $"历史 {before} tokens 超过触发阈值 {trigger}（有效预算 {effective} 的 {triggerRatio:P0}）。");
     }
+
+    /// <summary>
+    /// 若最近一次计划更新落在待压缩区间内，把区间末端前移到它之前。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么单独保护计划</b>：`todo_write` 是模型用于维护全局目标的工具
+    /// （见 <see cref="PlanTool"/>）。它的结果就是当前完整计划。
+    /// 一旦被摘要掉，模型就失去了"我要做什么"的显式记录，
+    /// 而摘要本身可能概括不出足够的任务约束——这是长任务目标漂移的典型成因。
+    /// <para>
+    /// <b>为什么不保护所有工具结果</b>：那等于取消压缩。计划是唯一一类
+    /// "内容本身就是当前状态、一旦丢失无法从别处重建"的工具结果。
+    /// </para>
+    /// <para>
+    /// <b>边界</b>：若计划就在区间起点之前（已被头部保留或被更早的压缩处理过），
+    /// 这里不做任何事。若区间会因此变成空，调用方按"无可压缩内容"处理。
+    /// </para>
+    /// </remarks>
+    private static int TrimToExcludeLatestPlan(
+        IReadOnlyList<AgentMessage> history, int first, int last)
+    {
+        var planIndex = -1;
+        for (var i = last; i >= first; i--)
+        {
+            if (IsPlanMessage(history[i])) { planIndex = i; break; }
+        }
+
+        if (planIndex < 0) return last;
+
+        // 计划所在的整组调用（assistant + tool）都要保留：
+        // 只留 tool 消息会让 tool_call_id 找不到对应的调用，provider 会拒整轮请求。
+        // ExpandToKeepToolPairs 已保证区间边界不会切在 Tool 上，
+        // 所以这里向前跳过 Tool 后，落点要么是发起它的 Assistant，要么是普通消息。
+        var boundary = planIndex;
+        while (boundary > first && history[boundary].Role == AgentRole.Tool)
+            boundary--;
+
+        return boundary - 1;
+    }
+
+    private static bool IsPlanMessage(AgentMessage message) =>
+        message.Role is AgentRole.Tool
+        && string.Equals(message.ToolId, PlanTool.ToolId, StringComparison.Ordinal);
 
     /// <summary>摘要本身也占 token，按压缩区间的 10% 估算并设下限。</summary>
     private static int EstimatedSummaryTokens(IReadOnlyList<AgentMessage> middle) =>

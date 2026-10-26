@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dougong.Agent;
 
 namespace Dougong.Agent.Comparison;
@@ -20,6 +21,9 @@ public static class CompactionChecks
         failures += await CheckAsync("checkpoint-survives-serialisation", CheckpointRoundTrip);
         failures += await CheckAsync("cancellation-preserves-progress", CancellationPreservesAsync);
         failures += await CheckAsync("insufficient-budget-is-reported", InsufficientBudgetAsync);
+        failures += await CheckAsync("latest-plan-survives-compaction", LatestPlanSurvivesAsync);
+        failures += await CheckAsync("plan-protection-keeps-tool-pairs", PlanProtectionKeepsPairsAsync);
+        failures += await CheckAsync("no-plan-means-full-range", NoPlanFullRangeAsync);
 
         Console.WriteLine(failures == 0
             ? "COMPACTION: ALL PASS"
@@ -224,6 +228,98 @@ public static class CompactionChecks
         for (var i = 0; i < maxSteps && !task.Checkpoint.IsTerminal; i++)
             await task.AdvanceAsync();
         return task.Checkpoint;
+    }
+
+    // 最近一次计划更新不能被压进摘要区间。
+    // 计划是模型自己写的全局目标；摘要掉它，模型就失去"我在做什么"的显式记录，
+    // 这是长任务目标漂移的典型机制。
+    private static Task<string?> LatestPlanSurvivesAsync()
+    {
+        var compactor = new SlidingWindowCompactor(preservedHead: 1, preservedTail: 2);
+
+        var history = BuildHistory(30, "padding content to burn tokens ");
+        // 在中间放一次 todo_write 调用（assistant 请求 + tool 结果）
+        var planAt = 20;
+        history.Insert(planAt, new AgentMessage(AgentRole.Assistant, "")
+        {
+            ToolCalls = [new AgentToolCallRef("p1", PlanTool.ToolId, EmptyArgs())],
+        });
+        history.Insert(planAt + 1, new AgentMessage(AgentRole.Tool,
+            """{"entries":[{"content":"完成第一步","status":"done"}]}""")
+        {
+            ToolCallId = "p1",
+            ToolId = PlanTool.ToolId,
+        });
+
+        var plan = compactor.Plan(new CompactionInput([.. history], 200, 20, 8));
+        if (plan is null) return Task.FromResult<string?>("超出预算却没有给出计划");
+
+        if (plan.LastIndex >= planAt)
+            return Task.FromResult<string?>(
+                $"压缩区间末端 {plan.LastIndex} 覆盖了计划所在 {planAt}：计划会被摘要掉");
+
+        return Task.FromResult<string?>(null);
+    }
+
+    // 保护计划时不能把 assistant 请求与 tool 结果拆开。
+    private static Task<string?> PlanProtectionKeepsPairsAsync()
+    {
+        var compactor = new SlidingWindowCompactor(preservedHead: 1, preservedTail: 2);
+
+        var history = BuildHistory(30, "padding content to burn tokens ");
+        var planAt = 20;
+        history.Insert(planAt, new AgentMessage(AgentRole.Assistant, "")
+        {
+            ToolCalls = [new AgentToolCallRef("p1", PlanTool.ToolId, EmptyArgs())],
+        });
+        history.Insert(planAt + 1, new AgentMessage(AgentRole.Tool, """{"entries":[]}""")
+        {
+            ToolCallId = "p1",
+            ToolId = PlanTool.ToolId,
+        });
+
+        var plan = compactor.Plan(new CompactionInput([.. history], 200, 20, 8));
+        if (plan is null) return Task.FromResult<string?>("超出预算却没有给出计划");
+
+        // 区间末端若落在 Tool 上，说明拆开了调用配对
+        if (history[plan.LastIndex].Role is AgentRole.Tool)
+            return Task.FromResult<string?>(
+                $"压缩区间末端落在 Tool 消息上（index {plan.LastIndex}）：调用配对会被拆散");
+
+        return Task.FromResult<string?>(null);
+    }
+
+    // 没有计划时，区间末端应与原来一致（不能被保护逻辑误伤）。
+    private static Task<string?> NoPlanFullRangeAsync()
+    {
+        var compactor = new SlidingWindowCompactor(preservedHead: 1, preservedTail: 2);
+        var history = BuildHistory(30, "padding content to burn tokens ");
+
+        var plan = compactor.Plan(new CompactionInput(history, 200, 20, 8));
+        if (plan is null) return Task.FromResult<string?>("超出预算却没有给出计划");
+
+        // 期望：末端 = Count - tail - 1 = 30 - 2 - 1 = 27
+        var expected = history.Count - 2 - 1;
+        if (plan.LastIndex != expected)
+            return Task.FromResult<string?>(
+                $"无计划时区间末端应为 {expected}，实际 {plan.LastIndex}：保护逻辑误伤了正常区间");
+
+        return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>
+    /// 一个合法但为空的参数 JSON。
+    /// </summary>
+    /// <remarks>
+    /// 不能用 `default(JsonElement)`：它的 ValueKind 是 Undefined，
+    /// 任何访问都会抛 InvalidOperationException。测试数据里用它会得到
+    /// "测试自己坏了"的假失败——本文件上一版就是这样，两条检查都报
+    /// "Operation is not valid due to the current state of the object"。
+    /// </remarks>
+    private static JsonElement EmptyArgs()
+    {
+        using var doc = JsonDocument.Parse("{}");
+        return doc.RootElement.Clone();
     }
 
     private static List<AgentMessage> BuildHistory(int count, string body) =>

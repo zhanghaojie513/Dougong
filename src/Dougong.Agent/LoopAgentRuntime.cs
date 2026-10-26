@@ -429,7 +429,12 @@ public sealed class LoopAgentRuntime : IAgentRuntime
 
             // 回填必须符合协议：assistant 消息携带 tool_calls，每条 tool 结果带 tool_call_id。
             // 早期实现把结果压成一条普通 Tool 文本，缺 tool_call_id 会被 provider 拒绝（422）。
-            AppendToolExchange(history, calls, toolResults, text.ToString(), reasoning.ToString());
+            foreach (var truncation in AppendToolExchange(
+                history, calls, toolResults, text.ToString(), reasoning.ToString()))
+            {
+                // 截断不是错误，但必须让宿主知道模型看到的是裁过的内容。
+                yield return truncation;
+            }
         }
 
         yield return await FinishAsync(AgentRunOutcome.ToolRoundLimitReached, null, cancellationToken).ConfigureAwait(false);
@@ -519,13 +524,15 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// 按协议回填工具交互：先补一条携带 tool_calls 的 assistant 消息，
     /// 再为每个调用追加带 tool_call_id 的 tool 消息。
     /// </summary>
-    private static void AppendToolExchange(
+    /// <returns>发生截断的工具结果列表；无截断时为空。</returns>
+    private static List<AgentEvent.ToolResultTruncated> AppendToolExchange(
         List<ChatMessage> history,
         IReadOnlyList<PendingCall> calls,
         IReadOnlyList<(string Id, string ToolId, ToolDispatchResult Result)> results,
         string text,
         string reasoning)
     {
+        var truncations = new List<AgentEvent.ToolResultTruncated>();
         var toolCalls = new List<AIContent>();
         foreach (var call in calls)
         {
@@ -551,9 +558,20 @@ public sealed class LoopAgentRuntime : IAgentRuntime
 
         foreach (var (id, toolId, result) in results)
         {
-            var content = result.Result?.Content.ValueKind is JsonValueKind.Undefined or null
+            var raw = result.Result?.Content.ValueKind is JsonValueKind.Undefined or null
                 ? JsonSerializer.Serialize(new { outcome = result.Outcome.ToString(), diagnostic = result.Diagnostic })
                 : result.Result.Content.GetRawText();
+
+            // 只在这里裁剪：这是"即将进入模型上下文"的唯一位置。
+            // 会话日志在上面的提交记录里已写入完整原文，恢复会话时也用完整原文，
+            // 所以裁剪不影响数据完整性。
+            var content = ToolResultLimits.Clamp(raw, out var truncated);
+
+            if (truncated)
+            {
+                truncations.Add(new AgentEvent.ToolResultTruncated(
+                    id, toolId, raw.Length, content.Length));
+            }
 
             history.Add(new ChatMessage(ChatRole.Tool, content)
             {
@@ -567,6 +585,8 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 },
             });
         }
+
+        return truncations;
     }
 
     /// <summary>
