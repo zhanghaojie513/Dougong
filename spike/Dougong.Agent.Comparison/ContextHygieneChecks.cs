@@ -34,6 +34,9 @@ public static class ContextHygieneChecks
         failures += await CheckAsync("history-gets-clamped", HistoryGetsClampedAsync);
         failures += await CheckAsync("store-keeps-full-content", StoreKeepsFullAsync);
         failures += await CheckAsync("truncation-is-observable", TruncationObservableAsync);
+        failures += await CheckAsync("restore-path-also-clamps", RestorePathClampsAsync);
+        failures += await CheckAsync("restore-with-big-result-stays-under-budget",
+            RestoreBigResultBudgetAsync);
 
         Console.WriteLine(failures == 0
             ? "CONTEXT-HYGIENE: ALL PASS"
@@ -224,6 +227,164 @@ public static class ContextHygieneChecks
             if (toolMsg.Content.Length <= ToolResultLimits.MaxContextChars)
                 return $"日志里的内容长度 {toolMsg.Content.Length} 不超过裁剪上限"
                     + $" {ToolResultLimits.MaxContextChars}：裁剪污染了持久化";
+
+            return null;
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>
+    /// 恢复会话的路径也必须裁剪。
+    /// </summary>
+    /// <remarks>
+    /// 这是一个真实缺口：`LoopAgentRuntime` 里有**两条**把工具结果放进模型历史的路径——
+    /// <list type="number">
+    /// <item>本轮工具执行完，经 <c>AppendToolExchange</c></item>
+    /// <item>恢复会话/每轮重建历史，经 <c>BuildHistory</c> → <c>ToChatMessage</c></item>
+    /// </list>
+    /// 第一版只在路径 1 裁剪，路径 2 直接把日志里的完整原文塞进历史。
+    /// 后果：恢复一个含大工具结果的会话，第一轮请求就把完整内容送进模型，
+    /// 裁剪形同虚设。
+    /// <para>
+    /// 这个缺口不是测出来的，是**读代码找出来的**——说明"改一处就以为覆盖了"
+    /// 本身就是缺陷来源。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> RestorePathClampsAsync()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "dg-hyg-r-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+
+        try
+        {
+            var path = Path.Combine(dir, "s.jsonl");
+            var huge = new string('z', ToolResultLimits.MaxContextChars * 2);
+
+            // 先造一个含超长工具结果的会话
+            var tool = new FakeTool("big", [],
+                (_, _) =>
+                {
+                    using var doc = JsonDocument.Parse(
+                        JsonSerializer.Serialize(new { data = huge }));
+                    return ValueTask.FromResult(new AgentToolResult(doc.RootElement.Clone()));
+                });
+
+            var dispatcher0 = new ToolDispatcher();
+            dispatcher0.Register(tool);
+
+            var client0 = new ScriptedChatClient(
+                new ScriptedTurn(new ScriptedUpdate(
+                    FunctionCallId: "c1", FunctionName: "big", ArgumentsJson: "{}")),
+                new ScriptedTurn(new ScriptedUpdate(Text: "done")));
+
+            await using (var store = await JsonlAgentStore.OpenAsync(path, "sess-1"))
+            {
+                var runtime = new LoopAgentRuntime(client0, dispatcher0, new FixedStoreAccessor(store));
+                await foreach (var _ in runtime.RunAsync(
+                    new AgentRunRequest("sess-1", "t", [], "go"))) { }
+            }
+
+            // 恢复会话，再跑一轮：模型收到的历史里 tool 消息必须已被裁剪
+            await using var reopened = await JsonlAgentStore.OpenAsync(path, "sess-1");
+            var recovered = await SessionRecovery.ReplayAsync(reopened);
+
+            var client1 = new ScriptedChatClient(
+                new ScriptedTurn(new ScriptedUpdate(Text: "继续")));
+            var runtime1 = new LoopAgentRuntime(client1, new ToolDispatcher());
+
+            await foreach (var _ in runtime1.RunAsync(
+                new AgentRunRequest("sess-1", "t2", recovered.History, "继续"))) { }
+
+            var firstCall = client1.ObservedHistory.FirstOrDefault();
+            if (firstCall is null) return "恢复后模型没有被调用";
+
+            var toolMessage = firstCall.FirstOrDefault(m => m.Role == ChatRole.Tool);
+            if (toolMessage is null) return "恢复后的历史里没有 tool 消息";
+
+            var received = toolMessage.Text ?? string.Empty;
+            if (received.Length > ToolResultLimits.MaxContextChars + 500)
+                return $"恢复路径未裁剪：模型收到 {received.Length} 字符"
+                    + $"（上限 {ToolResultLimits.MaxContextChars}）";
+
+            return null;
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>
+    /// 恢复超大会话后，单轮请求不应超出上下文预算。
+    /// </summary>
+    /// <remarks>
+    /// 与上一条的区别：这条看的是**总量**。即使单条被裁，若历史里有多条大结果，
+    /// 整体仍可能超限——那说明裁剪上限对"多条累积"没有约束。
+    /// </remarks>
+    private static async Task<string?> RestoreBigResultBudgetAsync()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "dg-hyg-b-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+
+        try
+        {
+            var path = Path.Combine(dir, "s.jsonl");
+            var huge = new string('z', ToolResultLimits.MaxContextChars * 2);
+
+            // 造 3 轮工具调用，每轮结果都超长
+            var tool = new FakeTool("big", [],
+                (_, _) =>
+                {
+                    using var doc = JsonDocument.Parse(
+                        JsonSerializer.Serialize(new { data = huge }));
+                    return ValueTask.FromResult(new AgentToolResult(doc.RootElement.Clone()));
+                });
+
+            var dispatcher = new ToolDispatcher();
+            dispatcher.Register(tool);
+
+            var turns = new List<ScriptedTurn>();
+            for (var i = 0; i < 3; i++)
+            {
+                turns.Add(new ScriptedTurn(new ScriptedUpdate(
+                    FunctionCallId: $"c{i}", FunctionName: "big", ArgumentsJson: "{}")));
+            }
+            turns.Add(new ScriptedTurn(new ScriptedUpdate(Text: "done")));
+
+            var client0 = new ScriptedChatClient([.. turns]);
+
+            await using (var store = await JsonlAgentStore.OpenAsync(path, "sess-1"))
+            {
+                var runtime = new LoopAgentRuntime(client0, dispatcher, new FixedStoreAccessor(store));
+                await foreach (var _ in runtime.RunAsync(
+                    new AgentRunRequest("sess-1", "t", [], "go"))) { }
+            }
+
+            await using var reopened = await JsonlAgentStore.OpenAsync(path, "sess-1");
+            var recovered = await SessionRecovery.ReplayAsync(reopened);
+
+            var client1 = new ScriptedChatClient(
+                new ScriptedTurn(new ScriptedUpdate(Text: "继续")));
+            var runtime1 = new LoopAgentRuntime(client1, new ToolDispatcher());
+
+            await foreach (var _ in runtime1.RunAsync(
+                new AgentRunRequest("sess-1", "t2", recovered.History, "继续"))) { }
+
+            var firstCall = client1.ObservedHistory.FirstOrDefault();
+            if (firstCall is null) return "恢复后模型没有被调用";
+
+            var totalToolChars = firstCall
+                .Where(m => m.Role == ChatRole.Tool)
+                .Sum(m => (m.Text ?? string.Empty).Length);
+
+            // 3 条各自被裁到上限附近是可接受的；但若完全没裁，总量会是 6 倍上限
+            var ceiling = ToolResultLimits.MaxContextChars * 3 + 2000;
+            if (totalToolChars > ceiling)
+                return $"恢复后 tool 内容总量 {totalToolChars} 字符，超过上限 "
+                    + $"{ceiling}：多条累积没有被约束";
 
             return null;
         }
