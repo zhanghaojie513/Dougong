@@ -31,6 +31,8 @@ public static class ToolPluginChecks
         failures += await CheckAsync("guide-explains-reads-writes-semantics", DocExplainsAsync);
         failures += await CheckAsync("unknown-subcommand-errors-instead-of-silent-run",
             UnknownSubcommandAsync);
+        failures += await CheckAsync("getting-started-covers-all-four-criterion-steps",
+            CoversCriterionStepsAsync);
 
         Console.WriteLine(failures == 0
             ? "TOOL-PLUGIN: ALL PASS"
@@ -252,6 +254,45 @@ public static class ToolPluginChecks
             return "未知子命令仍然跑了候选对比测试：输出会被误读成成功";
 
         return null;
+    }
+
+    /// <summary>
+    /// getting-started 必须覆盖判据 1 的四个步骤。
+    /// </summary>
+    /// <remarks>
+    /// 判据原文："安装 → 配置模型 → 跑一个真实任务 → 写一个工具插件并装上"。
+    /// 这四步一旦有一处缺失，判据 1 就无法由读者独立完成——
+    /// 而"缺了哪一步"从文档表面看不出来（§5.5 就是后来才发现的缺口）。
+    /// <para>
+    /// 用关键词检查而不是通读：这是机器能做的部分。
+    /// 它只能保证"提到了"，不能保证"写对了"——后者要靠真人走。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> CoversCriterionStepsAsync()
+    {
+        var doc = File.ReadAllText(
+            Path.Combine(FindRepoRoot(), "docs", "getting-started.md"));
+
+        var required = new (string Needle, string Missing)[]
+        {
+            ("git clone", "第一步「安装」：没有克隆仓库的指引"),
+            ("dotnet --version", "第一步「安装」：没有验证 SDK"),
+            ("DOUGONG_PROVIDER_BASE", "第二步「配置模型」：没有 provider 地址"),
+            ("DOUGONG_PROVIDER_KEY", "第二步「配置模型」：没有密钥"),
+            ("DOUGONG_PROVIDER_MODEL", "第二步「配置模型」：没有模型名"),
+            ("load-tool", "第三步「跑真实任务/让工具被调用」：没有可执行的验证命令"),
+            ("IAgentTool", "第四步「写工具插件」：没有提到工具契约"),
+            ("DescribePermission", "第四步：判据反例点名 DescribePermission，文档必须讲"),
+            ("Reads", "第四步：判据反例点名 Reads/Writes，文档必须讲"),
+        };
+
+        foreach (var (needle, missing) in required)
+        {
+            if (!doc.Contains(needle, StringComparison.Ordinal))
+                return Task.FromResult<string?>(missing);
+        }
+
+        return Task.FromResult<string?>(null);
     }
 
     // ── 构建与加载指南里的代码 ───────────────────────────────────

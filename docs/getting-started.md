@@ -188,6 +188,167 @@ cd ../..
 
 ---
 
+## 5.5 接上真模型，跑一个真实任务
+
+前面 §5 用的是假模型，不花钱也连不上任何服务。这一节让 CLI 真的说上话。
+
+**需要一件事：一个模型的 API Key。** 你手上有哪个用哪个——DeepSeek、智谱、
+MiniMax、OpenAI 兼容的服务都行。没有的话这一节可以先跳过，不影响 §6 写插件。
+
+### 5.5.1 三个环境变量
+
+打开终端，**在项目根目录**运行（把尖括号里的换成你自己的）：
+
+```bash
+export DOUGONG_PROVIDER_BASE=https://api.deepseek.com
+export DOUGONG_PROVIDER_MODEL=deepseek-chat
+export DOUGONG_PROVIDER_KEY=<你的密钥>
+```
+
+| 变量 | 填什么 | 去哪找 |
+|---|---|---|
+| `DOUGONG_PROVIDER_BASE` | 服务的接口地址，通常以 `/v1` 或域名结尾 | 服务商的"API 文档"页 |
+| `DOUGONG_PROVIDER_MODEL` | 模型名 | 同上 |
+| `DOUGONG_PROVIDER_KEY` | 密钥 | 服务商控制台 |
+
+常见服务商的地址：
+
+| 服务商 | `BASE` | 模型名举例 |
+|---|---|---|
+| DeepSeek | `https://api.deepseek.com` | `deepseek-chat` |
+| 智谱 BigModel | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
+| MiniMax | `https://api.minimax.chat/v1` | 见其文档 |
+
+**如果服务商用的是 Anthropic 风格接口**（路径含 `/anthropic`），再加一个：
+
+```bash
+export DOUGONG_PROVIDER_PROTOCOL=anthropic
+```
+
+> **密钥只从环境变量读，本项目的任何文件都不会保存它。** 这是刻意的：
+> 配置文件会进 git、进备份、进日志。关掉终端后这些 `export` 就失效了，
+> 下次要重新设（或者写进你的 shell 配置文件，那由你自己决定）。
+
+### 5.5.2 先确认配置对不对
+
+```bash
+dotnet run --project src/Dougong.Cli -c Release -- --doctor
+```
+
+它会做一次真实的最小请求，告诉你端点通不通、密钥对不对：
+
+```
+[通过] provider 配置：base=https://api.deepseek.com  model=deepseek-chat  protocol=openai  key=已设置(35 字符)
+[通过] provider 连通性：可用（已发送一次最小请求）
+```
+
+**如果 `provider 连通性` 是警告**，把上面的具体错误看一下：
+
+| 看到什么 | 意思 | 怎么办 |
+|---|---|---|
+| `401` | 密钥不对或已失效 | 重新复制一次密钥，注意别带空格 |
+| `403` | 该密钥没有这个模型的权限 | 换模型名，或确认订阅 |
+| `404` | 地址路径不对 | 检查 `BASE` 是否少/多了 `/v1` |
+| 20 秒没有响应 | 网络不通或端点很慢 | 确认地址可达；离线环境可忽略这条 |
+
+> 诊断包（`--report`）里密钥只显示长度，不含内容。
+> `--doctor` 的连通性检查失败**不算致命**——离线也能用 CLI 的其它功能。
+
+### 5.5.3 跑一个真实任务
+
+```bash
+dotnet run --project src/Dougong.Cli -c Release --
+```
+
+启动后会显示一行信息，然后是 `>` 提示符：
+
+```
+dougong 0.1.0-alpha.1  模型=deepseek-chat  协议=OpenAiChatCompletions
+工作区=...\dougong
+会话=...\20261026-183627.jsonl
+...
+kernel=enabled（运行能力由内核解析，每次回合取租约）
+> 
+```
+
+**在 `>` 后面输入你的问题，回车。** 比如：
+
+```
+> 用一句话解释什么是缓存
+```
+
+**应该看到**：模型的回答直接打出来，然后回到 `>`。
+
+再试一个**会用到工具**的任务——这才能看出 agent 和普通聊天机器人的区别：
+
+```
+> 读一下 README.md 的开头五行，告诉我这个项目是做什么的
+```
+
+**应该看到**：
+
+```
+  → 调用 read_file {"path":"README.md"}
+
+── 需要审批 ──────────────────────────────
+  工具    : read_file (v1.0.0)
+  参数    : {"path":"README.md"}
+  工作区  : ...\dougong
+  并发    : Serial
+  权限    : Read
+  路径    : README.md
+  到期    : 18:41:07
+  批准？[y/N] 
+```
+
+这几行分别告诉你：**哪个工具、动了什么参数、在哪个工作区、
+要什么权限、具体哪个文件**。审批不是让你盲签——每一行都是判断依据。
+
+> **输入非 `y` / `yes` 一律按拒绝处理，包括空输入和输入结束。**
+> 这是有意的失败关闭（fail-closed）：管道或重定向场景下不能因为
+> "没有输入"而隐式批准。所以用 `echo` 或脚本喂命令时，
+> 审批这一屏会直接拒绝——这不是 bug，是设计。
+>
+> **要自动化跑完整链路**（模型请求工具 → 审批 → 执行 → 回填），
+> 用这个开关，不要用管道喂 `y`：
+>
+> ```bash
+> export DOUGONG_AUTO_APPROVE=1
+> ```
+>
+> **它会批准所有权限已知的调用，等于关掉人工确认。** 只在你完全清楚
+> 工作区里有什么、且是自动化验收时才用。权限未知的工具即使开了它也仍然拒绝。
+
+输入 `y` 回车。然后会看到工具结果回填、模型基于它回答。
+
+**这一步是关键**：模型不是凭空回答，它真的读了文件。审批那一屏就是
+"执行前由你确认"的落点——工具不会在你不知道的情况下动你的文件。
+
+### 5.5.4 退出
+
+在 `>` 后面输入 `/exit`（或按 Ctrl+C）。
+
+还可以用：
+
+| 命令 | 作用 |
+|---|---|
+| `/help` | 看所有命令 |
+| `/usage` | 本次会话用了多少 token |
+| `/where` | 会话文件在哪 |
+| `/memory` | 查看 L1 偏好记忆（需要 `DOUGONG_MEMORY=1`） |
+
+### 5.5.5 想让它能执行命令
+
+默认**不开** shell 工具——这是安全默认。需要时：
+
+```bash
+export DOUGONG_SHELL=1
+```
+
+开了之后模型可以请求执行命令，同样每次都要你审批。
+
+---
+
 ## 6. 写你自己的第一个插件
 
 从这里开始要**写代码**了。不用怕——下面是可以整段复制的。
@@ -344,6 +505,18 @@ mkdir -p samples/my-first-tool
 
 **文件二：`WordCountTool.cs`**——整段复制
 [plugin-author-guide.md §2.5.1](plugin-author-guide.md) 的那个 C# 代码块。
+
+那个代码块里有四个方法，各管一件事：
+
+| 方法 | 答什么问题 | 填错会怎样 |
+|---|---|---|
+| `Descriptor` | 模型看到什么名字、什么说明、什么参数 | 模型不知道何时该调用它 |
+| `DescribePermission` | 这次调用要碰什么 | 报 `None` 是谎报；报 `Unknown` 会让用户看到警告 |
+| `DescribeExecution` | 能不能和别的调用并行（`Reads`/`Writes`） | 填错可能让两个写操作同时跑，互相覆盖 |
+| `ExecuteAsync` | 真正干活 | — |
+
+**`DescribePermission` 最容易填错**，它是审批体验的全部依据。
+详细填法（六种情形对照）见指南 §2.5.2，`Reads`/`Writes` 的冲突规则见 §2.5.3。
 
 #### 6.5.2 编译并让宿主加载它
 

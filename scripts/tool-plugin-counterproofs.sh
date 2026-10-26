@@ -13,8 +13,9 @@ cd "$REPO" || exit 1
 
 PROG="spike/Dougong.Agent.Comparison/Program.cs"
 GUIDE="docs/plugin-author-guide.md"
+GS="docs/getting-started.md"
 
-FILES=("$PROG" "$GUIDE")
+FILES=("$PROG" "$GUIDE" "$GS")
 BACKUP_DIR="$(mktemp -d)"
 trap 'restore; rm -rf "$BACKUP_DIR"' EXIT
 
@@ -74,6 +75,18 @@ mut03() {
   perl -0pi -e 's/读-读不冲突/读和读也可以一起跑/' "$GUIDE"
 }
 
+# 4. getting-started 漏掉"配置模型"这一步 → 判据 1 无法由读者独立完成
+mut04() {
+  perl -0pi -e 's/DOUGONG_PROVIDER_BASE/DOUGONG_SOMETHING_ELSE/g' "$GS"
+}
+
+# 5. getting-started 不再讲 DescribePermission → 判据反例重新出现
+mut05() {
+  perl -0pi -e 's/`DescribePermission`/那个权限方法/g' "$GS"
+}
+
+run_case missing-model-config-step   getting-started-covers-all-four-criterion-steps  mut04
+run_case missing-describe-permission getting-started-covers-all-four-criterion-steps  mut05
 run_case unknown-subcommand-falls-through  unknown-subcommand-errors-instead-of-silent-run  mut01
 run_case unknown-subcommand-says-nothing   unknown-subcommand-errors-instead-of-silent-run  mut02
 run_case guide-drops-read-conflict-rule    guide-explains-reads-writes-semantics            mut03
