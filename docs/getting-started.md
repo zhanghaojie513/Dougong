@@ -242,19 +242,48 @@ dotnet build samples/my-first-plugin -c Release
 数一下 `..` 的个数：`samples/my-first-plugin` → `samples` → 仓库根，
 正好两级。少写一级就会找不到。
 
-### 6.4 让内核真的加载它
+### 6.4 让内核真的加载你自己的插件
 
-这一步需要一个"宿主程序"。项目里已经有现成的：
+编译出来只是文件，还不算"能装上"。这一步让内核真的把它加载起来。
 
 ```bash
-dotnet run --project spike/Dougong.Agent.Comparison -- kernel-wiring
+dotnet run --project spike/Dougong.Agent.Comparison \
+  -- load-plugin samples/my-first-plugin/bin/Release/net10.0/MyFirstPlugin.dll
 ```
 
-这是内核接线的自检。**你应该看到** `KERNEL-WIRING: ALL PASS`。
+**应该看到**：
 
-它加载的不是你写的插件，而是样例插件——但你现在已经知道
-"加载成功"长什么样了。把你自己的 dll 路径传给 `kernel.LoadAsync(...)`
-就等价于这件事（这一句需要写几行宿主代码，见指南 §1.4）。
+```
+加载：...\MyFirstPlugin.dll
+
+状态：Active
+
+成功：内核认这个插件，且激活完成。
+卸载：成功
+```
+
+看到 `状态：Active`，你的插件就是真的能装上了——内核认它、激活完成、还能卸载干净。
+
+**如果 `状态` 不是 `Active`**，命令会打印诊断，包括哪个阶段失败、下一步检查什么。
+最常见的三类原因（命令里也会列出来）：
+
+| 报什么 | 原因 |
+|---|---|
+| 类型不实现 `IPlugin` | csproj 里 `Dougong.Kernel` 的引用漏了 `<Private>false</Private>` |
+| 找不到程序集 | 漏了 `EnableDynamicLoading` |
+| `Blocked` + 提示缺某个服务 | 插件声明了服务依赖但没人提供（这不是失败） |
+
+> **顺便认识一下 `kernel-wiring`**
+>
+> ```bash
+> dotnet run --project spike/Dougong.Agent.Comparison -- kernel-wiring
+> ```
+>
+> 那是内核自身的接线自检（12 项），跑完最后一行是 `KERNEL-WIRING: ALL PASS`。
+> 它和你的插件无关，是验证内核没坏。
+>
+> **注意它开头会打一行很长的"内核成员调用：..."**——那是 `bare-hold` 检查的
+> 调试输出，属于正常现象，不是错误。
 
 ---
 
@@ -329,6 +358,18 @@ MyPlugin.cs(12,47): error CS0246: 未能找到类型或命名空间名"SystemClo
 不是"作者觉得写清楚了"，而是"读者在哪一行停下"。
 
 **已经修的就是这一处。** 但一次走查只覆盖到 §6.3，§7–§8 还没有真人走过。
+
+### 顺带补的：§6.4 原来做不到"验证你自己的插件"
+
+走查暴露出 §6.4 只教读者跑 `kernel-wiring`（内核自身的自检），
+而那**加载的不是你的插件**。也就是说 §6 的最后一环是断的：
+读者能编译出 dll，却没有任何办法确认内核认不认它。
+
+已补 `-- load-plugin <你的 dll>`：走生产加载路径，打印状态与诊断，
+验证卸载，失败时列出最常见的三类配置错误。§6.4 已改写为使用它。
+
+对应检查项 `-- load-plugin-checks` 会**从指南里提取代码块**生成插件再加载——
+这样"指南里的代码抄下来不能用"会被自动发现（这类问题刚发生过一次）。
 
 **所以判据 1 仍然是"部分"。** 判断依据：
 [getting-started.md](getting-started.md) 到 §6.4 已有真人验证，
