@@ -49,6 +49,18 @@ public static class ToolResultLimits
     /// </summary>
     /// <param name="content">完整结果文本。</param>
     /// <param name="truncated">是否发生了截断。</param>
+    /// <remarks>
+    /// <b>裁剪后的内容不再是合法 JSON</b>（若原是 JSON）。这是刻意的、也是必须承认的：
+    /// 中间插入的标记会让结构断开。工具结果是以**文本**进入模型历史的
+    /// （<c>ChatMessage</c> 的 text 内容），模型不解析它，
+    /// 所以"不是合法 JSON"本身不会导致请求失败。
+    /// <para>
+    /// 但这也意味着模型如果尝试解析它会失败——标记里因此必须写明"已截断"，
+    /// 让模型知道自己在看残缺数据，而不是数据本身有问题。
+    /// 早先的注释写成"标记写成 JSON 片段、用 <c>__truncated</c> 键"，
+    /// 与实现不符，会误导维护者以为 JSON 仍可解析。已按实际行为更正。
+    /// </para>
+    /// </remarks>
     public static string Clamp(string content, out bool truncated)
     {
         ArgumentNullException.ThrowIfNull(content);
@@ -58,16 +70,20 @@ public static class ToolResultLimits
 
         truncated = true;
 
-        var head = content[..HeadChars];
-        var tail = content[^TailChars..];
-        var omitted = content.Length - HeadChars - TailChars;
+        // 头尾之和必须小于上限，否则两个切片会重叠、同一段内容出现两次。
+        // 当前 24000 + 6000 < 32000 成立，但这是参数关系而不是代码保证——
+        // 将来有人调大 HeadChars/TailChars 就会静默出现重复内容。
+        var headChars = Math.Min(HeadChars, content.Length / 2);
+        var tailChars = Math.Min(TailChars, content.Length - headChars);
 
-        // 标记写成 JSON 片段而不是散落的说明文字：
-        // 工具结果本身是 JSON，混进纯文本会让模型误以为整体不是 JSON。
-        // 用 `__truncated` 这个明显不会与业务字段冲突的键。
+        var head = content[..headChars];
+        var tail = content[^tailChars..];
+        var omitted = content.Length - headChars - tailChars;
+
         var marker = new StringBuilder()
-            .Append("\n...[结果过长已截断：省略中间 ").Append(omitted)
-            .Append(" 字符，原文共 ").Append(content.Length).Append(" 字符]...\n")
+            .Append("\n\n[结果过长已截断：省略中间 ").Append(omitted)
+            .Append(" 字符，原文共 ").Append(content.Length)
+            .Append(" 字符。以下内容不是完整数据，请勿按完整结果推断。]\n\n")
             .ToString();
 
         return head + marker + tail;
