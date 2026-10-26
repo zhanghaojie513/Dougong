@@ -31,3 +31,7 @@ artifacts/l1-matrix*.jsonl
 # Python 缓存
 __pycache__/
 *.pyc
+
+# 检查用的临时探针工程（加载后 dll 被锁，进程内删不掉）
+samples/_tool-probe/
+samples/_load-plugin-probe/

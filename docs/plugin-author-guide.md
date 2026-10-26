@@ -192,6 +192,155 @@ context.Events.Subscribe<MyEvent>(e => { /* 处理 */ });
 
 ---
 
+## 2.5 写一个工具插件（模型能调用的那种）
+
+前面的 `IPlugin` 是**内核插件**：它给宿主提供能力，模型看不见它。
+
+**工具插件不一样**：它实现 `IAgentTool`，会被声明给模型，模型可以主动调用。
+这通常是大家真正想写的那种插件。
+
+### 2.5.1 最小工具（照抄即可）
+
+```csharp
+using System.Text.Json;
+using Dougong.Agent;
+
+public sealed class WordCountTool : IAgentTool
+{
+    public ToolDescriptor Descriptor { get; } = new(
+        // Id：注册表用它索引，同一宿主内必须唯一
+        "word_count",
+        // Name：模型可见名，必须匹配 ^[a-zA-Z0-9_-]+$
+        "word_count",
+        // Version：工具被替换时版本变化会让旧审批失效
+        "1.0.0",
+        // Description：决定模型什么时候会调用它。写"做什么"，不写"怎么做"
+        "统计一段文本有多少个字符。",
+        JsonDocument.Parse(
+            """
+            {"type":"object",
+             "properties":{"text":{"type":"string","description":"要统计的文本"}},
+             "required":["text"]}
+            """).RootElement.Clone());
+
+    // ① 权限：这次调用要碰什么
+    public ToolPermission DescribePermission(JsonElement arguments) =>
+        // 纯内存计算，不碰文件/网络/进程。
+        // Access=None + IsKnown=true 表示"确实没有副作用"，
+        // 这类工具不会触发审批——用户不必为统计字数点一次"允许"。
+        new(ToolAccess.None, IsKnown: true, Paths: [], Commands: [], Domains: []);
+
+    // ② 并发：这次调用能不能和别人的调用并行
+    public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
+        // 不共享任何资源，串行即可。这里不需要声明 Reads/Writes。
+        ToolExecutionPlan.Serial;
+
+    // ③ 依赖：这次调用基于哪些文件的哪个版本（纯内存工具返回空）
+    public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) => [];
+
+    // ④ 执行：真正干活
+    public ValueTask<AgentToolResult> ExecuteAsync(
+        ToolInvocation invocation, CancellationToken cancellationToken)
+    {
+        var text = invocation.Arguments.GetProperty("text").GetString() ?? "";
+
+        // 返回值必须是**独立拥有的 JSON**，不能引用已释放的 JsonDocument。
+        // 用 using + Clone() 是最省心的写法。
+        using var document = JsonDocument.Parse(
+            JsonSerializer.Serialize(new { characters = text.Length }));
+        return ValueTask.FromResult(
+            new AgentToolResult(document.RootElement.Clone()));
+    }
+}
+```
+
+**四件事，缺一不可**：Descriptor（模型看什么）、DescribePermission（要什么权限）、
+DescribeExecution（能不能并行）、ExecuteAsync（干什么）。
+
+### 2.5.2 `DescribePermission` 怎么填
+
+这是最容易填错的一个。按你碰什么来选：
+
+| 你的工具做什么 | 怎么填 | 后果 |
+|---|---|---|
+| 纯计算、不碰外部 | `ToolAccess.None, IsKnown: true, [], [], []` | 见下方说明 |
+| 读文件 | `ToolAccess.Read, IsKnown: true, [路径], [], []` | 触发审批，显示路径 |
+| 写文件 | `ToolAccess.Write, IsKnown: true, [路径], [], []` | 触发审批，显示路径 |
+| 跑命令 | `ToolAccess.Execute, IsKnown: true, [], [命令行], []` | 触发审批，显示命令 |
+| 联网 | `ToolAccess.Network, IsKnown: true, [], [], [域名]` | 触发审批，显示域名 |
+| **说不清** | `ToolPermission.Unknown` | 触发审批并**警告"权限未知"** |
+
+**`IsKnown: false` 不是"没有权限"，是"我不知道"。**
+dispatcher 不会把未知当无风险放行——它会警告并仍然询问。
+如果图省事把所有工具都写成 `None`，那是在谎报，用户会失去唯一的安全提示。
+
+> **"不触发审批"需要宿主配合，不是你填个字段就生效。**
+>
+> 默认的 `ToolDispatcher` 会对**每一次**调用请求审批——这是保守的正确默认。
+> 要让声明为"已知无访问"的工具跳过审批，宿主必须显式包一层
+> `PermissionPolicyApprover`：
+>
+> ```csharp
+> var dispatcher = new ToolDispatcher(
+>     new PermissionPolicyApprover(realApprover));
+> ```
+>
+> 它只在 `IsKnown && Access == None && 无路径/命令/域名` 时跳过，
+> 其余照常询问。**作为工具作者，你不能自己决定跳过审批**——
+> 你只能如实声明，由宿主决定信不信任这个声明。
+>
+> 这条最初在本指南里写错了（声称填 `None` 就不触发审批）。
+> 是 `-- tool-plugin-checks` 里那条断言实测发现的：审批器被调用了 1 次。
+
+**路径写具体那个文件，不写目录**：审批时用户要看到"到底动哪个文件"。
+
+### 2.5.3 `Reads` / `Writes` 怎么填
+
+这两个是**资源键**，决定两个调用的并发关系：
+
+| 你的工具 | 怎么填 |
+|---|---|
+| 纯内存 | 不填（`ToolExecutionPlan.Serial` 即可） |
+| 只读某个文件 | `Reads = ["file:" + 绝对路径]` |
+| 改写某个文件 | `Writes = ["file:" + 绝对路径]` |
+| 碰整个工作区、说不清哪个文件 | 用 `ToolConcurrency.WorkspaceExclusive` |
+
+**冲突规则**：写-写互斥、读-写互斥、**读-读不冲突**。
+
+**键必须自己规范化**。框架不猜两个字符串是否指同一资源——
+猜错会导致该互斥的没互斥，比不并发更糟。所以：
+
+```csharp
+public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
+    new(ToolConcurrency.Serial)
+    {
+        // 必须 GetFullPath：`./a.txt` 与 `a.txt` 是同一个文件，
+        // 给出两个不同的键就等于没互斥。
+        Writes = ["file:" + Path.GetFullPath(
+            arguments.GetProperty("path").GetString()!)],
+    };
+```
+
+**不填也能跑**，只是并发度低（全部串行）。但填错比不填更危险：
+两个本该互斥的写操作被并行执行，会互相覆盖。
+
+### 2.5.4 注册进 dispatcher
+
+工具写好之后要注册，否则模型看不到它：
+
+```csharp
+var dispatcher = new ToolDispatcher();
+dispatcher.Register(new WordCountTool());
+```
+
+`ToolDispatcher` 是**唯一执行入口**——模型请求调用后，由它统一做 schema 校验、
+权限审批、资源锁，然后才进你的 `ExecuteAsync`。框架不会绕过它直接调你的工具。
+
+**注册在哪里**：通常在你的 `IPlugin.ActivateAsync` 里，
+从内核解析出 dispatcher 再注册。这样工具的生命周期跟着插件走，停用时自动消失。
+
+---
+
 ## 3. 生命周期：你的代码什么时候被调用
 
 ```
@@ -320,7 +469,5 @@ using var subscription = kernel.SubscribeStateChanges(change =>
    但"什么时候用优先级、什么时候用 `ProviderId` 显式指定"文中没说清。
 2. **`KernelStateView` 与 `SubscribeStateChanges` 该用哪个**：前者是
    快照+增量流（适合 UI），后者是同步回调（适合日志）。本文只用后者。
-3. **写工具插件**：本文只讲内核插件。工具契约（`IAgentTool`、
-   `ToolExecutionPlan` 的 `Reads`/`Writes`）属于 Agent 层，需要单独一篇。
-4. **`architecture.md` §3 与实现不一致**：那里写的 `PluginContext.Config` /
+3. **`architecture.md` §3 与实现不一致**：那里写的 `PluginContext.Config` /
    `Logger` / `Handle` 在实现中**不存在**。以本文 §3 的成员表为准。
