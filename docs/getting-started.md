@@ -202,16 +202,20 @@ mkdir -p samples/my-first-plugin
 
 在 `samples/my-first-plugin/` 里建两个文件。
 
-**文件一：`MyFirstPlugin.csproj`**（文件名必须一模一样）
+**文件一：`MyFirstPlugin.csproj`**
 
-复制 [plugin-author-guide.md §1.1](plugin-author-guide.md) 的那段 XML。
-**注意**：如果你把工程放在 `samples/` 下（而不是仓库外面），
-`ImplicitUsings` 和 `Nullable` 其实由仓库根目录的配置提供了，
-但**照抄写上不会出错**，所以照抄。
+把 [plugin-author-guide.md §1.1](plugin-author-guide.md) 的那个 XML 代码块
+**整段**复制过来（从 `<Project Sdk=` 到 `</Project>`）。
 
 **文件二：`MyPlugin.cs`**
 
-复制 [plugin-author-guide.md §1.2](plugin-author-guide.md) 的那段 C#。
+把 [plugin-author-guide.md §1.2](plugin-author-guide.md) 的那个 C# 代码块
+**整段**复制过来。
+
+> **整段的意思是——三个类型都要。** §1.2 的代码块里有三个类型：
+> `MyPlugin`、`IClock`、`SystemClock`。只复制看起来"主要"的 `MyPlugin`
+> 会报 `CS0246: 未能找到类型或命名空间名"SystemClock"`（或 `IClock`）。
+> 那三个类型放在同一个文件里就是为了让你一次复制完。
 
 ### 6.3 编译
 
@@ -221,10 +225,22 @@ dotnet build samples/my-first-plugin -c Release
 
 **应该看到**：`0 个警告` / `0 个错误`。
 
-**如果看到**"找不到类型或命名空间 `Dougong.Kernel`"：
-说明 csproj 里的 `<ProjectReference>` 路径不对。那是相对路径，
-你的工程在 `samples/my-first-plugin/` 下，所以应该是 `..\..\src\Dougong.Kernel\Dougong.Kernel.csproj`
-（两个 `..`）。数一下层级。
+**如果看到 `CS0246`，说某个类型找不到**（`SystemClock`、`IClock`、`Dougong.Kernel`）：
+
+| 找不到的是什么 | 原因 | 做法 |
+|---|---|---|
+| `SystemClock` 或 `IClock` | 只复制了 §1.2 的一部分 | 回到 §1.2，把**整个代码块**重新复制一遍 |
+| `Dougong.Kernel` / `IPlugin` | csproj 里的 `<ProjectReference>` 路径不对 | 见下 |
+
+`<ProjectReference>` 的路径是**相对 csproj 自己**的。你的工程在
+`samples/my-first-plugin/`，内核在 `src/Dougong.Kernel/`，所以要走两级上去：
+
+```
+..\..\src\Dougong.Kernel\Dougong.Kernel.csproj
+```
+
+数一下 `..` 的个数：`samples/my-first-plugin` → `samples` → 仓库根，
+正好两级。少写一级就会找不到。
 
 ### 6.4 让内核真的加载它
 
@@ -286,14 +302,35 @@ dotnet run --project spike/Dougong.Agent.Comparison -- kernel-wiring
 **据此已修两处**：套数改为"当前 36 套"（并说明会随项目增长），
 §2 补上 `MSB3101` 的处理办法。
 
-**§6.1–6.3 未在本次走查中完成**：执行走查的工具对可读目录有限制，
-与 Dougong 无关，不影响文档本身的正确性。§6.4 的 `kernel-wiring` 已单独验证通过。
+### 2026-10-26（第二次）：真人走查
 
-### 仍然没有的
+一位真实读者走到 §6.3 时卡住，报：
 
-**这不是"没参与开发的人"的验证。** 上面那次是一个 agent 严格按文档执行，
-它能发现"命令跑不通""数字对不上"这类硬错误，但**发现不了**
-"一个真新手会卡在哪里"——它懂开发，看见 `csproj` 不会犯怵。
+```
+MyPlugin.cs(12,47): error CS0246: 未能找到类型或命名空间名"SystemClock"
+```
 
-判据 1 要的是后者。这一点写在 [M3 的出口判据](m3-plan.md)里，
-是四条判据中唯一还没有证据的一条。
+两个原因，都真实：
+
+1. **他读的是旧副本**，当时指南里确实缺 `SystemClock`（已在 #9 补上）。
+2. **§6.2 的指令有歧义**：原本只写"复制 §1.2 的那段 C#"，
+   而那段里有三个类型（`MyPlugin` / `IClock` / `SystemClock`）。
+   读者只复制看起来"主要"的那个，就必报 `CS0246`。
+
+已把 §6.2 改成"整段复制"并明确点出三个类型，§6.3 补了
+`CS0246` 的分类对照表（找不到哪个类型 → 是哪一步做错了）。
+
+**验证方式**：按新文档原样从指南里提取代码块生成两个文件，
+`dotnet build` 通过（0 警告 0 错误）。
+
+### 2026-10-26（第三次）：真实读者走到 §6.3
+
+第一次有真人在本文档上卡住并报出确切错误（见上）。这正是判据 1 要的证据形式：
+不是"作者觉得写清楚了"，而是"读者在哪一行停下"。
+
+**已经修的就是这一处。** 但一次走查只覆盖到 §6.3，§7–§8 还没有真人走过。
+
+**所以判据 1 仍然是"部分"。** 判断依据：
+[getting-started.md](getting-started.md) 到 §6.4 已有真人验证，
+但"一个没参与开发的人从零走完全程、全程无需提问"还没有。
+这一点写在 [M3 的出口判据](m3-plan.md)里。
