@@ -56,6 +56,13 @@ public static class Program
         if (args.Contains("--doctor"))
             return await Doctor.RunAsync();
 
+        // 信息包也排在 provider 配置检查之前：它要能用于"配置不完整"的场景。
+        if (args.Contains("--report"))
+        {
+            Console.WriteLine(await DiagnosticBundle.BuildAsync());
+            return 0;
+        }
+
         var config = ChatClientFactory.FromEnvironment();
         if (config is null)
         {

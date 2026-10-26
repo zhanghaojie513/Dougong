@@ -116,19 +116,6 @@ dotnet build-server shutdown
 
 ---
 
-### 出问题时先跑自检
-
-任何一步失败、或者你不确定问题出在哪，都可以运行：
-
-```bash
-dotnet run --project src/Dougong.Cli -c Release -- --doctor
-```
-
-它会逐项检查运行时、provider 配置、工作区、会话目录，每一项都告诉你**下一步做什么**。
-更多案例见 [troubleshooting.md](troubleshooting.md)。
-
----
-
 ## 3. 第一次跑测试
 
 ```bash
