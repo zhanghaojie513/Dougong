@@ -146,8 +146,13 @@ public static class LoadPluginChecks
     /// `<ProjectReference>` 是相对路径（`..\..\src\...`），
     /// 换个层级就测不到"照抄能不能编译"这件事。
     /// </remarks>
+    /// <remarks>
+    /// **固定名字，不带进程 ID**：Windows 上加载过的 dll 会被锁住，
+    /// 进程退出前删不掉。带 PID 的话每次运行都留一个新目录，越跑越多。
+    /// 固定名字只是覆盖同一个目录，不累积。
+    /// </remarks>
     private static readonly string SampleDir =
-        Path.Combine(FindRepoRoot(), "samples", $"_load-plugin-probe-{Environment.ProcessId}");
+        Path.Combine(FindRepoRoot(), "samples", "_load-plugin-probe");
 
     /// <summary>
     /// 按指南 §1.1/§1.2 原样生成并构建样例插件。

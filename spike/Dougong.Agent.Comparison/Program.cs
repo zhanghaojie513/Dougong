@@ -136,6 +136,13 @@ public static class Program
         if (args.FirstOrDefault() == "load-plugin-checks")
             return await LoadPluginChecks.RunAsync();
 
+        if (args.FirstOrDefault() == "tool-plugin-checks")
+            return await ToolPluginChecks.RunAsync();
+
+        // 验证"我自己写的工具"：接受一个 dll 路径，走生产 dispatcher 派发一次。
+        if (args.FirstOrDefault() == "load-tool")
+            return await LoadToolCheck.RunAsync(args.Skip(1).FirstOrDefault());
+
         // 验收 1：需要真实模型与费用。缺配置时明确报"未运行"并返回非零，
         // 因此不能进 all-checks.sh（那会让无凭证环境永远红）。
         if (args.FirstOrDefault() == "l1-effect")

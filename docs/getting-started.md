@@ -293,6 +293,81 @@ dotnet run --project spike/Dougong.Agent.Comparison \
 
 ---
 
+### 6.5 写一个模型能调用的工具（进阶）
+
+§6 那个插件是**内核插件**：它给宿主提供能力，模型看不见它。
+
+**工具插件不一样**：模型能主动调用它。如果你想让模型多会一件事（查天气、算汇率、
+查数据库），写的就是这种。
+
+完整教程在 [plugin-author-guide.md §2.5](plugin-author-guide.md)，
+这里有可运行的最小版本。
+
+#### 6.5.1 建工程
+
+跟 §6.2 一样的位置和方式，只是多引一个项目（工具契约在 Agent 层）：
+
+```bash
+mkdir -p samples/my-first-tool
+```
+
+**文件一：`MyFirstTool.csproj`**
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <IsPackable>false</IsPackable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dougong.Agent\Dougong.Agent.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+</Project>
+```
+
+**文件二：`WordCountTool.cs`**——整段复制
+[plugin-author-guide.md §2.5.1](plugin-author-guide.md) 的那个 C# 代码块。
+
+#### 6.5.2 编译并让宿主加载它
+
+```bash
+dotnet build samples/my-first-tool -c Release
+dotnet run --project spike/Dougong.Agent.Comparison \
+  -- load-tool samples/my-first-tool/bin/Release/net10.0/MyFirstTool.dll
+```
+
+**应该看到**：
+
+```
+加载：...\MyFirstTool.dll
+
+工具：word_count（版本 1.0.0）
+权限：已知、无访问 —— 这类工具由宿主决定是否跳过审批
+调度：Serial（未声明资源键）
+调用：{"text":"hello world"}
+审批：请求了 1 次（默认行为；宿主可包 PermissionPolicyApprover 让无访问工具跳过）
+结果：{"characters":11}
+
+成功：宿主认这个工具，而且能被派发。
+```
+
+看到 `成功`，你的工具就被宿主接受、也确实能被调用了。
+
+**如果报错**，命令会给可操作的原因。最常见的两个：
+
+| 报什么 | 原因 |
+|---|---|
+| 找不到 `IAgentTool` | csproj 引的是 `Dougong.Kernel` 而不是 `Dougong.Agent` |
+| schema 不合法 | `InputSchema` 不是合法 JSON Schema——注意必须 `required` 里列出的字段也在 `properties` 里 |
+
+---
+
 ## 7. 遇到问题时怎么问
 
 **先做这四件事**：
