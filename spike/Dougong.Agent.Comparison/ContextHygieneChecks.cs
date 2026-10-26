@@ -1,0 +1,292 @@
+using System.Text;
+using System.Text.Json;
+using Dougong.Agent;
+using Microsoft.Extensions.AI;
+
+namespace Dougong.Agent.Comparison;
+
+/// <summary>
+/// 上下文卫生：工具结果的长度限制。
+/// </summary>
+/// <remarks>
+/// 背景是真缺陷：工具结果原本以完整原文进入模型上下文，没有任何上限。
+/// 一次 `read_file` 读大文件、或 MCP 工具返回大 JSON，就够把窗口挤爆——
+/// 这正是"长任务跑到一半上下文超限"的直接原因。
+/// <para>
+/// 三条不变量，缺一不可：
+/// <list type="number">
+/// <item>超限结果进上下文时被裁剪</item>
+/// <item>会话日志仍是完整原文（裁剪不能变成数据丢失）</item>
+/// <item>裁剪有可观察的事件（不能让宿主以为模型看到了全部）</item>
+/// </list>
+/// </para>
+/// </remarks>
+public static class ContextHygieneChecks
+{
+    public static async Task<int> RunAsync()
+    {
+        var failures = 0;
+        failures += Check("short-result-untouched", ShortResultUntouched);
+        failures += Check("long-result-clamped", LongResultClamped);
+        failures += Check("clamp-keeps-head-and-tail", ClampKeepsHeadAndTail);
+        failures += Check("clamp-marker-is-explicit", ClampMarkerIsExplicit);
+        failures += Check("clamp-boundary-is-exact", ClampBoundaryExact);
+        failures += await CheckAsync("history-gets-clamped", HistoryGetsClampedAsync);
+        failures += await CheckAsync("store-keeps-full-content", StoreKeepsFullAsync);
+        failures += await CheckAsync("truncation-is-observable", TruncationObservableAsync);
+
+        Console.WriteLine(failures == 0
+            ? "CONTEXT-HYGIENE: ALL PASS"
+            : $"CONTEXT-HYGIENE: {failures} FAILURE(S)");
+        return failures;
+    }
+
+    private static string? ShortResultUntouched()
+    {
+        var text = new string('a', 1000);
+        var clamped = ToolResultLimits.Clamp(text, out var truncated);
+
+        if (truncated) return "短结果被标记为截断";
+        return clamped == text ? null : "短结果被改动";
+    }
+
+    private static string? LongResultClamped()
+    {
+        var text = new string('a', ToolResultLimits.MaxContextChars * 3);
+        var clamped = ToolResultLimits.Clamp(text, out var truncated);
+
+        if (!truncated) return "超长结果未被标记截断";
+        if (clamped.Length >= text.Length) return "超长结果长度没有下降";
+        return null;
+    }
+
+    private static string? ClampKeepsHeadAndTail()
+    {
+        var head = new string('H', 1000);
+        var middle = new string('M', ToolResultLimits.MaxContextChars * 2);
+        var tail = new string('T', 1000);
+        var text = head + middle + tail;
+
+        var clamped = ToolResultLimits.Clamp(text, out _);
+
+        // 头部与尾部都要留：头部是结构（JSON 起始、表头），尾部是结论或错误。
+        if (!clamped.Contains(new string('H', 1000), StringComparison.Ordinal))
+            return "截断后丢失了头部内容";
+        if (!clamped.Contains(new string('T', 1000), StringComparison.Ordinal))
+            return "截断后丢失了尾部内容";
+
+        return null;
+    }
+
+    private static string? ClampMarkerIsExplicit()
+    {
+        var text = new string('a', ToolResultLimits.MaxContextChars * 3);
+        var clamped = ToolResultLimits.Clamp(text, out _);
+
+        // 没有标记，模型会把残缺数据当成完整事实——那比报错更危险。
+        if (!clamped.Contains("截断", StringComparison.Ordinal))
+            return "截断后没有明确的截断标记";
+        if (!clamped.Contains("原文共", StringComparison.Ordinal))
+            return "截断标记没有告知原始长度";
+
+        return null;
+    }
+
+    private static string? ClampBoundaryExact()
+    {
+        // 恰好等于上限：不该截断（边界是"超过"才裁）
+        var atLimit = new string('a', ToolResultLimits.MaxContextChars);
+        ToolResultLimits.Clamp(atLimit, out var t1);
+        if (t1) return "恰好等于上限时被裁了：边界判断差一";
+
+        // 超一个字符：必须截断
+        var overLimit = new string('a', ToolResultLimits.MaxContextChars + 1);
+        ToolResultLimits.Clamp(overLimit, out var t2);
+        if (!t2) return "超过上限一个字符却没有截断";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 端到端：超长工具结果进入模型历史时必须已被裁剪。
+    /// </summary>
+    /// <remarks>
+    /// 走真实运行时与真实 dispatcher：这一点必须端到端验证。
+    /// 只测 <see cref="ToolResultLimits.Clamp"/> 是没用的——
+    /// 裁剪可能压根没被接上（本项目已多次出现"能力只在测试里"的缺陷）。
+    /// </remarks>
+    private static async Task<string?> HistoryGetsClampedAsync()
+    {
+        var huge = new string('x', ToolResultLimits.MaxContextChars * 3);
+
+        var tool = new FakeTool("big", [],
+            (_, _) =>
+            {
+                using var doc = JsonDocument.Parse(
+                    JsonSerializer.Serialize(new { data = huge }));
+                return ValueTask.FromResult(new AgentToolResult(doc.RootElement.Clone()));
+            });
+
+        var dispatcher = new ToolDispatcher();
+        dispatcher.Register(tool);
+
+        var client = new ScriptedChatClient(
+            // 第一轮：模型请求 big 工具
+            new ScriptedTurn(new ScriptedUpdate(
+                FunctionCallId: "c1", FunctionName: "big", ArgumentsJson: "{}")),
+            // 第二轮：模型给答复
+            new ScriptedTurn(new ScriptedUpdate(Text: "done")));
+
+        var runtime = new LoopAgentRuntime(client, dispatcher);
+        var truncationEvents = new List<AgentEvent.ToolResultTruncated>();
+
+        await foreach (var evt in runtime.RunAsync(new AgentRunRequest("s", "t", [], "go")))
+        {
+            if (evt is AgentEvent.ToolResultTruncated t) truncationEvents.Add(t);
+        }
+
+        // 模型第二次被调用时收到的历史里，tool 消息必须是裁剪过的
+        var secondCall = client.ObservedHistory.LastOrDefault();
+        if (secondCall is null) return "模型只被调用了一次，工具循环没跑起来";
+
+        var toolMessage = secondCall.FirstOrDefault(m => m.Role == ChatRole.Tool);
+        if (toolMessage is null) return "模型第二次调用时没有收到 tool 消息";
+
+        var received = toolMessage.Text ?? string.Empty;
+        if (received.Length > ToolResultLimits.MaxContextChars + 500)
+            return $"模型收到的 tool 内容长度 {received.Length} 未被裁剪"
+                + $"（上限 {ToolResultLimits.MaxContextChars}）";
+
+        if (!received.Contains("截断", StringComparison.Ordinal))
+            return "裁剪后的内容没有截断标记";
+
+        if (truncationEvents.Count == 0)
+            return "发生了裁剪但没有任何 ToolResultTruncated 事件";
+
+        var evt0 = truncationEvents[0];
+        if (evt0.ToolId != "big") return $"截断事件的工具 ID 是 '{evt0.ToolId}'，应为 'big'";
+        if (evt0.OriginalChars <= evt0.KeptChars)
+            return "截断事件里原始长度不大于保留长度";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 端到端：日志里必须是完整原文，裁剪只影响模型上下文。
+    /// </summary>
+    /// <remarks>
+    /// 必须走真实运行时。直接手工构造 <see cref="StoreRecord"/> 写进日志是**假检查**：
+    /// 那样测的是"JsonlAgentStore 不裁剪"，而它本来就不裁剪。真正要防的缺陷是
+    /// "有人在提交记录之前就把内容裁了"——只有经过完整运行时才能发现。
+    /// </remarks>
+    private static async Task<string?> StoreKeepsFullAsync()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "dg-hyg-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+
+        try
+        {
+            var path = Path.Combine(dir, "s.jsonl");
+            var huge = new string('y', ToolResultLimits.MaxContextChars * 2);
+
+            var tool = new FakeTool("big", [],
+                (_, _) =>
+                {
+                    using var doc = JsonDocument.Parse(
+                        JsonSerializer.Serialize(new { data = huge }));
+                    return ValueTask.FromResult(new AgentToolResult(doc.RootElement.Clone()));
+                });
+
+            var dispatcher = new ToolDispatcher();
+            dispatcher.Register(tool);
+
+            var client = new ScriptedChatClient(
+                new ScriptedTurn(new ScriptedUpdate(
+                    FunctionCallId: "c1", FunctionName: "big", ArgumentsJson: "{}")),
+                new ScriptedTurn(new ScriptedUpdate(Text: "done")));
+
+            await using (var store = await JsonlAgentStore.OpenAsync(path, "sess-1"))
+            {
+                var runtime = new LoopAgentRuntime(client, dispatcher, new FixedStoreAccessor(store));
+                await foreach (var _ in runtime.RunAsync(
+                    new AgentRunRequest("sess-1", "t", [], "go"))) { }
+            }
+
+            // 从日志恢复：内容必须与工具原始输出等长（未被裁剪）
+            await using var reopened = await JsonlAgentStore.OpenAsync(path, "sess-1");
+            var recovered = await SessionRecovery.ReplayAsync(reopened);
+            var toolMsg = recovered.History.FirstOrDefault(m => m.Role == AgentRole.Tool);
+
+            if (toolMsg is null) return "恢复后没有 tool 消息";
+
+            // 日志里的 content 是 JSON 原文（工具返回的整个对象），
+            // 因此长度应明显大于裁剪上限——证明没被裁过。
+            if (toolMsg.Content.Length <= ToolResultLimits.MaxContextChars)
+                return $"日志里的内容长度 {toolMsg.Content.Length} 不超过裁剪上限"
+                    + $" {ToolResultLimits.MaxContextChars}：裁剪污染了持久化";
+
+            return null;
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>短结果不得产生截断事件（不能干扰正常路径）。</summary>
+    private static async Task<string?> TruncationObservableAsync()
+    {
+        var tool = new FakeTool("small", []);
+        var dispatcher = new ToolDispatcher();
+        dispatcher.Register(tool);
+
+        var client = new ScriptedChatClient(
+            new ScriptedTurn(new ScriptedUpdate(
+                FunctionCallId: "c1", FunctionName: "small", ArgumentsJson: "{}")),
+            new ScriptedTurn(new ScriptedUpdate(Text: "done")));
+
+        var runtime = new LoopAgentRuntime(client, dispatcher);
+        var truncations = 0;
+
+        await foreach (var evt in runtime.RunAsync(new AgentRunRequest("s", "t", [], "go")))
+        {
+            if (evt is AgentEvent.ToolResultTruncated) truncations++;
+        }
+
+        return truncations == 0
+            ? null
+            : $"短结果产生了 {truncations} 次截断事件：裁剪逻辑误伤正常路径";
+    }
+
+    private static int Check(string name, Func<string?> action)
+    {
+        try
+        {
+            var failure = action();
+            if (failure is null) { Console.WriteLine($"PASS {name}"); return 0; }
+            Console.WriteLine($"FAIL {name}: {failure}");
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+    }
+
+    private static async Task<int> CheckAsync(string name, Func<Task<string?>> action)
+    {
+        try
+        {
+            var failure = await action();
+            if (failure is null) { Console.WriteLine($"PASS {name}"); return 0; }
+            Console.WriteLine($"FAIL {name}: {failure}");
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+    }
+}

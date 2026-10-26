@@ -41,6 +41,7 @@ journey/ = 开发记录：各里程碑真实发生的问题与判断。复盘素
 | [plugin-author-guide.md](plugin-author-guide.md) | 插件作者指南：从工程文件到最小插件，含五个易犯错与失败定位 | 写插件时读 |
 | [skill-l1-plan.md](skill-l1-plan.md) | Skill L1 记忆层：实现范围、验收 2–6 的证据、验收 1 为何未做 | 看记忆层边界时读 |
 | [skill-l1-acceptance-1.md](skill-l1-acceptance-1.md) | 验收 1：记忆效果对照的装置、判据、预先登记阈值与结果解释规则 | 跑或解读记忆效果时读 |
+| [context-hygiene.md](context-hygiene.md) | 上下文卫生两项改动（工具结果裁剪、压缩保留计划）与"记忆取代关系为何不做"的评估 | 改上下文/压缩逻辑时读 |
 | [performance-baseline.md](performance-baseline.md) | 性能基线：大会话/长会话/并发会话的实测数字与环境。只记录不承诺 | 做性能对比时读 |
 | [m3-plan.md](m3-plan.md) | M3 计划：四条完成判据、七个切片顺序、`Experimental` 决策点、M2 遗留的三条待办登记 | 启动 M3 前读 |
 | [kernel-vs-cordis.md](kernel-vs-cordis.md) | 与 dsh/Cordis 内核的一手对比：租约/排空/超时/变化传播逐项对照，已定取舍（不做热更新），以及"对等的 .NET dsh"这个定位为何不成立 | 决定内核方向与对外表述时读 |

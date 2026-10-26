@@ -22,6 +22,14 @@
 
 ### Added
 
+- `Dougong.Agent`：`ToolResultLimits` 与 `AgentEvent.ToolResultTruncated`。
+  工具结果进入**模型上下文**时按 32K 字符上限裁剪（保留头 24K + 尾 6K，中间带显式标记）。
+  **会话日志与会话恢复仍使用完整原文**——裁剪是上下文卫生，不是数据丢失。
+  此前一次 `read_file` 读大文件或 MCP 返回大 JSON 就能挤爆窗口，是长任务崩溃的直接原因。
+  **行为变化**：模型现在看到的是裁剪后的内容，超限时会收到 `ToolResultTruncated` 事件。
+- `Dougong.Agent`：`SlidingWindowCompactor` 不再把最近一次 `todo_write` 计划压进摘要区间。
+  计划被摘要掉后模型失去"我在做什么"的显式记录，是长任务目标漂移的典型机制。
+  只改压缩器，不改模型输入结构，也不碰 `IMemoryInjector` 的语义。
 - `Dougong.Agent`：L1 偏好记忆层（`MemoryArtifact`、`MemoryStore`、`StoreMemoryInjector`、
   `MemoryPrompt`、`MemoryDiagnostics`）。产物与启用严格分离，白名单硬编码
   （`PreferenceKeys`：`language` / `output.format` / `naming.convention`），
