@@ -10,6 +10,65 @@ namespace Dougong.Agent.Comparison;
 /// </summary>
 public static class Program
 {
+    /// <summary>
+    /// 全部可用子命令，供未知参数时提示。
+    /// </summary>
+    /// <remarks>
+    /// 手写而不是反射：反射拿不到 string 比较的字面量。
+    /// 新增子命令时记得加进来——漏了只会让提示少一行，不会影响功能。
+    /// </remarks>
+    private static readonly string[] KnownSubcommands =
+    [
+        "acp",
+        "acp-plan",
+        "apicompat",
+        "approval",
+        "approval-log",
+        "bare-hold",
+        "compaction",
+        "context-hygiene",
+        "contract",
+        "doctor",
+        "elicitation",
+        "elicitation-process",
+        "failure",
+        "fileversion",
+        "kernel-path",
+        "kernel-process",
+        "kernel-wiring",
+        "l1-effect",
+        "l1-harness",
+        "live",
+        "load-plugin",
+        "load-plugin-checks",
+        "load-tool",
+        "mcp",
+        "mcp-reload",
+        "mcp-server",
+        "memory-cli",
+        "parity",
+        "perf",
+        "reachability",
+        "recheck",
+        "replaceability",
+        "report",
+        "schema",
+        "session",
+        "shell",
+        "skill-l1",
+        "store",
+        "surface",
+        "telemetry",
+        "token",
+        "tool-plugin-checks",
+        "tool-replacement",
+        "usage",
+        "wire",
+        "wiring",
+        "workspace-lock",
+    ];
+
+
     public static async Task<int> Main(string[] args)
     {
         if (args.FirstOrDefault() == "live")
@@ -160,7 +219,26 @@ public static class Program
         if (args.FirstOrDefault() == "mcp-server")
             return await McpTestServer.RunAsync();
 
+        // 兜底只接受 M1 的候选对比：a 或 b（缺省 b）。
+        //
+        // **未知子命令必须报错，不能默默跑对比测试。**
+        // 真实发生过：读者用新版文档里的 `-- load-tool` 跑旧副本时，
+        // 这里把 "load-tool" 当候选名、跑完 11 项对比并全部 PASS——
+        // 屏幕上看起来像"成功了"，实际什么都没做。那种误导比报错糟得多。
         var candidate = args.FirstOrDefault() ?? "b";
+        if (candidate is not ("a" or "b"))
+        {
+            Console.Error.WriteLine($"未知子命令：'{candidate}'");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("可用子命令：");
+            foreach (var name in KnownSubcommands) Console.Error.WriteLine($"  -- {name}");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("如果你在照着 getting-started.md 走，先确认副本是新的：");
+            Console.Error.WriteLine("  git log --oneline -1");
+            Console.Error.WriteLine("  git pull");
+            return 2;
+        }
+
         Console.WriteLine($"candidate = {candidate}");
 
         var results = new List<ScenarioResult>();

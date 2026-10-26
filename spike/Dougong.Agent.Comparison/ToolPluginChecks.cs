@@ -29,6 +29,8 @@ public static class ToolPluginChecks
         failures += await CheckAsync("default-dispatcher-asks-approval", DefaultAsksAsync);
         failures += await CheckAsync("policy-approver-skips-inert-tools", PolicySkipsInertAsync);
         failures += await CheckAsync("guide-explains-reads-writes-semantics", DocExplainsAsync);
+        failures += await CheckAsync("unknown-subcommand-errors-instead-of-silent-run",
+            UnknownSubcommandAsync);
 
         Console.WriteLine(failures == 0
             ? "TOOL-PLUGIN: ALL PASS"
@@ -205,6 +207,51 @@ public static class ToolPluginChecks
         }
 
         return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>
+    /// 未知子命令必须报错，不能默默跑另一套测试。
+    /// </summary>
+    /// <remarks>
+    /// 真实发生过：读者用新版文档里的 `-- load-tool` 跑旧副本，
+    /// spike 把 "load-tool" 当候选名、跑完 11 项对比并全部 PASS——
+    /// 屏幕上看起来像"成功了"，实际什么都没做。
+    /// <para>
+    /// 那种误导比报错糟得多：读者会以为命令成功了，接着去查"为什么工具没被加载"，
+    /// 而真正的原因是命令压根没被识别。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> UnknownSubcommandAsync()
+    {
+        var spikeDll = Path.Combine(
+            FindRepoRoot(), "spike", "Dougong.Agent.Comparison",
+            "bin", "Release", "net10.0", "Dougong.Agent.Comparison.dll");
+
+        if (!File.Exists(spikeDll)) return "找不到 spike 产物";
+
+        var (exitCode, output) = await RunProcessAsync("dotnet",
+            [spikeDll, "nosuch-subcommand-for-test"]);
+
+        if (exitCode == 0)
+            return "未知子命令返回了 0：读者会以为它成功了";
+
+        // 文案必须点明"未知子命令"：只说"参数有问题"读者不知道该改哪。
+        if (!output.Contains("未知子命令", StringComparison.Ordinal))
+            return $"没有说清是未知子命令。输出：{Trim(output)}";
+
+        // 必须把用户输入的那个词回显出来——否则他不知道自己敲错在哪
+        if (!output.Contains("nosuch-subcommand-for-test", StringComparison.Ordinal))
+            return "报错没有回显用户输入的参数";
+
+        // 提示里要给出可用命令，否则读者不知道该怎么办
+        if (!output.Contains("可用子命令", StringComparison.Ordinal))
+            return "没有列出可用子命令";
+
+        // 更要紧：不能跑对比测试。跑了的特征是出现 "candidate = "
+        if (output.Contains("candidate = ", StringComparison.Ordinal))
+            return "未知子命令仍然跑了候选对比测试：输出会被误读成成功";
+
+        return null;
     }
 
     // ── 构建与加载指南里的代码 ───────────────────────────────────
