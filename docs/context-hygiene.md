@@ -37,6 +37,28 @@
 | 日志写入前 | 同上 |
 | **拼装模型历史时** | 日志完整、恢复完整、模型看到裁剪版 ✔ |
 
+### 位置是关键
+
+**模型历史有两条写入路径**，两处都必须裁：
+
+| 路径 | 方法 | 场景 |
+|---|---|---|
+| 本轮工具执行完回填 | `AppendToolExchange` | 正常对话 |
+| 恢复会话 / 每轮重建历史 | `BuildHistory` → `ToChatMessage` | 续跑、resume |
+
+第一版**只裁了第一条**，第二条直接把日志里的完整原文塞进历史。
+
+**这个缺口是读代码找出来的，不是测出来的**（2026-10-26 复查时发现）。
+后果很具体：恢复一个含大工具结果的会话，第一轮请求就把完整内容送进模型，
+裁剪形同虚设。实测模型收到 64 011 字符（上限 32 000），
+三条累积到 192 033 字符。
+
+补充检查 `restore-path-also-clamps` 与 `restore-with-big-result-stays-under-budget`
+就是为了钉住这条路径，反证 `restore-path-not-clamped` 确认它会变红。
+
+**教训**：改一处就以为覆盖了，本身就是缺陷来源。同一个语义有两个执行点时，
+必须逐个确认，不能靠"主路径改了"推断"全覆盖"。
+
 ### 三个不变量
 
 1. 超限结果进上下文时被裁剪
@@ -48,12 +70,13 @@
 
 ### 验收
 
-`-- context-hygiene` 8 项。其中 `history-gets-clamped` 与 `store-keeps-full-content`
+`-- context-hygiene` 10 项。其中 `history-gets-clamped`、`restore-path-also-clamps` 与 `store-keeps-full-content`
 都走**真实运行时 + 真实 dispatcher**（`ScriptedChatClient` + `FakeTool`）——
 只测 `Clamp` 本身是没用的，那样测不出"裁剪压根没接上"。
 
-**反证 5 条**（`scripts/context-hygiene-counterproofs.sh`）全部如期变红，
-包括最关键的一条：把裁剪从主路径摘掉（模拟"能力只在测试里"）。
+**反证 8 条**（`scripts/context-hygiene-counterproofs.sh`）全部如期变红，
+覆盖：上限失效、标记丢失、尾部丢失、主路径未接上、污染持久化、恢复路径未裁剪、
+计划保护失效、计划保护过度。
 
 ---
 

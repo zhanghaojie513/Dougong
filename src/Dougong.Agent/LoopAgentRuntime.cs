@@ -809,13 +809,19 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             if (message.ToolCallId is { Length: > 0 } callId)
                 properties["tool_call_id"] = callId;
 
-            return new ChatMessage(role, message.Content)
+            // 恢复/重建历史这条路径同样要裁剪。
+            // 第一版只在 AppendToolExchange 裁，这里是**第二条**把工具结果放进
+            // 模型历史的路径——恢复一个含大结果的会话，第一轮就把完整原文送进模型，
+            // 裁剪形同虚设。两处必须用同一个上限。
+            var content = ToolResultLimits.Clamp(message.Content, out _);
+
+            return new ChatMessage(role, content)
             {
                 Contents =
                 [
-                    new TextContent(message.Content),
+                    new TextContent(content),
                     .. message.ToolCallId is { Length: > 0 } id
-                        ? new AIContent[] { new FunctionResultContent(id, message.Content) }
+                        ? new AIContent[] { new FunctionResultContent(id, content) }
                         : [],
                 ],
                 AdditionalProperties = properties,

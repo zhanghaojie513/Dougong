@@ -104,11 +104,18 @@ mut08() {
   perl -0pi -e 's/while \(boundary > first && history\[boundary\]\.Role == AgentRole\.Tool\)\n            boundary--;/while (boundary > first \&\& history[boundary].Role == AgentRole.Tool)\n            break;/' "$COMPACT"
 }
 
+# ── 恢复路径不裁剪（第一版真实遗留的缺口） ────────────────
+# ToChatMessage 是第二条把工具结果放进模型历史的路径。
+mut09() {
+  perl -0pi -e 's/var content = ToolResultLimits\.Clamp\(message\.Content, out _\);/var content = message.Content;/' "$RT"
+}
+
 run_case clamp-limit-removed          context-hygiene  long-result-clamped              mut01
 run_case clamp-marker-removed         context-hygiene  clamp-marker-is-explicit         mut02
 run_case clamp-tail-dropped           context-hygiene  clamp-keeps-head-and-tail        mut03
 run_case clamp-not-wired-to-runtime   context-hygiene  history-gets-clamped             mut04
 run_case clamp-poisons-store          context-hygiene  store-keeps-full-content         mut05
+run_case restore-path-not-clamped     context-hygiene  restore-path-also-clamps         mut09
 run_case plan-protection-removed      compaction       latest-plan-survives-compaction  mut06
 # 砍到空会让含计划的两条检查都变红，取其一作代表：
 # "无计划"路径不受这条改动影响，所以不能用 no-plan-means-full-range 验它。
