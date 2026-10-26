@@ -51,6 +51,11 @@ public static class Program
             return 0;
         }
 
+        // 自检必须在读取 provider 配置之前：它的用途正是诊断"配置不全导致跑不起来"，
+        // 如果放在后面，缺配置时会先退出 2，自检永远跑不到。
+        if (args.Contains("--doctor"))
+            return await Doctor.RunAsync();
+
         var config = ChatClientFactory.FromEnvironment();
         if (config is null)
         {
@@ -193,6 +198,16 @@ public static class Program
         // 保留给"怀疑内核接线本身有问题"时的对照手段。
         var useKernel = Environment.GetEnvironmentVariable("DOUGONG_KERNEL") is not "0" and not "false";
 
+        // 这些是"排查时最先要问"的事实，放在 info 级：
+        // 默认不打扰，出问题时 DOUGONG_LOG=info 就能看到。
+        Log.Information($"日志级别={Log.CurrentThreshold}（DOUGONG_LOG 控制）");
+        Log.Information($"会话={sessionId} 工作区={workspace}");
+        Log.Information($"存储={store.Durability} 记忆={(composition.Memory is null ? "关闭" : "启用")}");
+        Log.Information($"内核接线={(useKernel ? "启用" : "禁用")} "
+            + $"压缩={(composition.ContextWindow > 0 ? composition.ContextWindow.ToString() : "关闭")} "
+            + $"shell={(composition.ShellEnabled ? "启用" : "关闭")} "
+            + $"MCP={composition.McpServers.Count} 个");
+
         IAgentRuntime runtime;
         IReadOnlyList<McpToolRegistry> mcpRegistries = [];
         IReadOnlyList<ModelContextProtocol.Client.McpClient> mcpClients = [];
@@ -269,6 +284,8 @@ public static class Program
             }
 
             turn++;
+            // 只记长度不记内容：用户输入原文可能含敏感信息。
+            Log.Debug($"turn-{turn} 开始，历史 {messages.Count} 条，输入 {input.Length} 字符");
             var request = new AgentRunRequest(sessionId, $"turn-{turn}", messages, input);
             var assistantText = new StringBuilder();
 
