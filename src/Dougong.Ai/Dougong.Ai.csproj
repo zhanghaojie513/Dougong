@@ -3,6 +3,14 @@
   <PropertyGroup>
     <Description>Dougong Ai 层——IChatClient 工厂、模型路由、用量记账（底座 Microsoft.Extensions.AI，M1 引入）</Description>
   </PropertyGroup>
+  <!-- API 兼容检查：与上一个发布版本比对公开 API。
+       本项目 0.x 不做向后兼容承诺，但**变更必须可见**——
+       没有检出的话，破坏性改动会一路绿灯到发布之后才被发现。 -->
+  <PropertyGroup>
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselinePath>$(MSBuildThisFileDirectory)../../artifacts/baseline/$(AssemblyName).nupkg</PackageValidationBaselinePath>
+  </PropertyGroup>
+
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" />

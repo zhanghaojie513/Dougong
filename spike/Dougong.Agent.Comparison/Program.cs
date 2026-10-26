@@ -126,6 +126,9 @@ public static class Program
         if (args.FirstOrDefault() == "report")
             return await ReportChecks.RunAsync();
 
+        if (args.FirstOrDefault() == "apicompat")
+            return await ApiCompatChecks.RunAsync();
+
         // 验收 1：需要真实模型与费用。缺配置时明确报"未运行"并返回非零，
         // 因此不能进 all-checks.sh（那会让无凭证环境永远红）。
         if (args.FirstOrDefault() == "l1-effect")
