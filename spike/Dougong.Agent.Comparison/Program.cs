@@ -129,6 +129,13 @@ public static class Program
         if (args.FirstOrDefault() == "apicompat")
             return await ApiCompatChecks.RunAsync();
 
+        // 验证"我自己写的插件"：接受一个 dll 路径，走生产加载路径。
+        if (args.FirstOrDefault() == "load-plugin")
+            return await LoadPluginCheck.RunAsync(args.Skip(1).FirstOrDefault());
+
+        if (args.FirstOrDefault() == "load-plugin-checks")
+            return await LoadPluginChecks.RunAsync();
+
         // 验收 1：需要真实模型与费用。缺配置时明确报"未运行"并返回非零，
         // 因此不能进 all-checks.sh（那会让无凭证环境永远红）。
         if (args.FirstOrDefault() == "l1-effect")

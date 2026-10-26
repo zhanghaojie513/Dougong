@@ -23,6 +23,10 @@
 
 ### Added
 
+- `spike` 的 `-- load-plugin <dll>`：加载任意插件程序集并报告结果，
+  弥补指南 §6 的断点——读者能编译出 dll，却没有办法确认内核认不认它。
+  走的是生产路径 `DougongKernel.LoadAsync`，不是另写一套验证逻辑；
+  会验证卸载（只会加载不会卸载的插件会泄漏），失败时列出最常见的三类配置错误。
 - `Dougong.Cli`：`--report` 可复现信息包。输出产品版本与 commit（取自程序集
   `InformationalVersion`，非硬编码）、平台、provider 配置形态、最近会话的**元信息**
   （文件名/大小/记录数，不读内容）、其它开关状态。
