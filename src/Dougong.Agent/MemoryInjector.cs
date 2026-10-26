@@ -66,43 +66,31 @@ public sealed class StoreMemoryInjector(
     /// 逐条对应 `skills-evolution.md §7` 验收 4 的要求：
     /// 未审批、审批后被篡改、过期、已撤销的内容都不得加载。
     /// <para>
-    /// 作用域过滤放在最后：跨工作区默认不传播，只有 <see cref="MemoryScope.User"/>
-    /// 才跨工作区共享。
-    /// </para>
-    /// <para>
-    /// **公开**是为了让展示层（<c>/memory</c>）复用同一份判定。
-    /// 展示与注入各写一套必然漂移——首版的展示就漏了过期检查，
-    /// 把一条不会被注入的产物报成"生效"。
+    /// <b>实现上委托给 <see cref="MemoryDiagnostics.WhyInactive"/>，不再自己重写一遍判定。</b>
+    /// 早先这里是独立实现，与展示层那份并列存在——两份同义逻辑必然漂移，
+    /// 而首版的展示就漏了过期检查、把不会被注入的产物报成"生效"。
+    /// 现在判定与原因出自同一段代码，结构上不可能不一致。
     /// </para>
     /// </remarks>
     public static bool IsLoadable(
-        MemoryArtifact artifact, string workspace, DateTimeOffset now)
-    {
-        // ① 必须已启用（Candidate / Approved 都不加载：审批不等于启用）
-        if (artifact.State is not MemoryArtifactState.Enabled) return false;
-
-        // ② 内容必须与审批时一致
-        if (!artifact.IsIntact) return false;
-
-        // ③ 未过期
-        if (artifact.ExpiresAt is { } expires && expires <= now) return false;
-
-        // ④ 键必须在白名单内（防御性：写入路径已校验，这里防存储被外部篡改）
-        if (!PreferenceKeys.IsAllowed(artifact.Key)) return false;
-        if (!PreferenceKeys.IsValid(artifact.Key, artifact.Value)) return false;
-
-        // ⑤ 作用域：工作区级只在所属工作区生效
-        return artifact.Scope is MemoryScope.User
-            || string.Equals(artifact.Workspace, workspace, StringComparison.OrdinalIgnoreCase);
-    }
+        MemoryArtifact artifact, string workspace, DateTimeOffset now) =>
+        MemoryDiagnostics.WhyInactive(artifact, workspace, now) is null;
 }
 
 /// <summary>
-/// 说明一条产物为什么不生效。顺序与 <see cref="StoreMemoryInjector.IsLoadable"/> 的一致。
+/// 记忆产物的唯一判定来源：为什么这条不生效，或者说它确实生效。
 /// </summary>
 /// <remarks>
-/// 放在这里而不是宿主里：原因必须与判定同步，
-/// 两者分开写就会出现"报的原因不是真正的原因"。
+/// <b>这个类同时是注入器的判定与 <c>/memory</c> 的展示依据。</b>
+/// 两份同义逻辑必然漂移——首版的展示就漏了过期检查，把不会被注入的产物报成"生效"。
+/// 现在注入用 <see cref="StoreMemoryInjector.IsLoadable"/>、展示用
+/// <see cref="WhyInactive"/>，后者是前者的唯一实现。
+/// <para>
+/// <b>白名单在这里是唯一的强制点</b>：<see cref="MemoryStore.PutAsync"/>
+/// 不做白名单校验（它只负责持久化，接受任意产物，以便记录被外部篡改的内容与审计）。
+/// 所以下面那两行是安全边界，不能因为"写入时应该已经校验过"而删掉——
+/// 存储文件可以被任何本地进程改写，写入路径的自觉校验不构成保证。
+/// </para>
 /// </remarks>
 public static class MemoryDiagnostics
 {

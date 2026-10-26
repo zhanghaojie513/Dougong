@@ -99,15 +99,17 @@ mut02() {
 }
 
 # ── 3. 撤销：让 Revoked 也被当作可加载 ────────────────────────
+# 判定现在集中在 MemoryDiagnostics.WhyInactive（IsLoadable 委托给它），
+# 所以改的是那里的条件。
 mut03() {
-  perl -0pi -e 's/if \(artifact\.State is not MemoryArtifactState\.Enabled\) return false;/if (artifact.State is MemoryArtifactState.Candidate or MemoryArtifactState.Expired) return false;/' "$INJ"
+  perl -0pi -e 's/if \(artifact\.State is not MemoryArtifactState\.Enabled\)/if (artifact.State is MemoryArtifactState.Candidate or MemoryArtifactState.Expired)/' "$INJ"
 }
 
 # ── 4. 篡改：让哈希校验永远通过 ──────────────────────────────
 # 不能写 `if (false)`：那会触发 CS0162（不可达代码），在 TreatWarningsAsErrors
 # 下变成构建失败。改成恒假但编译器看不出来的条件。
 mut04() {
-  perl -0pi -e 's/if \(!artifact\.IsIntact\) return false;/if (!artifact.IsIntact \&\& now.Year < 1970) return false;/' "$INJ"
+  perl -0pi -e 's/if \(!artifact\.IsIntact\) return/if (!artifact.IsIntact \&\& now.Year < 1970) return/' "$INJ"
 }
 
 # ── 5. 游标：每次打开都从 0 开始（丢掉持久化） ────────────────

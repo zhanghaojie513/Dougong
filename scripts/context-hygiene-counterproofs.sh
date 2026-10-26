@@ -69,11 +69,11 @@ mut01() {
 
 # ── 裁剪：去掉截断标记 ────────────────────────────────────
 mut02() {
-  perl -0pi -e 's/\.Append\("\\n\.\.\.\[结果过长已截断：省略中间 "\)/.Append("\\n")/' "$LIMITS"
+  perl -0pi -e 's/\.Append\("\\n\\n\[结果过长已截断：省略中间 "\)/.Append("\\n\\n")/' "$LIMITS"
 }
 
 # ── 裁剪：丢掉尾部（只留头部，模型看不到结论/错误） ────────
-mut03() { perl -0pi -e 's/var tail = content\[\^TailChars\.\.\];/var tail = "";/' "$LIMITS"; }
+mut03() { perl -0pi -e 's/var tail = content\[\^tailChars\.\.\];/var tail = "";/' "$LIMITS"; }
 
 # ── 裁剪没接上主路径：直接返回原文（模拟"能力只在测试里"） ──
 mut04() {

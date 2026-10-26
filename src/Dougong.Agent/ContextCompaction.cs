@@ -73,7 +73,15 @@ public sealed class SlidingWindowCompactor(
     /// </para>
     /// <para>
     /// <b>边界</b>：若计划就在区间起点之前（已被头部保留或被更早的压缩处理过），
-    /// 这里不做任何事。若区间会因此变成空，调用方按"无可压缩内容"处理。
+    /// 这里不做任何事。
+    /// </para>
+    /// <para>
+    /// <b>代价（必须承认）</b>：若计划紧跟在头部保留区之后，砍掉它之后的可压缩区间
+    /// 会变成空，<see cref="Plan"/> 随之返回 <c>null</c>——也就是说
+    /// **整个压缩被放弃，上下文继续超限**。这是刻意的取舍：
+    /// 宁可让预算紧张被上层如实报告（<see cref="CompactionPlan"/> 返回 null 时
+    /// 调用方必须自己决定怎么办），也不要静默丢掉模型的全局目标。
+    /// 计划越早写、后续历史越长，这个代价越大。
     /// </para>
     /// </remarks>
     private static int TrimToExcludeLatestPlan(

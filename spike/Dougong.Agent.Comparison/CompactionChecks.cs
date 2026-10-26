@@ -24,6 +24,10 @@ public static class CompactionChecks
         failures += await CheckAsync("latest-plan-survives-compaction", LatestPlanSurvivesAsync);
         failures += await CheckAsync("plan-protection-keeps-tool-pairs", PlanProtectionKeepsPairsAsync);
         failures += await CheckAsync("no-plan-means-full-range", NoPlanFullRangeAsync);
+        failures += await CheckAsync("plan-near-head-still-compresses-something",
+            PlanNearHeadStillCompressesAsync);
+        failures += await CheckAsync("plan-at-head-boundary-degrades-safely",
+            PlanAtHeadBoundaryDegradesSafelyAsync);
 
         Console.WriteLine(failures == 0
             ? "COMPACTION: ALL PASS"
@@ -320,6 +324,93 @@ public static class CompactionChecks
     {
         using var doc = JsonDocument.Parse("{}");
         return doc.RootElement.Clone();
+    }
+
+    /// <summary>
+    /// 计划靠近头部时，压缩能力不能被完全吃掉。
+    /// </summary>
+    /// <remarks>
+    /// 保护计划有个代价：若计划紧跟在头部保留区之后，砍掉计划后的可压缩区间为空，
+    /// 整个压缩被放弃、上下文继续超限。这一条检查该代价的**实际范围**：
+    /// 计划在第 4 条时应当仍能压缩，不能退化成"一有计划就不能压"。
+    /// <para>
+    /// 如果这条失败，说明保护逻辑过强——需要改成"计划挪到区间外"而不是
+    /// "区间截止在计划前"。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> PlanNearHeadStillCompressesAsync()
+    {
+        var compactor = new SlidingWindowCompactor(preservedHead: 2, preservedTail: 2);
+
+        var history = BuildHistory(30, "padding content to burn tokens ");
+        // 计划放在第 4 条：头部保留 2 条后还有 2 条可压空间
+        var planAt = 4;
+        history.Insert(planAt, new AgentMessage(AgentRole.Assistant, "")
+        {
+            ToolCalls = [new AgentToolCallRef("p1", PlanTool.ToolId, EmptyArgs())],
+        });
+        history.Insert(planAt + 1, new AgentMessage(AgentRole.Tool, """{"entries":[]}""")
+        {
+            ToolCallId = "p1",
+            ToolId = PlanTool.ToolId,
+        });
+
+        var plan = compactor.Plan(new CompactionInput([.. history], 200, 20, 8));
+        if (plan is null)
+            return Task.FromResult<string?>(
+                "计划在第 4 条时压缩被完全放弃：保护逻辑过强，上下文会一直超限");
+
+        if (plan.LastIndex >= planAt)
+            return Task.FromResult<string?>(
+                $"压缩区间末端 {plan.LastIndex} 覆盖了计划所在的 {planAt}");
+
+        return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>
+    /// 计划正好压在头部保留边界上时，必须**安全退化**而不是给出错误区间。
+    /// </summary>
+    /// <remarks>
+    /// 这是保护逻辑的最坏情况：可压缩区间会变成空。此时唯一正确的行为是
+    /// 返回 <c>null</c>（放弃压缩），而不是返回一个 first &gt; last 或负数下界的计划——
+    /// 后者会让调用方在 <c>Skip(first).Take(count)</c> 上得到意外结果。
+    /// <para>
+    /// 这条检查钉住的是"退化必须是 null 而不是畸形计划"，
+    /// 不要求此时仍能压缩（那在语义上做不到）。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> PlanAtHeadBoundaryDegradesSafelyAsync()
+    {
+        var compactor = new SlidingWindowCompactor(preservedHead: 2, preservedTail: 2);
+
+        var history = BuildHistory(30, "padding content to burn tokens ");
+        // 计划正好放在头部保留区的最后一条
+        var planAt = 2;
+        history.Insert(planAt, new AgentMessage(AgentRole.Assistant, "")
+        {
+            ToolCalls = [new AgentToolCallRef("p1", PlanTool.ToolId, EmptyArgs())],
+        });
+        history.Insert(planAt + 1, new AgentMessage(AgentRole.Tool, """{"entries":[]}""")
+        {
+            ToolCallId = "p1",
+            ToolId = PlanTool.ToolId,
+        });
+
+        var plan = compactor.Plan(new CompactionInput([.. history], 200, 20, 8));
+
+        if (plan is null) return Task.FromResult<string?>(null);   // 安全退化
+
+        // 若仍给出计划，区间必须自洽
+        if (plan.FirstIndex < 0)
+            return Task.FromResult<string?>($"计划的下界是负数：{plan.FirstIndex}");
+        if (plan.LastIndex < plan.FirstIndex)
+            return Task.FromResult<string?>(
+                $"计划区间倒置：first={plan.FirstIndex} last={plan.LastIndex}");
+        if (plan.LastIndex >= planAt)
+            return Task.FromResult<string?>(
+                $"计划在 {planAt}，却被区间末端 {plan.LastIndex} 覆盖");
+
+        return Task.FromResult<string?>(null);
     }
 
     private static List<AgentMessage> BuildHistory(int count, string body) =>

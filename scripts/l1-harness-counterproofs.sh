@@ -79,7 +79,8 @@ mut04() {
 
 # 5. 无记忆组也传注入器 → 对照组失效。
 #    必须改 L1HarnessChecks 里那段：检查项有自己的代码路径。
-mut05() { perl -0pi -e 's/Memory = null,\n                MemoryWorkspace = dir,/Memory = new StoreMemoryInjector(store),\n                MemoryWorkspace = dir,/' "$HARNESS"; }
+#    只匹配单行（多行 \n 模式在 perl -0pi 下匹配不上，会静默什么都不改）。
+mut05() { perl -0pi -e 's/Memory = null,/Memory = new StoreMemoryInjector(store),/' "$HARNESS"; }
 
 # 6. 提示里泄漏偏好 → 两组都会照做，指标失去区分力
 mut06() { perl -0pi -e 's/"说明 HTTP 缓存的工作方式。"/"请简短说明 HTTP 缓存的工作方式。"/' "$EFFECT"; }

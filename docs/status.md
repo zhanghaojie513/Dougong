@@ -272,7 +272,7 @@
 |---|---|---|
 | ~~Skill L1 记忆层~~ | **已完成（2026-10-26）** | 验收 2–6 已实现并逐项反证（`-- skill-l1` 7 项 + `-- memory-cli` 4 项 + 10 条反证） |
 | Skill L1 验收 1（留出任务对照） | **已完成（2026-10-26）** | 6 家 provider × 2 种协议共 14 个组合实跑：有记忆 70–100%，无记忆 0–10%，**提升 60%–90%，中位数 80%，14/14 超过预先登记的 50% 阈值**。装置自检 `-- l1-harness` 6 项 + 7 条反证。适用范围仅限被测模型与这 10 个任务，见 [skill-l1-acceptance-1.md](skill-l1-acceptance-1.md) |
-| 上下文卫生（工具结果裁剪、压缩保留计划） | **已完成（2026-10-26）** | `-- context-hygiene` 10 项 + `-- compaction` 新增 3 项；反证 8 条全部变红。裁剪只作用于模型上下文，日志与会话恢复仍用完整原文。见 [context-hygiene.md](context-hygiene.md) |
+| 上下文卫生（工具结果裁剪、压缩保留计划） | **已完成（2026-10-26）** | `-- context-hygiene` 10 项 + `-- compaction` 新增 5 项；反证 8 条全部变红。裁剪只作用于模型上下文，日志与会话恢复仍用完整原文。见 [context-hygiene.md](context-hygiene.md) |
 | 记忆取代关系（`SupersedesArtifactId`） | **决定不做** | L1 只有 3 个白名单键，冲突场景不存在；且是公开类型 + 持久化格式双重改动。等 L2 条目数上去再评估，理由见 [context-hygiene.md](context-hygiene.md) §四 |
 | 判据 1 真人验证 | **欠账**（M3 出口） | 指南已自我审查，且 2026-10-26 补了 [getting-started.md](getting-started.md)（从装 SDK 开始、每条命令写明"应该看到什么"）。但"没参与开发的人能完成"只有真人能证 |
 | ~~XML 文档生成~~ | **已完成（2026-10-25）** | 5 个 SDK 包共 592 个成员产出 XML；开启后暴露并修掉 34 处注释语法错误（见「进度日志」） |
@@ -680,7 +680,7 @@ Agent 运行实现均由内核承载，组合根解析 `IAgentRuntime`」，这�
   不再被压进摘要区间。只改压缩器，不动 runtime、不碰 `IMemoryInjector` 语义
   ——比"每轮重新注入计划"的破坏性小得多。
   验收：`-- context-hygiene` 10 项（其中 3 项走真实运行时 + 真实 dispatcher，
-  只测 `Clamp` 本身测不出"裁剪没接上"）+ `-- compaction` 新增 3 项；
+  只测 `Clamp` 本身测不出"裁剪没接上"）+ `-- compaction` 新增 5 项；
   **反证 8 条全部如期变红**，含"把裁剪从主路径摘掉"这条。
   期间修掉三处自己的假检查/假反证：`store-keeps-full-content` 原本手工构造
   `StoreRecord`（测的是 JsonlAgentStore 不裁剪，而它本来就不裁剪）、
