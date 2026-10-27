@@ -14,7 +14,15 @@ env:
 
 jobs:
   build-test:
-    runs-on: windows-latest
+    # I0 的退出条件写的是"在干净 Windows 与 Linux 环境各完成一次"。
+    # 此前只在 windows-latest 上跑，Linux 从未验证过——这是 I0 能否关闭的
+    # 实际判据，不是加分项。两个平台跑同一套 scripts/all-checks.sh，
+    # 保证检查内容不因平台分叉。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,26 +50,30 @@ jobs:
 
       # 基线缺失时不让它悄悄变成"无基线=不校验"。
       #
-      # 用 PowerShell 语法而不是 bash：runner 是 windows-latest，
-      # 默认 shell 是 pwsh。先前写了 `for pkg in ...; do` 这种 bash 语法，
-      # CI 直接 ParserError 失败——而本地是 Git Bash，测不出来。
-      # 若要写 bash，必须显式 `shell: bash`。
+      # 用 shell: bash 而不是 PowerShell，因为这一步现在要在两个平台上跑。
+      # 历史教训：先前这里写过 `for pkg in ...; do`（bash 语法）却让
+      # windows-latest 用默认 pwsh 执行，CI 直接 ParserError，本地 Git Bash 测不出来。
+      # 现在显式声明 shell，并由 matrix 保证同一份脚本在两处都成立。
       - name: Verify API baselines exist
-        shell: pwsh
+        shell: bash
         run: |
-          foreach ($pkg in @('Dougong.Kernel', 'Dougong.Agent', 'Dougong.Ai', 'Dougong.Mcp', 'Dougong.Acp')) {
-            $path = "artifacts/baseline/$pkg.nupkg"
-            if (-not (Test-Path $path)) {
-              Write-Error "缺少基线：$path（见 scripts/update-api-baseline.sh）"
-              exit 1
-            }
-            Write-Host "  基线存在：$path"
-          }
+          missing=0
+          for pkg in Dougong.Kernel Dougong.Agent Dougong.Ai Dougong.Mcp Dougong.Acp; do
+            path="artifacts/baseline/$pkg.nupkg"
+            if [ ! -f "$path" ]; then
+              echo "::error::缺少基线：$path（见 scripts/update-api-baseline.sh）"
+              missing=1
+            else
+              echo "  基线存在：$path"
+            fi
+          done
+          exit $missing
 
       - name: Upload packages
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: packages
+          # 两个平台都会产出包，名字必须区分，否则 CI 报 artifact 冲突。
+          name: packages-${{ matrix.os }}
           path: artifacts/packages
           if-no-files-found: ignore

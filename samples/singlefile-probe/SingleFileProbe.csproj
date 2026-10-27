@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 单文件发布下的插件加载探针。
+       存在的理由：PluginLoadContext.IsFrameworkAssembly 原先用
+       typeof(object).Assembly.Location 推共享框架目录，而单文件发布下该属性
+       恒为空，导致 IL3000 编译错误（TreatWarningsAsErrors 把它变成 error），
+       修好后又需要一个能证明"单文件里真的能加载插件"的证据。
+       普通测试跑在非单文件环境，证明不了这一点。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- 这个工程的存在意义就是被 publish 成单文件；属性放这里，
+         免得每次手写一长串 -p: 参数时漏掉一个。 -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dougong.Kernel\Dougong.Kernel.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -11,6 +11,9 @@
   <Folder Name="/samples/embedding-probe/">
     <Project Path="samples/embedding-probe/Probe.csproj" />
   </Folder>
+  <Folder Name="/samples/singlefile-probe/">
+    <Project Path="samples/singlefile-probe/SingleFileProbe.csproj" />
+  </Folder>
   <Folder Name="/src/" />
   <Project Path="samples/Dougong.Sample.Contracts/Dougong.Sample.Contracts.csproj" />
   <Project Path="samples/Dougong.Sample.Shared/Dougong.Sample.Shared.csproj" />

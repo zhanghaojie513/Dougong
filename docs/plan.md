@@ -42,7 +42,7 @@
 | M1 入口与执行契约 | **已关闭** | 截止 M1 的缺口全部修完（含 G1/G2/G3/G4/G6/G8） |
 | M2 协议与集成 | **已关闭** | MCP / ACP / 指标 / 受限记忆（L1 记忆含效果对照）全部完成 |
 | M3 生态与稳定 | **已关闭** | 四条判据全部达成，见 [m3-plan.md](m3-plan.md) §九 |
-| **I0 稳定化与发布** | **进行中** | 诊断/日志/故障排查/兼容策略/安装实测/嵌入指南已完成；剩 ACP Registry 上架（被 `0.x` 不承诺兼容卡住） |
+| **I0 稳定化与发布** | **进行中** | 诊断/日志/故障排查/兼容策略/安装实测/嵌入指南/单文件发布/Linux CI 已完成；剩 ACP Registry 上架（被 `0.x` 不承诺兼容卡住）与配置迁移（已判定不做） |
 
 **这份表在 2026-10-27 更新**：此前停在 2026-10-24，把 M2/M3 记为"未开始"，
 而它们早已关闭。台账类的表格必须与原文档（[status.md](status.md)）对齐，
@@ -309,6 +309,34 @@ G10 的"幂等键"部分仍需远端工具配合，但它原本最要命的缺�
 | `dotnet tool` 安装 | 真装实测：依赖自带、项目外可运行、卸载干净；`--help` 已补 |
 | 嵌入指南 | [embedding-guide.md](embedding-guide.md)；代码由 `samples/embedding-probe` 保活 |
 | 性能基线 | [performance-baseline.md](performance-baseline.md)，只记录不承诺 |
+| **单文件发布** | `samples/singlefile-probe` 探针；`all-checks.sh` 每次发布并验证"单文件里能加载/卸载插件"。**过程中修掉一个真实缺陷**，见下 |
+| **Linux CI** | `build.yml` 改为 `windows-latest` + `ubuntu-latest` matrix，两个平台跑同一套 `all-checks.sh` |
+
+### 单文件发布时发现的内核缺陷（2026-10-27）
+
+`dotnet publish -p:PublishSingleFile=true` **根本无法编译**：
+
+```
+error IL3000: 'Assembly.Location' always returns an empty string for
+              assemblies embedded in a single-file app.
+```
+
+`PluginLoadContext.IsUnderDotnetRoot` 用 `typeof(object).Assembly.Location` 推共享框架目录。
+单文件下该属性恒为空，`Path.GetDirectoryName(null)` 返回 null。
+`TreatWarningsAsErrors` 把 IL3000 提升为 error，因此**发布直接失败**。
+
+**修法**：把"可能为空"显式写进逻辑（空则不能由此判定），并在两处加 `#pragma warning disable IL3000`
+附上理由——这里的用途正是观察它是否为空，分析器无法表达这个意图。
+
+**如实记录两件没做到的事**：
+
+1. 我一开始以为这会让运行期出错（框架程序集被误判成插件依赖）。**实际不是**：
+   原代码 `Path.GetDirectoryName("")` 已返回 null 并跳过，行为与修后等价。
+   修后的代码只是把这一点写明。**真正的问题只有编译失败这一条。**
+2. 我两次尝试用"未登记契约必须加载失败"来反证这个修复，**两次都没能变红**——
+   那个场景在装配解析阶段就失败了，走不到 `IsFrameworkAssembly`。
+   最后改成验证"单文件里能加载→激活→卸载→程序集可回收"，并用"让 UnloadAsync 提前返回"
+   做反证，得到 `卸载后剩余插件: 1` → FAIL。**这才是有证据的那一条。**
 
 ### 剩下的一项：ACP Registry 上架
 

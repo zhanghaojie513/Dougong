@@ -85,13 +85,25 @@ internal sealed class PluginLoadContext : AssemblyLoadContext
     private static bool IsFrameworkAssembly(AssemblyName assemblyName)
     {
         // 共享框架里的程序集没有 CodeBase 路径，或位于 dotnet 安装目录下。
+        //
+        // **单文件发布下没有任何程序集有 Location**（实测：typeof(object)、
+        // System.Text.Json 的 Location 都是空字符串），此时 `string.IsNullOrEmpty`
+        // 这一支会把所有已加载程序集都当成框架程序集。这是单文件模式的固有限制，
+        // 不是可以修好的问题：程序集被嵌入到 exe 里，本来就不存在独立路径。
+        // 插件在单文件宿主里必须从磁盘加载（ALC 需要真实文件），因此它们的
+        // Location 非空，仍能被正确区分。
         if (assemblyName.Name is { Length: > 0 } name)
         {
             var loaded = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a =>
                 string.Equals(a.GetName().Name, name, StringComparison.OrdinalIgnoreCase));
             if (loaded is not null)
             {
+                // IL3000 在此处是**误报**：分析器看到 Assembly.Location 就假定
+                // 调用方要拿它当路径用。这里的用途正相反——判断它**是否为空**，
+                // 空即表示该程序集内嵌在单文件 exe 中。抑制是准确的，不是绕过检查。
+#pragma warning disable IL3000
                 var location = loaded.IsDynamic ? null : loaded.Location;
+#pragma warning restore IL3000
                 if (string.IsNullOrEmpty(location) || IsUnderDotnetRoot(location)) return true;
             }
         }
@@ -105,9 +117,37 @@ internal sealed class PluginLoadContext : AssemblyLoadContext
             || simple.StartsWith("WindowsBase", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// 判断一个路径是否落在 dotnet 共享框架目录下。
+    /// </summary>
+    /// <remarks>
+    /// **不能再用 <c>typeof(object).Assembly.Location</c> 推目录**：单文件发布下它
+    /// 恒为空，`Path.GetDirectoryName(null)` 返回 null，方法会一直返回 false——
+    /// 编译期以 IL3000 报错（本项目的 <c>TreatWarningsAsErrors</c> 把它提升为错误），
+    /// 即使放行也会在运行期把框架程序集误判成插件依赖。
+    /// <para>
+    /// <c>RuntimeEnvironment.GetRuntimeDirectory()</c> 也不是答案：单文件下它返回的是
+    /// **应用目录**而不是框架目录（实测确认），拿它比对会把插件自己判成框架。
+    /// </para>
+    /// <para>
+    /// 可行判据只有两个来源，都来自运行时实际给出的路径：
+    /// 非单文件时用 <c>typeof(object).Assembly.Location</c>；单文件时没有框架目录可比，
+    /// 直接由调用方那一支（Location 为空 → 视为框架）决定，不走这里。
+    /// </para>
+    /// </remarks>
     private static bool IsUnderDotnetRoot(string location)
     {
-        var root = Path.GetDirectoryName(typeof(object).Assembly.Location);
+        // 同一处 IL3000：这里确实是取路径，但**正是为了处理路径可能为空的场景**。
+        // 单文件下它为空，下一行就返回 false，由调用方按"Location 为空即框架"判定。
+        // 分析器无法表达"我知道它可能为空"，抑制是准确的。
+#pragma warning disable IL3000
+        var corelib = typeof(object).Assembly.Location;
+#pragma warning restore IL3000
+        // 单文件：没有可比对的框架目录。返回 false 表示"不能由此判定"，
+        // 实际结论由调用方的 IsNullOrEmpty 分支给出（那才是单文件的正确判据）。
+        if (string.IsNullOrEmpty(corelib)) return false;
+
+        var root = Path.GetDirectoryName(corelib);
         if (string.IsNullOrEmpty(root)) return false;
 
         // typeof(object) 在 System.Private.CoreLib 里，其目录即共享框架目录。

@@ -64,6 +64,37 @@ else
   exit 1
 fi
 
+echo
+echo "== 单文件发布 =="
+# 单文件不是可选玩法：I0 的退出条件要求"别人装得上"，而自包含单文件发布
+# 是 .NET 工具最常见的分发形态之一。
+#
+# 这条检查存在的原因是它曾经**编译失败**：PluginLoadContext 用
+# typeof(object).Assembly.Location 推共享框架目录，而单文件下该属性恒为空
+# （IL3000 → 本仓库 TreatWarningsAsErrors → error）。
+#
+# 光能编译不够：内核在单文件宿主里必须真的能加载与卸载插件，
+# 否则"发布成功"只是把一个坏的 exe 交出去。所以发布后跑探针验证行为。
+sf_out="$ROOT/artifacts/singlefile-probe"
+rm -rf "$sf_out"
+sf_rid="$("$DOTNET" --info | awk '/RID:/{print $2; exit}')"
+if ! "$DOTNET" publish samples/singlefile-probe -c Release -r "$sf_rid" \
+       -o "$sf_out" > /tmp/sf-publish.log 2>&1; then
+  echo "singlefile        FAIL 发布失败"
+  grep -E "error" /tmp/sf-publish.log | head -5
+  exit 1
+fi
+
+probe_exe="$sf_out/SingleFileProbe"
+[ -f "$probe_exe.exe" ] && probe_exe="$probe_exe.exe"
+plugin_dll="$ROOT/samples/Dougong.Sample.Plugin/bin/Release/net10.0/Dougong.Sample.Plugin.dll"
+if ! "$probe_exe" "$plugin_dll" > /tmp/sf-probe.log 2>&1; then
+  echo "singlefile        FAIL"
+  tail -8 /tmp/sf-probe.log
+  exit 1
+fi
+echo "singlefile        $(tail -1 /tmp/sf-probe.log)"
+
 # 反证：默认不跑（要反复重建，约 10 分钟），但必须能一键跑。
 # 全绿只说明"没发现失败"，反证才说明"检查确实在验证该行为"。
 if [ "${RUN_COUNTERPROOFS:-0}" = "1" ]; then
