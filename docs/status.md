@@ -15,12 +15,23 @@
   [quality-gates.md](quality-gates.md)，**下一步做什么**见 [plan.md](plan.md)。
   勾选任一项前，先确认它过了 [quality-gates.md](quality-gates.md) 的六道门。
 
-## 仓库可见性（2026-10-24 起私有）
+## 仓库可见性（2026-10-28 起公开）
 
-- 仓库已转为 **private**。转私有时 0 star / 0 fork / 0 watch，无外部依赖受影响。
-- **重新开源的触发条件（已定，不靠记忆）**：首个 `Dougong.*` 包发布到 nuget.org 时。备选触发：M3 插件 API 稳定化启动。两者取先到者；触发后执行 `gh repo edit zhanghaojie513/Dougong --visibility public --accept-visibility-change-consequences`。
-- 公开资产已就绪：双语 README（中英切换）、docs 归类索引、CI 门禁、release 已标 pre-release。重新开源即 launch，无需额外准备。
-- 私有期间注意事项：Actions 按分钟计费（Windows runner 2 倍率，单次约 2 计费分钟，月度免费额度充足）；README 徽章与仓库链接对外不可见属预期，无需修复；提交纪律不放松——CI 门禁与失败路径测试照常，将来公开的历史就是门面。
+- **当前状态：public。** 2026-10-28 执行 `gh repo edit zhanghaojie513/Dougong --visibility public`，
+  并用**匿名访问**核实：`https://github.com/zhanghaojie513/Dougong` 返回 HTTP 200，
+  匿名 API 报 `private: false`、`license: MIT`。不是只看自己的权限看到的假象。
+- 开源前状态（2026-10-24 起私有）：转私有时 0 star / 0 fork / 0 watch，无外部依赖受影响。
+- **触发条件是怎么满足的**：原定"首个 `Dougong.*` 包发布到 nuget.org"或
+  "M3 插件 API 稳定化启动"，取先到者。**M3 已于 2026-10-27 关闭**，第二条先到。
+  此外 [plan.md](plan.md) §六 记的 ACP Registry 三个阻碍里，第一条就是"仓库私有"
+  （`agent.json` 的 `repository` 是必填字段），开源同时解掉它。
+- 公开资产：双语 README（中英切换）、docs 归类索引、CI 门禁（Windows + Ubuntu 双平台）、
+  release 已标 pre-release。
+- **开源后需要注意**：提交历史与 `journey/` 下的复盘记录一并公开，其中包含作者本人的
+  判断失误与反证失败记录——这是刻意保留的，不是疏漏。Actions 按分钟计费
+  （Windows runner 2 倍率，单次约 2 计费分钟；现在多一个 Ubuntu job，免费额度仍充足）。
+- **仍未发布到 nuget.org。** 开源 ≠ 发版：`dotnet add package` 还取不到，
+  需要单独执行发布动作。
 
 ## 评审修订清单
 

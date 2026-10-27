@@ -42,7 +42,7 @@
 | M1 入口与执行契约 | **已关闭** | 截止 M1 的缺口全部修完（含 G1/G2/G3/G4/G6/G8） |
 | M2 协议与集成 | **已关闭** | MCP / ACP / 指标 / 受限记忆（L1 记忆含效果对照）全部完成 |
 | M3 生态与稳定 | **已关闭** | 四条判据全部达成，见 [m3-plan.md](m3-plan.md) §九 |
-| **I0 稳定化与发布** | **进行中（退出条件两个平台都已验证）** | 诊断/日志/故障排查/兼容策略/安装实测/嵌入指南/单文件发布/Linux CI/Linux 实机全流程已完成；剩 ACP Registry 上架（被 `0.x` 不承诺兼容卡住）与配置迁移（已判定不做） |
+| **I0 稳定化与发布** | **已关闭（2026-10-28）** | 退出条件（Windows + Linux 各完成一次全流程）两端都有证据；诊断/日志/排查/兼容策略/安装实测/嵌入指南/单文件发布全部完成。ACP Registry 上架与 NuGet 发布单列为后续事项——它们不是 I0 的退出条件 |
 
 **这份表在 2026-10-27 更新**：此前停在 2026-10-24，把 M2/M3 记为"未开始"，
 而它们早已关闭。台账类的表格必须与原文档（[status.md](status.md)）对齐，
@@ -295,7 +295,27 @@ G10 的"幂等键"部分仍需远端工具配合，但它原本最要命的缺�
 
 ## 六、下一个具体动作
 
-**M0–M3 全部关闭。当前在 I0 稳定化与发布。**
+**M0–M3 全部关闭。I0 的退出条件已满足（2026-10-28）。**
+
+### I0 为什么算完成
+
+`iteration-roadmap.md` 给 I0 的退出条件是：
+
+> 一位未参与开发的人，在**干净 Windows 与 Linux 环境**各完成一次
+> "安装→配置模型→完成一个真实任务→写一个工具插件"，全程无需提问。
+> 失败可定位到具体组件。
+
+**这条从没要求"上架 ACP Registry"**。退出条件的两半各有证据：
+
+| 条件 | 证据 |
+|---|---|
+| 干净 Windows 全流程 | 2026-10-26 真人走查；5 次提问全部是文档缺口，已逐条修掉（PR #14–#18） |
+| 干净 Linux 全流程 | 2026-10-27 WSL2 Ubuntu 24.04 全流程，含真实 provider 对话 |
+| 失败可定位到组件 | 五类故障各带 `Stage` + `Hint`；`--doctor` 每项失败给"下一步" |
+
+**原先把它记成"进行中"是记账错误**：把"分发渠道"（ACP Registry）当成了 I0 的
+退出条件，而它其实是 `iteration-roadmap.md` 里 I0 的一个交付项，不是门槛。
+Registry 现在单列为后续事项，见下节。
 
 ### 已完成（I0）
 
@@ -305,7 +325,7 @@ G10 的"幂等键"部分仍需远端工具配合，但它原本最要命的缺�
 | 分级日志 `DOUGONG_LOG` | 4 级；不设时行为与加它之前完全一致（有反证） |
 | 可复现信息包 `--report` | `-- report` 6 项；不含密钥与对话内容（有反证） |
 | 故障排查文档 | [troubleshooting.md](troubleshooting.md) |
-| 兼容策略 | [compat-policy.md](compat-policy.md)；ApiCompat 覆盖 5 个包 |
+| 兼容策略 | [compat-policy.md](compat-policy.md)；ApiCompat 覆盖 6 个包 |
 | `dotnet tool` 安装 | 真装实测：依赖自带、项目外可运行、卸载干净；`--help` 已补 |
 | 嵌入指南 | [embedding-guide.md](embedding-guide.md)；代码由 `samples/embedding-probe` 保活 |
 | 性能基线 | [performance-baseline.md](performance-baseline.md)，只记录不承诺 |
@@ -365,35 +385,29 @@ error IL3000: 'Assembly.Location' always returns an empty string for
 ### 剩下的一项：ACP Registry 上架（2026-10-27 查证：三个硬阻碍）
 
 上一版这里写的是"被 `0.x` 不承诺兼容卡住"。**查了 Registry 的实际规则后，
-这个说法是错的**——版本号根本不是主要障碍。真实情况是三条，每条都要先解决：
+这个说法是错的**——版本号根本不是主要障碍。真实情况是三条：
 
-| # | 阻碍 | 证据 | 能否绕过 |
+| # | 阻碍 | 证据 | 状态 |
 |---|---|---|---|
-| 1 | **仓库是私有的** | `gh repo view` → `isPrivate: true`；`https://github.com/zhanghaojie513/Dougong` 返回 404。而 `agent.json` 的 `repository` 是**必填字段**，PR 也是公开提交 | 不能。要么先开源，要么不上架 |
-| 2 | **认证方式不符合** | Registry 的 `AUTHENTICATION.md` 明确：**只接受 Agent Auth（OAuth）或 Terminal Auth**，并写明"AUTH spec 还定义了 Environment Variable Auth，但本 registry 目前只支持 Agent Auth 与 Terminal Auth"。Dougong 只有环境变量认证（`DOUGONG_PROVIDER_KEY`），`AcpAgentHost.cs:303` 的 `authMethods` 是空数组 | 不能。需要真的实现 OAuth 或终端交互认证 |
-| 3 | **分发形态不在白名单** | `agent.schema.json` 的 `distribution` 只允许 `binary` / `npx` / `uvx`，`additionalProperties: false`。**没有 `dotnet tool`** | 可以。走 `binary`：`dotnet publish` 出自包含单文件的 tar.gz/zip，附 `cmd` 与 `args`。这条路今天刚被打通（见上节单文件发布） |
+| 1 | ~~仓库是私有的~~ | `agent.json` 的 `repository` 是**必填字段**，PR 也是公开提交 | **已解决（2026-10-28）**：仓库已开源，匿名访问 HTTP 200 核实 |
+| 2 | **认证方式不符合** | Registry 的 `AUTHENTICATION.md` 明确：**只接受 Agent Auth（OAuth）或 Terminal Auth**，并写明"spec 还定义了 Environment Variable Auth，但本 registry 目前只支持前两种"。Dougong 只有环境变量认证（`DOUGONG_PROVIDER_KEY`），`AcpAgentHost.cs:303` 的 `authMethods` 是空数组 | **未解决**，是功能缺口 |
+| 3 | **分发形态不在白名单** | `agent.schema.json` 的 `distribution` 只允许 `binary` / `npx` / `uvx`，`additionalProperties: false`。**没有 `dotnet tool`** | 可绕过：走 `binary` + 单文件发布（已打通） |
 
-**阻碍 1 还有个连带问题**：仓库私有期间就算 PR 被接受，Registry 的 CI 也拉不到
-`repository` 地址、客户端也装不了 `binary` 的下载链接。所以**必须开源在前**。
+#### 剩下的顺序
 
-#### 所以正确的顺序是
-
-1. **先开源**。`status.md` 里已定的触发条件是"首个包发到 nuget.org"或"M3 插件 API 稳定化"，
-   两者取先到者——**M3 已经关闭，这条其实已满足**。这是一个可以现在做的决定。
-2. **再实现认证**。这是真正的工作量，不是配置。ACP 的 `authenticate` 流程 + 一个
+1. ~~先开源~~ —— **已完成（2026-10-28）**。
+2. **实现认证**。这是真正的工作量，不是配置。ACP 的 `authenticate` 流程 + 一个
    OAuth 或终端交互实现。要注意：Dougong 是"带自己的 provider key"的 harness，
    让每个用户走 OAuth 登录某个厂商，与它"用户自带 key"的定位有冲突——
    更合适的是 **Terminal Auth**（引导用户在终端里填 key 并落盘到受控位置），
    但那要先设计"密钥存哪、怎么保护"，与现在"只从环境变量读"的纪律相冲突。
    **这一条需要先有设计，不能顺手做。**
-3. **最后打 binary 包**。三个平台的单文件产物 + sha256 + `agent.json` + 16×16
+3. **打 binary 包**。三个平台的单文件产物 + sha256 + `agent.json` + 16×16
    `currentColor` 图标，提 PR。
 
-**结论**：这不是"待做"，也不是单纯"缺前置条件"——第 2 条是一个**需要先做设计决策**
-的功能（认证与密钥存储），与 [compat-policy.md](compat-policy.md) 和现有
-"密钥只从环境变量读"的纪律直接相关。**在解决第 2 条之前，I0 不应以"上架"为关闭条件。**
-
-已把第 1、2 条登记为 I0 之后的输入，见下节。
+**结论**：只剩第 2 条是真的拦路。它是**功能缺口**（认证与密钥存储），
+与现有"密钥只从环境变量读"的纪律直接相关，需要先做设计决策。
+**在这条解决之前，Registry 上架不算 I0 的关闭条件**——见下。
 
 ### 遗留问题总表（2026-10-27 清点）
 
@@ -403,8 +417,8 @@ error IL3000: 'Assembly.Location' always returns an empty string for
 
 | 项 | 卡在哪 | 触发条件 |
 |---|---|---|
-| **仓库重新开源** | 私有仓库，`gh repo view` 确认 `isPrivate: true` | `status.md` 已定：首个包发到 nuget.org **或** M3 插件 API 稳定化。**M3 已关闭，这条其实已满足**——是个可以随时执行的决定，只需你点头 |
-| **ACP Registry 上架** | 必须先开源（阻碍 1）+ 必须实现 Agent/Terminal Auth（阻碍 2） | 上面两条解决后即可，binary 打包已打通 |
+| **NuGet 发布** | 仓库已公开，但包还没发到 nuget.org——`dotnet add package` 取不到 | 想让人真正装得上时。`dotnet pack` 产物已就绪（每次全量检查都打） |
+| **ACP Registry 上架** | 只剩认证一条（开源已完成），见上节 | 认证实现后即可；binary 打包已打通 |
 | **ACP 认证实现** | 与"密钥只从环境变量读"的纪律冲突，需先设计密钥存储 | 等上架成为真实需求时。**这是功能，不是配置** |
 | **断电级持久化（G7）** | 已调 `Flush(flushToDisk: true)`，缺掉电测试条件 | 有可控断电环境时。现在如实声明"不保证断电"，不假装 |
 

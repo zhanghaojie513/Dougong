@@ -233,7 +233,16 @@ Dougong is an independent open-source project. The following projects provided p
 - [MCP C# SDK](https://github.com/modelcontextprotocol/csharp-sdk) — MCP protocol foundation
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) — reference for the skill self-evolution idea
 - [TKCode](https://github.com/AtomUICommunity/TKCode) — design reference for self-describing permissions, concurrency tiers and commit barriers
+- [pi.net](https://github.com/AIDotNet/pi.net) — reference for how to split "libraries vs application" on .NET
+  (`CodingAgent` vs `Cli` layers); the "keep samples alive via CI" practice also comes from it.
+  **Only its README and directory structure were read for architectural comparison — no code was copied**;
+  see [host-layering-decision.md](docs/host-layering-decision.md)
+
+The projects above are **idea and design references only**; Dougong contains none of their code.
+Each borrowed idea is recorded with its provenance in `docs/` (who, which point, why adopted or rejected) —
+including the rejected ones, e.g. [kernel-vs-cordis.md](docs/kernel-vs-cordis.md) explains why
+"a .NET dsh equivalent" is not a claim this project makes.
 
 ## License
 
-[MIT](LICENSE) © 2026 Haojie Zhang (张浩洁)
+[MIT](LICENSE) © 2026 Haojie Zhang

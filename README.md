@@ -301,6 +301,14 @@ Dougong 是独立开源项目，以下项目提供了公开思想或技术参考
 - [MCP C# SDK](https://github.com/modelcontextprotocol/csharp-sdk) — MCP 协议基础
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) — Skill 自动进化设想的参考
 - [TKCode](https://github.com/AtomUICommunity/TKCode) — 权限自描述、并发分级和写盘屏障的设计参考
+- [pi.net](https://github.com/AIDotNet/pi.net) — .NET 上如何切"库与应用"的参考（`CodingAgent` 与 `Cli` 分层）；
+  样例由 CI 编译保活的做法也源自它。**只读了它的 README 与目录结构做架构对照，没有复制任何代码**，
+  对比结论见 [host-layering-decision.md](docs/host-layering-decision.md)
+
+以上项目均为**思想与设计参考**，Dougong 不含它们的代码。
+原始实现有独立的事实依据：每条借鉴都记在 `docs/` 对应文档里（谁、哪一条、为什么采纳或不采纳），
+不采纳的也写明了理由——例如 [kernel-vs-cordis.md](docs/kernel-vs-cordis.md) 记录了
+"对等的 .NET dsh"这个定位为何不成立。
 
 ## License
 
