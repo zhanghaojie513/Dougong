@@ -245,4 +245,10 @@ including the rejected ones, e.g. [kernel-vs-cordis.md](docs/kernel-vs-cordis.md
 
 ## License
 
-[MIT](LICENSE) © 2026 Haojie Zhang
+MIT — see [LICENSE](LICENSE). © 2026 Haojie Zhang.
+
+Dougong is an independent implementation, not a port or fork of any project.
+The projects under "Acknowledgements" were read for architectural comparison
+only; no source code was copied, so no upstream copyright is retained here.
+Each borrowed idea is recorded with its provenance in `docs/`, including the
+ideas that were reviewed and rejected.
