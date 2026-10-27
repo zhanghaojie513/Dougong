@@ -33,6 +33,14 @@
   [host-layering-decision.md](docs/host-layering-decision.md) §4.5。
   ApiCompat 已覆盖（基线 `artifacts/baseline/Dougong.Hosting.nupkg`）。
 
+### Fixed
+
+- **未知命令行参数不再被静默忽略**。此前 `dougong --docter`（拼错 `--doctor`）
+  会忽略该参数并**直接进入交互对话**，同时创建会话文件——用户以为在跑自检，
+  实际开了个会话。现在报 `未知参数：--docter` 并退出 2，且这条检查排在
+  provider 配置检查之前（缺配置 + 参数拼错时报的是参数错，那才是根因）。
+  带值形式 `--resume x` 与 `--resume=x` 均不会被误判。
+
 ### Changed
 
 - `Dougong.Cli` 不再自己定义 `KernelAgentHost` / `KernelAgentRuntime`，

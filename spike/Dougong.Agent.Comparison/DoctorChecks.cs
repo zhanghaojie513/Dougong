@@ -30,6 +30,9 @@ public static class DoctorChecks
         failures += await CheckAsync("log-silent-by-default", LogSilentByDefaultAsync);
         failures += await CheckAsync("log-info-adds-startup-facts", LogInfoAddsFactsAsync);
         failures += await CheckAsync("log-unknown-value-is-reported", LogUnknownValueAsync);
+        failures += await CheckAsync("unknown-arg-errors-instead-of-starting-repl",
+            UnknownArgRejectedAsync);
+        failures += await CheckAsync("known-arg-forms-not-misjudged", KnownArgsAcceptedAsync);
 
         Console.WriteLine(failures == 0
             ? "DOCTOR: ALL PASS"
@@ -413,5 +416,137 @@ public static class DoctorChecks
             Console.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// 拼错的参数必须报错退出，不能静默进入交互对话。
+    /// </summary>
+    /// <remarks>
+    /// 修的是一个实测到的真实缺陷：此前所有参数用 <c>args.Contains</c> 判断，
+    /// 拼错的参数被忽略。实测 <c>dougong --docter</c>（想跑自检）会**正常启动
+    /// 交互对话并创建会话文件**——用户以为在自检，实际开了个会话。
+    /// <para>
+    /// 这条必须在**配置齐全**时测：缺配置时程序本来就会退出 2，
+    /// 那样测不出"参数校验生效了没有"（假通过）。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> UnknownArgRejectedAsync()
+    {
+        var result = await RunWithArgsAsync(["--docter"], FullProviderEnvironment());
+
+        if (result.ExitCode != 2)
+            return $"未知参数应退出 2，实际 {result.ExitCode}。stderr={Trim(result.Stderr)}";
+
+        if (!result.Stderr.Contains("--docter", StringComparison.Ordinal))
+            return $"报错未指出是哪个参数。stderr={Trim(result.Stderr)}";
+
+        // 必须没有进入对话：正常启动会打印模型/工作区横幅。
+        if (result.Stdout.Contains("模型=", StringComparison.Ordinal))
+            return $"未知参数却启动了对话。stdout={Trim(result.Stdout)}";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 合法参数不能被误判成未知参数——尤其带值的形式。
+    /// </summary>
+    /// <remarks>
+    /// 这是上一条的对偶检查，防的是"修静默失败却修坏正常用法"。
+    /// 三种形式都要覆盖：无值开关、<c>--name=value</c>、<c>--name value</c>。
+    /// </remarks>
+    private static async Task<string?> KnownArgsAcceptedAsync()
+    {
+        // 无值开关：--help 应正常输出帮助并退出 0。
+        var help = await RunWithArgsAsync(["--help"], FullProviderEnvironment());
+        if (help.ExitCode != 0)
+            return $"--help 应退出 0，实际 {help.ExitCode}。stderr={Trim(help.Stderr)}";
+        if (!help.Stdout.Contains("用法", StringComparison.Ordinal))
+            return $"--help 未输出用法。stdout={Trim(help.Stdout)}";
+
+        // --name=value 与 --name value 都不该被判未知参数。
+        // 用一个必然不存在的会话文件：预期结果是"找不到会话"，不是"未知参数"。
+        foreach (var form in new[] { "--resume", "--branch" })
+        {
+            var eq = await RunWithArgsAsync(
+                [$"{form}=/nonexistent-probe.jsonl"], FullProviderEnvironment());
+            if (eq.Stderr.Contains("未知参数", StringComparison.Ordinal))
+                return $"{form}=值 被误判为未知参数。stderr={Trim(eq.Stderr)}";
+
+            var space = await RunWithArgsAsync(
+                [form, "/nonexistent-probe.jsonl"], FullProviderEnvironment());
+            if (space.Stderr.Contains("未知参数", StringComparison.Ordinal))
+                return $"{form} 值（空格分隔）被误判为未知参数。stderr={Trim(space.Stderr)}";
+        }
+
+        return null;
+    }
+
+    /// <summary>齐全的 provider 环境（值无效也没关系：这些检查不联网）。</summary>
+    private static Dictionary<string, string?> FullProviderEnvironment() => new()
+    {
+        ["DOUGONG_PROVIDER_BASE"] = "https://127.0.0.1:1",
+        ["DOUGONG_PROVIDER_MODEL"] = "m",
+        ["DOUGONG_PROVIDER_KEY"] = "k",
+    };
+
+    /// <summary>起真实 CLI 进程并传入指定参数；不喂命令行输入。</summary>
+    private static async Task<DoctorResult> RunWithArgsAsync(
+        string[] arguments, IReadOnlyDictionary<string, string?> environment)
+    {
+        var cliDll = Path.Combine(
+            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+
+        if (!File.Exists(cliDll))
+            throw new InvalidOperationException($"找不到 CLI 产物：{cliDll}（先跑 all-checks.sh 构建）");
+
+        var startInfo = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+        startInfo.ArgumentList.Add(cliDll);
+        foreach (var a in arguments) startInfo.ArgumentList.Add(a);
+
+        foreach (var name in new[]
+                 {
+                     "DOUGONG_PROVIDER_BASE", "DOUGONG_PROVIDER_MODEL",
+                     "DOUGONG_PROVIDER_KEY", "DOUGONG_PROVIDER_PROTOCOL",
+                     "DOUGONG_WORKSPACE", "DOUGONG_SESSION_DIR", "DOUGONG_MEMORY",
+                 })
+        {
+            startInfo.Environment.Remove(name);
+        }
+
+        foreach (var (k, v) in environment)
+        {
+            if (v is null) startInfo.Environment.Remove(k);
+            else startInfo.Environment[k] = v;
+        }
+
+        using var process = new Process { StartInfo = startInfo };
+        process.Start();
+
+        // 立刻关 stdin：若程序错误地进入 REPL，它会读到 EOF 而不是挂住。
+        try { process.StandardInput.Close(); } catch (IOException) { }
+
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            return new DoctorResult(-1, await stdoutTask, "超时：未在 90 秒内退出");
+        }
+
+        return new DoctorResult(process.ExitCode, await stdoutTask, await stderrTask);
     }
 }

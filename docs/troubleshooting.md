@@ -86,6 +86,27 @@ dotnet test Dougong.slnx -c Release --no-build --output Detailed
 
 ## 三、运行与配置
 
+### 3.0 `未知参数：xxx`
+
+**现象**：
+
+```
+未知参数：--docter
+
+可用参数：--help --version --doctor --report --acp --list
+          --resume <会话>  --branch <会话>
+```
+
+退出码 2，不进入对话。
+
+**原因**：参数拼错了。上面的例子把 `--doctor` 写成了 `--docter`。
+
+**这条检查是 2026-10-28 加的，修的是一个静默失败**：在此之前所有参数都用
+"包含就生效"的方式判断，拼错的参数被**忽略**，程序直接进入交互对话——
+用户以为在跑自检，实际开了一个会话并写了日志文件。现在会明确报错。
+
+**做法**：照上面列出的可用参数改正。要看完整说明跑 `dougong --help`。
+
 ### 3.1 `缺少 provider 配置`
 
 **现象**：`缺少 provider 配置。请设置 DOUGONG_PROVIDER_BASE / KEY / MODEL 环境变量。`

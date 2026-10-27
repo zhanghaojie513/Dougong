@@ -73,6 +73,27 @@ public static class Program
             return 0;
         }
 
+        // 未知参数必须在读 provider 配置**之前**报出来。
+        //
+        // 修的是一个真实的静默失败：此前所有参数都用 `args.Contains(...)` 判断，
+        // 拼错的参数（例如把 `--doctor` 写成 `--docter`）被静默忽略，
+        // 程序直接进入交互对话——用户以为在跑自检，实际开了个会话并写了日志文件。
+        // 已实测复现：`dougong --docter` 会正常启动对话并创建会话文件。
+        //
+        // 报错放在这里而不是更早：--help / --version / --doctor / --report
+        // 都不需要 provider 配置，它们的判断在上面，不受影响。
+        // 放在这里也意味着**缺配置 + 参数拼错**时报的是参数错——那才是根因。
+        if (FindUnknownArgument(args) is { } unknown)
+        {
+            Console.Error.WriteLine($"未知参数：{unknown}");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("可用参数：--help --version --doctor --report --acp --list");
+            Console.Error.WriteLine("          --resume <会话>  --branch <会话>");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("若想看完整说明：dougong --help");
+            return 2;
+        }
+
         var config = ChatClientFactory.FromEnvironment();
         if (config is null)
         {
@@ -614,6 +635,60 @@ public static class Program
             if (args[i].StartsWith(name + "=", StringComparison.Ordinal))
                 return args[i][(name.Length + 1)..];
             if (args[i] == name && i + 1 < args.Length) return args[i + 1];
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 找出无法识别的命令行参数；全部认识时返回 null。
+    /// </summary>
+    /// <remarks>
+    /// 存在的理由是一个实测到的静默失败：参数曾全部用 <c>args.Contains</c> 判断，
+    /// 拼错的参数被忽略，程序直接进入交互对话——用户敲 <c>--docter</c> 想跑自检，
+    /// 实际开了个会话并写了日志文件。
+    /// <para>
+    /// <b>宁可漏报也不要误报</b>：这个方法的唯一职责是抓"明显不认识"的参数。
+    /// 它必须认识两种带值形式（<c>--resume x</c> 与 <c>--resume=x</c>），
+    /// 否则合法调用会被判成未知参数——那比原来的静默忽略更糟。
+    /// 判据因此写得很窄：只有以 <c>-</c> 开头、且不在白名单里的才算未知；
+    /// 不带前缀的裸值是某个开关的取值，交给上面的 <see cref="FindArg"/> 处理。
+    /// </para>
+    /// </remarks>
+    private static string? FindUnknownArgument(string[] args)
+    {
+        // 无值开关。
+        string[] switches =
+        [
+            "--acp", "--version", "-v", "--help", "-h", "--doctor", "--report", "--list",
+        ];
+
+        // 带值开关：后面那个参数是它的值，不是独立参数。
+        string[] valued = ["--resume", "--branch"];
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            // 带值开关的 `--name=value` 形式：整体合法。
+            if (valued.Any(v => arg.StartsWith(v + "=", StringComparison.Ordinal)))
+                continue;
+
+            if (Array.IndexOf(valued, arg) >= 0)
+            {
+                // 跳过它的值。值缺失也不在这里报错——由使用该参数的调用方判断，
+                // 那里能给出更具体的提示（例如"--resume 需要一个会话文件"）。
+                i++;
+                continue;
+            }
+
+            if (Array.IndexOf(switches, arg) >= 0) continue;
+
+            // 不是开关（不以 - 开头）却走到这里：它是前面某个带值参数的值。
+            // 上面已经跳过成对的值，剩下的是多余的位置参数。
+            if (!arg.StartsWith('-')) return arg;
+
+            return arg;
         }
 
         return null;
