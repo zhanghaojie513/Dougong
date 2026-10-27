@@ -85,6 +85,12 @@ mut05() {
   perl -0pi -e 's/`DescribePermission`/那个权限方法/g' "$GS"
 }
 
+# 6. 章节编号退回非整数（"## 6." → "## 5.5"）→ 结构错乱重现
+mut06() {
+  perl -0pi -e 's/^## 6\. 接上真模型/## 5.5 接上真模型/m' "$GS"
+}
+
+run_case non-integer-section-number  getting-started-sections-are-contiguous          mut06
 run_case missing-model-config-step   getting-started-covers-all-four-criterion-steps  mut04
 run_case missing-describe-permission getting-started-covers-all-four-criterion-steps  mut05
 run_case unknown-subcommand-falls-through  unknown-subcommand-errors-instead-of-silent-run  mut01

@@ -33,6 +33,8 @@ public static class ToolPluginChecks
             UnknownSubcommandAsync);
         failures += await CheckAsync("getting-started-covers-all-four-criterion-steps",
             CoversCriterionStepsAsync);
+        failures += await CheckAsync("getting-started-sections-are-contiguous",
+            SectionsContiguousAsync);
 
         Console.WriteLine(failures == 0
             ? "TOOL-PLUGIN: ALL PASS"
@@ -293,6 +295,77 @@ public static class ToolPluginChecks
         }
 
         return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>
+    /// 顶级章节必须是连续整数，且父子层级一致。
+    /// </summary>
+    /// <remarks>
+    /// 真实发生过：为了少改动，新增的"接上真模型"被编成 §5.5，
+    /// 但用的是 `##` 级标题——于是它和 §5 平级，编号上却像 §5 的子节，
+    /// 而 5.1–5.4 根本不存在。读者会以为文档缺了一块。
+    /// <para>
+    /// 检查两件事：顶级编号连续（0,1,2,…）；子节编号以父节开头。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> SectionsContiguousAsync()
+    {
+        var path = Path.Combine(FindRepoRoot(), "docs", "getting-started.md");
+        var lines = File.ReadAllLines(path);
+
+        var topLevel = new List<int>();
+        string? currentTop = null;
+        var problems = new List<string>();
+
+        foreach (var line in lines)
+        {
+            if (line.StartsWith("## ", StringComparison.Ordinal))
+            {
+                currentTop = ParseNumber(line[3..]);
+
+                // 顶级编号必须是整数。写成 5.5 会让它看起来像 §5 的子节，
+                // 而 5.1–5.4 并不存在——读者会以为文档缺了一块。
+                if (currentTop is null) continue;
+                if (!int.TryParse(currentTop, out var n))
+                {
+                    problems.Add($"顶级章节编号 §{currentTop} 不是整数");
+                    continue;
+                }
+
+                topLevel.Add(n);
+            }
+            else if (line.StartsWith("### ", StringComparison.Ordinal))
+            {
+                var sub = ParseNumber(line[4..]);
+                if (sub is null || currentTop is null) continue;
+
+                // 子节必须是 "父节.序号"
+                if (!sub.StartsWith(currentTop + ".", StringComparison.Ordinal))
+                    problems.Add($"子节 §{sub} 不在父节 §{currentTop} 之下");
+            }
+        }
+
+        for (var i = 1; i < topLevel.Count; i++)
+        {
+            if (topLevel[i] != topLevel[i - 1] + 1)
+                problems.Add($"顶级章节从 §{topLevel[i - 1]} 跳到 §{topLevel[i]}");
+        }
+
+        return Task.FromResult<string?>(
+            problems.Count == 0 ? null : string.Join("；", problems));
+    }
+
+    /// <summary>从标题开头取出编号（如 "5.5 xxx" → "5.5"），取不到返回 null。</summary>
+    private static string? ParseNumber(string heading)
+    {
+        var end = heading.IndexOfAny([' ', '　']);
+        if (end <= 0) return null;
+
+        var token = heading[..end].TrimEnd('.');
+        return double.TryParse(token, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out _)
+            ? token
+            : null;
     }
 
     // ── 构建与加载指南里的代码 ───────────────────────────────────
