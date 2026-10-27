@@ -14,8 +14,9 @@ cd "$REPO" || exit 1
 LIMITS="src/Dougong.Agent/ToolResultLimits.cs"
 RT="src/Dougong.Agent/LoopAgentRuntime.cs"
 COMPACT="src/Dougong.Agent/ContextCompaction.cs"
+BUDGET="src/Dougong.Agent/IContextCompactor.cs"
 
-FILES=("$LIMITS" "$RT" "$COMPACT")
+FILES=("$LIMITS" "$RT" "$COMPACT" "$BUDGET")
 BACKUP_DIR="$(mktemp -d)"
 trap 'restore; rm -rf "$BACKUP_DIR"' EXIT
 
@@ -110,6 +111,16 @@ mut09() {
   perl -0pi -e 's/var content = ToolResultLimits\.Clamp\(message\.Content, out _\);/var content = message.Content;/' "$RT"
 }
 
+# ── OverheadTokens 太小：工具声明超出预留，压缩会系统性低估 ──
+mut10() {
+  perl -0pi -e 's/public int OverheadTokens \{ get; init; \} = 512;/public int OverheadTokens { get; init; } = 100;/' "$BUDGET"
+}
+
+# ── OverheadTokens 太大：预留是实测值的 42 倍，会过早压缩 ──
+mut11() {
+  perl -0pi -e 's/public int OverheadTokens \{ get; init; \} = 512;/public int OverheadTokens { get; init; } = 8000;/' "$BUDGET"
+}
+
 run_case clamp-limit-removed          context-hygiene  long-result-clamped              mut01
 run_case clamp-marker-removed         context-hygiene  clamp-marker-is-explicit         mut02
 run_case clamp-tail-dropped           context-hygiene  clamp-keeps-head-and-tail        mut03
@@ -120,6 +131,8 @@ run_case plan-protection-removed      compaction       latest-plan-survives-comp
 # 砍到空会让含计划的两条检查都变红，取其一作代表：
 # "无计划"路径不受这条改动影响，所以不能用 no-plan-means-full-range 验它。
 run_case plan-protection-overreaches  compaction       latest-plan-survives-compaction  mut07
+run_case overhead-too-small           context-hygiene  tool-declarations-fit-overhead-budget  mut10
+run_case overhead-too-large           context-hygiene  overhead-default-matches-real-toolset  mut11
 
 restore
 

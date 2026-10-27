@@ -70,13 +70,46 @@
 
 ### 验收
 
-`-- context-hygiene` 10 项。其中 `history-gets-clamped`、`restore-path-also-clamps` 与 `store-keeps-full-content`
+`-- context-hygiene` 12 项。其中 `history-gets-clamped`、`restore-path-also-clamps` 与 `store-keeps-full-content`
 都走**真实运行时 + 真实 dispatcher**（`ScriptedChatClient` + `FakeTool`）——
 只测 `Clamp` 本身是没用的，那样测不出"裁剪压根没接上"。
 
-**反证 8 条**（`scripts/context-hygiene-counterproofs.sh`）全部如期变红，
+**反证 10 条**（`scripts/context-hygiene-counterproofs.sh`）全部如期变红，
 覆盖：上限失效、标记丢失、尾部丢失、主路径未接上、污染持久化、恢复路径未裁剪、
-计划保护失效、计划保护过度。
+计划保护失效、计划保护过度、`OverheadTokens` 过小、`OverheadTokens` 过大。
+最后两条针对下面 §2.1 新增的预算检查。
+
+### 工具声明也占预算：`OverheadTokens` 的双向检查（2026-10-28）
+
+外部实践里有一条"全局规则压在 N 行以内"的建议。Dougong 没有 system prompt
+概念（那是宿主的自由，见 [host-layering-decision.md](host-layering-decision.md) §五），
+但**同一个问题在我们这里有个真实的对应物**：工具声明与系统指令不进
+`CommittedHistory`，却确实占上下文，靠 `ContextLimits.OverheadTokens` 预留
+（默认 512）。这个默认值此前**从未被实测校准过**。
+
+实测（真实工具集 `read_file`/`write_file`/`todo_write`/`shell`）：
+
+| 工具数 | 声明 token |
+|---|---|
+| 4（CLI 默认） | **188** |
+| 10 | 453 |
+| 30 | 1404 |
+
+所以又加了两条检查，方向相反：
+
+| 检查 | 防的是 |
+|---|---|
+| `tool-declarations-fit-overhead-budget` | 预留**太小** → 压缩系统性低估 → 触发偏晚 → 撞上下文上限才失败 |
+| `overhead-default-matches-real-toolset` | 预留**太大** → 过早压缩 → 多花一次模型调用 |
+
+第二条要求预留量在实测的 **1.5~8 倍**之间：下限留余量给系统指令与插件工具，
+上限防止默认值失去指导意义。
+
+**反证双向都做过**：把默认值改成 100（低于 188）→ 两条同时失败；
+改成 8000（42 倍）→ 第二条失败并报出倍数。改回 512 后全绿。
+
+**这条检查的用途**：加工具或把 schema 写复杂时它会失败，提示同步校准
+`OverheadTokens`——而不是等到某次长会话撞上 provider 上限才发现。
 
 ---
 

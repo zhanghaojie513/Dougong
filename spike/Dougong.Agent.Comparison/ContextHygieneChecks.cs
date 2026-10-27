@@ -37,6 +37,8 @@ public static class ContextHygieneChecks
         failures += await CheckAsync("restore-path-also-clamps", RestorePathClampsAsync);
         failures += await CheckAsync("restore-with-big-result-stays-under-budget",
             RestoreBigResultBudgetAsync);
+        failures += Check("tool-declarations-fit-overhead-budget", ToolDeclarationsFitOverhead);
+        failures += Check("overhead-default-matches-real-toolset", OverheadMatchesRealToolset);
 
         Console.WriteLine(failures == 0
             ? "CONTEXT-HYGIENE: ALL PASS"
@@ -450,4 +452,94 @@ public static class ContextHygieneChecks
             return 1;
         }
     }
+
+    /// <summary>
+    /// 工具声明的 token 消耗必须小于 <see cref="ContextLimits.OverheadTokens"/> 的默认值。
+    /// </summary>
+    /// <remarks>
+    /// **为什么这是一条必须存在的检查**：<c>OverheadTokens</c> 是压缩预算里
+    /// "工具声明 + 系统指令"的预留量。工具声明超出它时，压缩会**系统性低估**
+    /// 实际占用——于是触发偏晚，最后撞上 provider 的上下文上限才失败。
+    /// 而失败形态是"会话突然不可用"，不是"压缩得少一点"，很难归因。
+    /// <para>
+    /// 这条检查把"预留值够不够"变成可执行断言，而不是一句注释里的假设。
+    /// 加工具（或把 schema 写复杂）时它会失败，提示同步调大 OverheadTokens。
+    /// </para>
+    /// </remarks>
+    private static string? ToolDeclarationsFitOverhead()
+    {
+        // 与 CLI 的默认工具集对齐：read_file / write_file / todo_write / shell。
+        var descriptors = RealToolDescriptors();
+        var declared = DeclarationsTokens(descriptors);
+        var budget = new ContextLimits
+        {
+            ContextWindowTokens = 128_000,
+            MaxOutputTokens = 4_096,
+        }.OverheadTokens;
+
+        if (declared > budget)
+        {
+            return $"默认工具集声明约 {declared} token，超过 OverheadTokens={budget}。"
+                + "压缩预算会低估实际占用、触发偏晚；请调大 ContextLimits.OverheadTokens "
+                + "或精简工具 schema。";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// <c>OverheadTokens</c> 的默认值必须对得上真实工具集，不能凭感觉给。
+    /// </summary>
+    /// <remarks>
+    /// 判据是双向的：太小会低估（上一条检查覆盖），**太大则无谓地压缩**——
+    /// 把 20 万窗口当 19 万用，长会话提前触发摘要，多花一次模型调用。
+    /// 这条要求预留量至少是实测的 1.5 倍（留余量给系统指令与插件带来的额外工具），
+    /// 但不超过实测的 8 倍（否则说明这个默认值已经没有指导意义）。
+    /// </remarks>
+    private static string? OverheadMatchesRealToolset()
+    {
+        var declared = DeclarationsTokens(RealToolDescriptors());
+        var budget = new ContextLimits
+        {
+            ContextWindowTokens = 128_000,
+            MaxOutputTokens = 4_096,
+        }.OverheadTokens;
+
+        if (budget < declared * 1.5)
+            return $"OverheadTokens={budget} 相对实测工具声明 {declared} token 余量不足 50%；"
+                + "再加一两个工具就会低估。";
+
+        if (budget > declared * 8)
+            return $"OverheadTokens={budget} 是实测工具声明 {declared} token 的 "
+                + $"{budget / (double)declared:F1} 倍，余量过大——会导致过早压缩、"
+                + "多花模型调用。请在调大工具集时同步校准这个默认值。";
+
+        return null;
+    }
+
+    /// <summary>CLI 默认注册的工具，schema 与 <c>FileTools.cs</c> / <c>TodoWriteTool</c> 一致。</summary>
+    private static List<ToolDescriptor> RealToolDescriptors() =>
+    [
+        new("read_file", "read_file", "1.0.0", "读取工作区内的文本文件",
+            JsonDocument.Parse(
+                """{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}""")
+                .RootElement.Clone()),
+        new("write_file", "write_file", "1.0.0", "写入工作区内的文本文件",
+            JsonDocument.Parse(
+                """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}""")
+                .RootElement.Clone()),
+        new(PlanTool.ToolId, PlanTool.ToolId, "1.0.0", "维护当前任务计划（全量替换）",
+            JsonDocument.Parse(
+                """{"type":"object","properties":{"entries":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string"}},"required":["content","status"]}}},"required":["entries"]}""")
+                .RootElement.Clone()),
+        new("shell", "shell", "1.0.0", "在工作区内执行命令",
+            JsonDocument.Parse(
+                """{"type":"object","properties":{"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["command"]}""")
+                .RootElement.Clone()),
+    ];
+
+    /// <summary>工具声明占用的 token：名称 + 描述 + schema，与连接器实际发送的内容一致。</summary>
+    private static int DeclarationsTokens(IReadOnlyList<ToolDescriptor> descriptors) =>
+        TokenBudget.Estimate(string.Concat(descriptors.Select(d =>
+            d.Name + d.Description + d.InputSchema.GetRawText())));
 }

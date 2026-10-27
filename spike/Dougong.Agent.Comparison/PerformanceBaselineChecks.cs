@@ -272,18 +272,29 @@ public static class PerformanceBaselineChecks
         // 一个接近真实的 schema：文件工具那种带 required 与 properties 的形状。
         foreach (var toolCount in new[] { 4, 10, 30 })
         {
+            // 用**真实工具集**的 schema 而不是合成的：OverheadTokens 的默认值
+            // 要对得上实际注册的工具，否则量出来的数没有指导意义。
+            var realSchemas = new[]
+            {
+                (name: "read_file", desc: "读取工作区内的文本文件",
+                 schema: """{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"""),
+                (name: "write_file", desc: "写入工作区内的文本文件",
+                 schema: """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}"""),
+                (name: "todo_write", desc: "维护当前任务计划（全量替换）",
+                 schema: """{"type":"object","properties":{"entries":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string"}},"required":["content","status"]}}},"required":["entries"]}"""),
+                (name: "shell", desc: "在工作区内执行命令",
+                 schema: """{"type":"object","properties":{"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["command"]}"""),
+            };
+
             var descriptors = new List<ToolDescriptor>(toolCount);
             for (var i = 0; i < toolCount; i++)
             {
+                // 真实工具用完不足时，按同一形状补齐（模拟插件带来的额外工具）。
+                var src = realSchemas[i % realSchemas.Length];
+                var suffix = i < realSchemas.Length ? "" : $"_{i}";
                 descriptors.Add(new ToolDescriptor(
-                    $"tool_{i}", $"tool_{i}", "1.0.0", "读文件",
-                    JsonDocument.Parse("""
-                        {"type":"object","properties":{
-                          "path":{"type":"string","description":"工作区内的相对路径"},
-                          "encoding":{"type":"string","enum":["utf8","utf16"]},
-                          "maxBytes":{"type":"integer","minimum":1,"maximum":1048576}
-                        },"required":["path"]}
-                        """).RootElement.Clone()));
+                    src.name + suffix, src.name + suffix, "1.0.0", src.desc,
+                    JsonDocument.Parse(src.schema).RootElement.Clone()));
             }
 
             // 预热
@@ -305,8 +316,14 @@ public static class PerformanceBaselineChecks
             var perRequest = watch.Elapsed.TotalMilliseconds / iterations;
             var perRequestBytes = allocated / iterations;
 
+            // 每个工具声明的 token 消耗：这决定 ContextLimits.OverheadTokens
+            // 默认 512 够不够。超了就会系统性低估、压缩触发偏晚。
+            var perToolTokens = TokenBudget.Estimate(string.Join("", descriptors.Select(
+                d => d.Name + d.Description + d.InputSchema.GetRawText())));
+
             Console.WriteLine($"  {toolCount,2} 个工具：{perRequest,6:F3} ms/请求"
-                + $"，分配 {perRequestBytes / 1024.0,7:F1} KB/请求");
+                + $"，分配 {perRequestBytes / 1024.0,7:F1} KB/请求"
+                + $"，约 {perToolTokens,5} token");
         }
 
         Console.WriteLine("  注：一次会话每轮都要构造一次请求体，这里只测声明序列化本身。");
