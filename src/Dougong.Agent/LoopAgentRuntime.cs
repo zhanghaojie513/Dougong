@@ -100,7 +100,12 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         // 压缩只处理进入循环前的基线历史（request.History）。
         // 循环内部追加的 assistant/tool 交互不参与压缩：它们是最新的工作上下文，
         // 且必须成对保留——把其中一半压掉就会得到悬空的 tool_calls。
-        IReadOnlyList<AgentMessage> baseline = new List<AgentMessage>(request.History);
+        //
+        // **不复制 request.History**：这里只需要一个可重新赋值的变量（压缩成功时
+        // 换成 replaced）。原先写成 `new List<AgentMessage>(request.History)`，
+        // 在一次 run 里白白复制整个历史数组——5000 条时约 40KB 的无谓分配。
+        // 后续所有读取都是只读，压缩路径也是返回新列表再赋值，因此原数组不会被改。
+        IReadOnlyList<AgentMessage> baseline = request.History;
         var history = BuildHistory(baseline, request.UserInput);
         // 循环内追加的交互从这一下标开始；压缩时只替换它之前的前缀。
         var tailStart = history.Count;
@@ -754,8 +759,11 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         catch (Exception ex)
         {
             // 压缩自身出错不能中断运行：历史不变，任务继续。
+            // 估算只做一次：两个参数位置要的是同一个值，原先写了两次
+            // `TokenBudget.Estimate(baseline)`，在长历史上是白算一遍全部字符。
+            var unchangedTokens = TokenBudget.Estimate(baseline);
             return (null, new AgentEvent.ContextCompacted(
-                0, TokenBudget.Estimate(baseline), TokenBudget.Estimate(baseline),
+                0, unchangedTokens, unchangedTokens,
                 Applied: false, Diagnostic: $"压缩失败：{ex.GetType().Name}: {ex.Message}"));
         }
     }
