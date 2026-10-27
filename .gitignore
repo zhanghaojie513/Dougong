@@ -35,3 +35,6 @@ __pycache__/
 # 检查用的临时探针工程（加载后 dll 被锁，进程内删不掉）
 samples/_tool-probe/
 samples/_load-plugin-probe/
+
+# dotnet tool 打包输出
+artifacts/tool/

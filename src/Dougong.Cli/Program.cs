@@ -51,6 +51,15 @@ public static class Program
             return 0;
         }
 
+        // --help 必须排在 provider 配置检查之前。
+        // 一个刚装完工具的人第一件事就是敲 --help——那时他还没配 provider，
+        // 若在这里先报"缺少 provider 配置"，他连有哪些命令都不知道。
+        if (args.Contains("--help") || args.Contains("-h"))
+        {
+            PrintHelp();
+            return 0;
+        }
+
         // 自检必须在读取 provider 配置之前：它的用途正是诊断"配置不全导致跑不起来"，
         // 如果放在后面，缺配置时会先退出 2，自检永远跑不到。
         if (args.Contains("--doctor"))
@@ -467,6 +476,52 @@ public static class Program
     /// 打印用量汇总。未报告的调用单独列出：
     /// 把"不知道"显示成 0 会让人以为不花钱。
     /// </summary>
+    /// <summary>
+    /// 打印用法。
+    /// </summary>
+    /// <remarks>
+    /// 这是安装后第一个会看的输出，所以要说清"最小可跑起来的一条路"，
+    /// 而不是罗列所有参数。
+    /// <para>
+    /// **必须在 provider 配置检查之前处理**：刚装完工具的人还没配 key，
+    /// 那时若先报"缺少 provider 配置"，他连有哪些命令都不知道。
+    /// </para>
+    /// </remarks>
+    private static void PrintHelp()
+    {
+        Console.WriteLine("dougong 0.1.0-alpha.1 —— .NET Agent Harness 参考宿主");
+        Console.WriteLine();
+        Console.WriteLine("用法：");
+        Console.WriteLine("  dougong                      启动对话（需要 provider 配置）");
+        Console.WriteLine("  dougong --doctor             启动自检：逐项检查环境并给出下一步");
+        Console.WriteLine("  dougong --report             输出诊断信息包（不含密钥与对话内容）");
+        Console.WriteLine("  dougong --version            显示版本");
+        Console.WriteLine("  dougong --help               显示本帮助");
+        Console.WriteLine("  dougong --acp                以 ACP Agent 模式运行（stdout 归协议）");
+        Console.WriteLine("  dougong --list               列出会话");
+        Console.WriteLine("  dougong --resume <会话>      恢复会话");
+        Console.WriteLine("  dougong --branch <会话>      从某条记录分叉");
+        Console.WriteLine();
+        Console.WriteLine("第一次用：先跑 dougong --doctor 确认环境。");
+        Console.WriteLine();
+        Console.WriteLine("需要三个环境变量（密钥只从环境变量读，不写入任何文件）：");
+        Console.WriteLine("  DOUGONG_PROVIDER_BASE    服务地址，如 https://api.deepseek.com");
+        Console.WriteLine("  DOUGONG_PROVIDER_MODEL   模型名");
+        Console.WriteLine("  DOUGONG_PROVIDER_KEY     密钥");
+        Console.WriteLine();
+        Console.WriteLine("可选：");
+        Console.WriteLine("  DOUGONG_PROVIDER_PROTOCOL  openai（默认）/ anthropic / responses");
+        Console.WriteLine("  DOUGONG_WORKSPACE          工作区目录，默认当前目录");
+        Console.WriteLine("  DOUGONG_SESSION_DIR        会话目录，默认 ~/.dougong/sessions");
+        Console.WriteLine("  DOUGONG_SHELL=1            启用 shell 工具（默认关闭）");
+        Console.WriteLine("  DOUGONG_MEMORY=1           启用 L1 偏好记忆（默认关闭）");
+        Console.WriteLine("  DOUGONG_LOG=debug          分级日志：error/warn/info/debug");
+        Console.WriteLine();
+        Console.WriteLine("对话中可用：/help  /exit  /usage  /where  /memory");
+        Console.WriteLine();
+        Console.WriteLine("文档：https://github.com/zhanghaojie513/Dougong");
+    }
+
     private static void PrintUsage(UsageLedger ledger, string sessionId)
     {
         var summary = ledger.Summarize(sessionId);

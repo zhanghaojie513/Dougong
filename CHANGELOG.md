@@ -23,6 +23,13 @@
 
 ### Added
 
+- `Dougong.Cli`：`--help`（`-h`）。**排在 provider 配置检查之前**——
+  刚装完工具的人第一件事就是敲它，那时还没配 provider 密钥；
+  若先报"缺少 provider 配置"，用户连有哪些命令都不知道。
+  帮助里列出全部命令、三个必需环境变量、可选开关与对话内命令。
+- `dotnet tool` 安装链路：包 `Dougong.Cli`（命令名 `dougong`）已实测可装可卸，
+  自带全部依赖（6 个 Dougong 程序集 + 12 个第三方），
+  装完能在**项目目录之外**运行。
 - `spike` 的 `-- load-plugin <dll>`：加载任意插件程序集并报告结果，
   弥补指南 §6 的断点——读者能编译出 dll，却没有办法确认内核认不认它。
   走的是生产路径 `DougongKernel.LoadAsync`，不是另写一套验证逻辑；

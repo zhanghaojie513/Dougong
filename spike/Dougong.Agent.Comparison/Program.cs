@@ -198,6 +198,9 @@ public static class Program
         if (args.FirstOrDefault() == "tool-plugin-checks")
             return await ToolPluginChecks.RunAsync();
 
+        if (args.FirstOrDefault() == "tool-package-checks")
+            return await ToolPackageChecks.RunAsync();
+
         // 验证"我自己写的工具"：接受一个 dll 路径，走生产 dispatcher 派发一次。
         if (args.FirstOrDefault() == "load-tool")
             return await LoadToolCheck.RunAsync(args.Skip(1).FirstOrDefault());
