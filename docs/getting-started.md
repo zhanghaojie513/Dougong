@@ -184,12 +184,22 @@ bash scripts/all-checks.sh
 
 > **Windows 用户**：如果你用的是 Git Bash（装 Git 时自带的那个），这条命令可以直接用。
 > 在 PowerShell 或 CMD 里要用 `bash scripts/all-checks.sh`，前提是 Git 装的时候带了 bash。
+>
+> **Linux / macOS 用户**：直接 `bash scripts/all-checks.sh`，不需要额外处理。
+> 若脚本报 `set: pipefail: invalid option name`，说明你手上的副本是旧的——
+> 该问题已于 2026-10-27 修复（起因是 11 个脚本曾以 CRLF 行结束符入库，
+> Linux 下 `set -euo pipefail` 会被读成 `pipefail\r`）。`git pull` 即可，
+> 或临时执行 `sed -i 's/\r$//' scripts/*.sh`。
 
 **应该看到**最后是：
 
 ```
 ALL SUITES PASS
 ```
+
+这条检查最后还会打出一行 `singlefile ... SINGLEFILE-PROBE: ALL PASS`——
+它发布一个单文件 exe 并验证内核在里面能加载与卸载插件。
+看到它说明"打包给别人用"这条路也是通的。
 
 这一条跑完，你就验证了整个项目——不只是单元测试，还包括协议、会话、审批、
 资源锁等全部自检套件。**这是本文里耗时最长的一步，但也是最能让你放心的一步。**

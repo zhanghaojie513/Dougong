@@ -42,7 +42,7 @@
 | M1 入口与执行契约 | **已关闭** | 截止 M1 的缺口全部修完（含 G1/G2/G3/G4/G6/G8） |
 | M2 协议与集成 | **已关闭** | MCP / ACP / 指标 / 受限记忆（L1 记忆含效果对照）全部完成 |
 | M3 生态与稳定 | **已关闭** | 四条判据全部达成，见 [m3-plan.md](m3-plan.md) §九 |
-| **I0 稳定化与发布** | **进行中** | 诊断/日志/故障排查/兼容策略/安装实测/嵌入指南/单文件发布/Linux CI 已完成；剩 ACP Registry 上架（被 `0.x` 不承诺兼容卡住）与配置迁移（已判定不做） |
+| **I0 稳定化与发布** | **进行中（退出条件两个平台都已验证）** | 诊断/日志/故障排查/兼容策略/安装实测/嵌入指南/单文件发布/Linux CI/Linux 实机全流程已完成；剩 ACP Registry 上架（被 `0.x` 不承诺兼容卡住）与配置迁移（已判定不做） |
 
 **这份表在 2026-10-27 更新**：此前停在 2026-10-24，把 M2/M3 记为"未开始"，
 而它们早已关闭。台账类的表格必须与原文档（[status.md](status.md)）对齐，
@@ -311,6 +311,30 @@ G10 的"幂等键"部分仍需远端工具配合，但它原本最要命的缺�
 | 性能基线 | [performance-baseline.md](performance-baseline.md)，只记录不承诺 |
 | **单文件发布** | `samples/singlefile-probe` 探针；`all-checks.sh` 每次发布并验证"单文件里能加载/卸载插件"。**过程中修掉一个真实缺陷**，见下 |
 | **Linux CI** | `build.yml` 改为 `windows-latest` + `ubuntu-latest` matrix，两个平台跑同一套 `all-checks.sh` |
+| **Linux 实机全流程** | WSL2 Ubuntu 24.04 上按 [getting-started.md](getting-started.md) 走完全程：构建 → 187 测试 → 43 套件 + 单文件探针 → `--doctor` → **真实 provider 对话成功** → 建插件/编译/加载/卸载。见下 |
+
+### Linux 验证时发现的跨平台缺陷（2026-10-27）
+
+**11 个 `scripts/*.sh` 以 CRLF 行结束符入库，且仓库没有 `.gitattributes`。**
+
+Linux 下 `set -euo pipefail` 被读成 `set -euo pipefail\r`，报：
+
+```
+scripts/all-checks.sh: line 7: set: pipefail: invalid option name
+```
+
+整个自检脚本在 Linux 上一行都跑不了。
+
+**为什么 CI 没抓到**：`actions/checkout` 默认会把工作区转成 LF，
+所以 ubuntu runner 上一切正常。**真实用户从 Windows 检出的副本才踩得到**——
+而这正是 I0 退出条件所说的"干净环境"。
+
+**修法**：新增 `.gitattributes`，强制 `*.sh`/`*.py` 为 LF（`*.cmd`/`*.ps1` 为 CRLF），
+并把 11 个脚本转成 LF。
+
+**顺带确认的一件好事**：文档里插件工程用 `..\..\src\...` 这种反斜杠路径，
+在 Linux 上**照样能用**——MSBuild 内部会把 `\` 当分隔符解析。实测编译通过，
+所以文档不需要为不同平台写两套路径。
 
 ### 单文件发布时发现的内核缺陷（2026-10-27）
 
