@@ -176,6 +176,9 @@ dotnet pack Dougong.slnx -c Release --output ./artifacts/packages
 **已经会 .NET**：直接看[插件作者指南](docs/plugin-author-guide.md)。§1 是内核插件，
 §2.5 是工具插件（含 `DescribePermission` 六种填法与 `Reads`/`Writes` 的冲突规则）。
 
+**想把它嵌进自己的服务**（不是写插件，是当库用）：看[嵌入指南](docs/embedding-guide.md)，
+最小可用只要 20 行。
+
 可运行的例子在 [samples/](samples/)——其中 `m1-minimal-agent` 与 `m2-acp-mcp`
 **不需要 API Key** 就能跑完整个循环。
 
@@ -229,6 +232,7 @@ dougong --doctor
 | [M3 计划](docs/m3-plan.md) | 四条完成判据、七个切片、执行结果 |
 | [性能基线](docs/performance-baseline.md) | 大会话/长会话/并发会话的实测数字与环境，只记录不承诺 |
 | [与 dsh/Cordis 对比](docs/kernel-vs-cordis.md) | 租约/排空/超时/变化传播逐项对照，以及已定的取舍 |
+| [嵌入指南](docs/embedding-guide.md) | 把 Dougong 装进自己的 .NET 服务：20 行最小可用、五个零件的职责、三个真实缺口 |
 | [宿主分层决定](docs/host-layering-decision.md) | dsh 与 pi.net 怎么切库与应用；学分层、不学 `CodingAgent` 式产品层 |
 | [内核对抗审查](docs/kernel-adversarial-review.md) | 20 项攻击探针与发现 |
 

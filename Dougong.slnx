@@ -7,6 +7,11 @@
   <Project Path="src/Dougong.Cli/Dougong.Cli.csproj" />
   <Project Path="tests/Dougong.Kernel.Tests/Dougong.Kernel.Tests.csproj" />
   <Project Path="samples/Dougong.Sample.Plugin/Dougong.Sample.Plugin.csproj" />
+  <Folder Name="/samples/" />
+  <Folder Name="/samples/embedding-probe/">
+    <Project Path="samples/embedding-probe/Probe.csproj" />
+  </Folder>
+  <Folder Name="/src/" />
   <Project Path="samples/Dougong.Sample.Contracts/Dougong.Sample.Contracts.csproj" />
   <Project Path="samples/Dougong.Sample.Shared/Dougong.Sample.Shared.csproj" />
   <Project Path="samples/Dougong.Sample.Isolated/Dougong.Sample.Isolated.csproj" />
