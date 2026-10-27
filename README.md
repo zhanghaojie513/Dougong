@@ -21,7 +21,10 @@
 </p>
 
 > [!WARNING]
-> **早期开发中，暂不建议依赖。** M0 内核尚未通过最终审核，公共 API 仍是实验性草案，签名和行为可能在任意提交中变更。本仓库当前只适合阅读设计与跟踪进展，不适合作为生产依赖。首个可用版本与稳定 API 的时间点见 [实施状态](docs/status.md)。
+> **早期开发中，暂不建议依赖。** M0–M3 已完成，四条完成判据均已达成，但版本仍是 `0.x`，
+> **不承诺向后兼容**：公开 API 的每一次变更都会被 ApiCompat 自动检出并记入
+> [CHANGELOG](CHANGELOG.md)，规则见[兼容策略](docs/compat-policy.md)。
+> 适合阅读、试用与写插件；生产依赖请等 `1.0`。
 
 > **Dougong** 借鉴 DeepSeek Harness（dsh）的 “Everything is a Plugin” 思想，为 .NET 生态构建独立的 Agent Harness SDK。项目借鉴架构思想，不移植代码，也不是 DeepSeek 官方项目。
 
@@ -29,21 +32,34 @@
 
 ## 当前状态
 
-Dougong 目前处于 **实验性 Alpha 阶段**，目标框架为 `net10.0`。
+目标框架 `net10.0`，版本 `0.1.0-alpha.1`。**M0–M3 已全部完成**，四条 M3 完成判据均达成
+（依据见 [实施状态](docs/status.md) 与 [M3 计划](docs/m3-plan.md) §九）。
 
-`Dougong.Kernel` 已经完成一轮生命周期、服务、事件和动态加载实现，并拥有 156 项内核行为测试。三轮 M0 审核确认的阻断问题已修复：失败或排空超时的代次不能被再次激活或卸载，激活、取消、排空、事件与清理各有独立预算且清理超时会停止后续清理，裸解析只对本次激活回调的异步流开放，`ResolveAll` 返回全部提供方，清理顺序按实际依赖边计算，普通退订立即释放事件引用，状态增量在锁内原子提交并在内核销毁时结束，观察者诊断只保留共享字符串，快照不再携带插件清单因而不会阻止动态插件回收，并补充了真实共享契约的跨 ALC 验收。M0 已于 2026-10-24 关闭；M1 首批已完成 Agent 契约与 MAF / 自研循环的确定性对比，正式实现选定自研循环，真实 provider 对比仍待验证。
+**规模**：6 个产品工程、1 个内核测试工程（**187 项测试**）、7 个样例工程、
+**41 个确定性自检套件**（不需网络与 API Key）。
 
-当前仓库包含：
+**已验证的关键能力**：
 
-- 6 个产品工程：`Kernel`、`Agent`、`Ai`、`Mcp`、`Acp`、`Cli`
-- 1 个内核测试工程
-- 5 个样例工程：基础插件、契约版本、共享契约、最小 Agent 循环、ACP+MCP
-- `Dougong.Telemetry` 尚未创建
-- `Dougong.Agent` 已实现循环、提交屏障、审批、资源协调、文件版本复核、上下文压缩与 shell 工具
-- `Dougong.Ai` 已实现三种线协议连接器与 `ChatClientFactory`
-- `Dougong.Mcp` 工具桥接与变化检测、`Dougong.Acp` Agent 端最小闭环已实现（M2）
-- `Dougong.Cli` 是可运行宿主：REPL + 审批 + 工作区内读写 + JSONL 会话 + shell 工具 +
-  上下文压缩，支持 resume / branch / list
+- **内核**：生命周期状态机、代次绑定的服务租约、依赖图、有界异步事件、
+  collectible ALC 动态装卸、五类失败诊断（阶段 + 建议）
+- **Agent**：唯一工具执行入口 `ToolDispatcher`（schema 校验 → 审批 → 资源锁 → 执行）、
+  JSONL 提交屏障、会话恢复与分支、上下文压缩、工具结果长度限制（只裁模型上下文，
+  日志保持完整）、计划保护（压缩时不摘要当前计划）
+- **Ai**：三种线协议连接器（chat-completions / responses / anthropic）、
+  方言差异收口在 `WireCompat`、用量记账
+- **Mcp**：远端工具桥接与变化检测（annotations 不作授权依据）
+- **Acp**：Agent 端（按行分帧 JSON-RPC）、审批、`ask_user` 与 `plan`
+- **Cli**：参考宿主，REPL 与 `--acp` 两种模式；`--doctor` 启动自检、
+  `--report` 诊断信息包（不含密钥与对话内容）、`DOUGONG_LOG` 分级日志
+
+**L1 偏好记忆层**（`design.md:236` 的 M2 范围项）已实现并验证：
+白名单硬编码、审批绑定内容哈希、可撤销、跨工作区不传播。
+效果对照在 6 家 provider × 2 种协议共 14 个组合上实测：
+**偏好遵循率提升 60%–90%（中位数 80%）**，详见
+[验收 1 报告](docs/skill-l1-acceptance-1.md)——该结论仅适用于被测模型与任务集。
+
+**尚未做**：`Dougong.Telemetry`（OTel 导出）、ACP Registry 上架、
+断电级持久化验证。清单与判断依据见[实施状态](docs/status.md)。
 
 ## 为什么是 Dougong
 
@@ -95,13 +111,13 @@ Dougong 关注的是 Agent 的**承托层**，而不是某一个模型或某一�
 
 | 包 | 当前定位 | 状态 |
 |---|---|---|
-| `Dougong.Kernel` | 生命周期、服务、事件、依赖图、动态加载 | M0 已关闭（156 测试 + 13 探测） |
-| `Dougong.Agent` | Agent 运行契约、循环、会话、工具和审批 | M1 主体已实现 |
-| `Dougong.Ai` | 三种线协议连接器、`ChatClientFactory`、用量记账、指标导出 | M2.3 已实现 |
-| `Dougong.Mcp` | MCP 工具桥接与变化检测 | M2.1/M2.2 已实现 |
-| `Dougong.Acp` | ACP Agent 端（按行分帧 JSON-RPC over stdio） | M2.4 最小闭环已实现 |
-| `Dougong.Cli` | headless 参考宿主 | 可运行；REPL 与 `--acp` 两种模式 |
-| `Dougong.Telemetry` | OpenTelemetry 桥接 | 规划中 |
+| `Dougong.Kernel` | 生命周期、服务、事件、依赖图、动态加载、失败诊断 | **完成**（ApiCompat 保护） |
+| `Dougong.Agent` | Agent 运行契约、循环、工具派发、会话、审批、上下文压缩、L1 记忆 | **完成**（ApiCompat 保护） |
+| `Dougong.Ai` | 三种线协议连接器、`ChatClientFactory`、用量记账 | **完成**（ApiCompat 保护） |
+| `Dougong.Mcp` | MCP 工具桥接与变化检测、可注入传输 | **完成**（ApiCompat 保护） |
+| `Dougong.Acp` | ACP Agent 端（按行分帧 JSON-RPC over stdio）、审批、`ask_user`、`plan` | **完成**（ApiCompat 保护） |
+| `Dougong.Cli` | 参考宿主：REPL + `--acp` + `--doctor` + `--report` | **完成**（工具，非库，不在 ApiCompat 范围） |
+| `Dougong.Telemetry` | OpenTelemetry 桥接 | 未开始（指标已用 BCL `Meter` 暴露，缺 exporter） |
 
 ## 快速开始
 
@@ -129,7 +145,7 @@ dotnet test Dougong.slnx -c Release --no-build
 运行器，因此 `dotnet test` 走新体验，不需要 VSTest adapter。
 
 ```bash
-# 全部确定性自检套件（18 套，不联网）
+# 全部确定性自检套件（当前 41 套，不联网、不需要 API Key）
 # 脚本会先单独重建 spike——它不在 solution 里，全量构建不会重建它
 bash scripts/all-checks.sh
 ```
@@ -144,14 +160,44 @@ dotnet pack Dougong.slnx -c Release --output ./artifacts/packages
 
 ## 写第一个插件
 
-看 [docs/plugin-author-guide.md](docs/plugin-author-guide.md)：从工程文件到最小插件类，
-含五个最容易犯的错与失败定位方法。
+先分清两类插件——它们是不同的东西：
 
-完全没写过 .NET 的话，从 [docs/getting-started.md](docs/getting-started.md) 开始：
-它从"装什么软件"讲起，每条命令都写明"应该看到什么"。
+| 类型 | 接口 | 谁看得见 | 用来做什么 |
+|---|---|---|---|
+| **内核插件** | `IPlugin` | 只有宿主 | 给宿主提供能力（存储、模型连接、审批器…） |
+| **工具插件** | `IAgentTool` | **模型能调用** | 让模型多会一件事（查天气、查库、算汇率…） |
+
+大多数人的需求是后者。
+
+**完全没写过 .NET**：从[从零开始](docs/getting-started.md) 开始。它从"装什么软件"
+讲起，每条命令都写明"应该看到什么"，§7 讲内核插件、§7.5 讲工具插件，
+最后用 `--load-plugin` / `--load-tool` 让宿主真的加载你的 dll。
+
+**已经会 .NET**：直接看[插件作者指南](docs/plugin-author-guide.md)。§1 是内核插件，
+§2.5 是工具插件（含 `DescribePermission` 六种填法与 `Reads`/`Writes` 的冲突规则）。
 
 可运行的例子在 [samples/](samples/)——其中 `m1-minimal-agent` 与 `m2-acp-mcp`
 **不需要 API Key** 就能跑完整个循环。
+
+### 先确认环境没问题
+
+**从源码运行**（刚 clone 下来，没装 dotnet tool）：
+
+```bash
+dotnet run --project src/Dougong.Cli -c Release -- --doctor
+```
+
+**已装成 dotnet tool**：
+
+```bash
+dougong --doctor
+```
+
+逐项检查运行时、provider 配置（含一次真实连通性请求）、工作区、会话目录，
+每项失败都给出**下一步做什么**。出问题时先跑它，比逐条猜快得多。
+
+同一套差异适用于其它 CLI 命令：源码场景一律是
+`dotnet run --project src/Dougong.Cli -c Release -- <参数>`。
 
 ## 文档
 
@@ -173,23 +219,42 @@ dotnet pack Dougong.slnx -c Release --output ./artifacts/packages
 | [前沿调查](docs/vision/frontier-roadmap.md) | Agent Harness、协议、隔离和记忆评测的公开进展 |
 | [未来路线](docs/vision/iteration-roadmap.md) | M3 之后的演进方向和退出条件 |
 | [Skill 演进](docs/vision/skills-evolution.md) | 复盘、沉淀、审批和加载的 Skill 进化设想 |
+| [从零开始](docs/getting-started.md) | 装环境 → 构建 → 跑样例 → 接真模型 → 写插件；每条命令写明"应该看到什么" |
+| [插件作者指南](docs/plugin-author-guide.md) | 内核插件与工具插件、生命周期约束、五个易犯错误、失败定位 |
+| [兼容策略](docs/compat-policy.md) | 承诺什么、哪些包受保护、破坏性变更三档、弃用流程 |
+| [故障排查](docs/troubleshooting.md) | 构建/provider/插件加载的实际案例，注明"是缺陷还是环境问题" |
+| [L1 记忆方案](docs/skill-l1-plan.md) | 记忆层的实现范围与验收边界 |
+| [L1 验收 1 报告](docs/skill-l1-acceptance-1.md) | 14 个 provider×协议组合的效果对照：判据、阈值与结果解释规则 |
+| [上下文卫生](docs/context-hygiene.md) | 工具结果裁剪、压缩保留计划，以及"记忆取代关系为何不做" |
+| [M3 计划](docs/m3-plan.md) | 四条完成判据、七个切片、执行结果 |
+| [性能基线](docs/performance-baseline.md) | 大会话/长会话/并发会话的实测数字与环境，只记录不承诺 |
+| [与 dsh/Cordis 对比](docs/kernel-vs-cordis.md) | 租约/排空/超时/变化传播逐项对照，以及已定的取舍 |
+| [内核对抗审查](docs/kernel-adversarial-review.md) | 20 项攻击探针与发现 |
 
 ## 路线图
 
 ```text
-M0  插件内核与生命周期反例验证   ← 当前阶段
+M0  插件内核与生命周期反例验证        ✅ 2026-10-24 关闭
  │
  ▼
-M1  Agent 运行实现比较与最小可用 Agent
+M1  Agent 运行实现比较与最小可用 Agent  ✅ 关闭（选定自研循环）
  │
  ▼
-M2  ACP · MCP · 遥测 · 受限记忆
+M2  ACP · MCP · 遥测 · 受限记忆        ✅ 关闭（指标用 BCL Meter；OTel exporter 未做）
  │
  ▼
-M3  插件 API 稳定化与生态工具
+M3  插件 API 稳定化与生态工具          ✅ 四条判据全部达成
+ │
+ ▼
+I0  稳定化与发布                      ← 当前阶段
 ```
 
-M1 不会以“先写一个能跑的循环”为验收标准。计划使用同一组确定性假模型、假工具和故障用例，对比 `MAF HarnessAgent` 与基于 `IChatClient` 的自研循环，再决定最终实现路径。
+M3 的四条完成判据——外部作者只看文档能写出插件、API 变更被自动发现、
+多轮装卸不泄漏、失败可定位——均已达成，证据见 [M3 计划](docs/m3-plan.md) §九。
+
+当前进入 **I0 稳定化与发布**：把已有能力变成别人能装、能诊断、能扩展的产品。
+后续迭代（I1 可嵌入运行时、I3 知识资产化等）的排序与退出条件见
+[未来路线](docs/vision/iteration-roadmap.md)。
 
 ## 设计边界
 

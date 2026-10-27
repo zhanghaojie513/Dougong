@@ -21,7 +21,11 @@
 </p>
 
 > [!WARNING]
-> **Early development — do not depend on this yet.** The M0 kernel has not fully settled; public APIs are experimental drafts whose signatures and behavior may change in any commit. This repository is currently for reading the design and tracking progress, not for production use. See [status](docs/status.md) for the first usable version and API stabilization timeline.
+> **Early development — do not depend on this yet.** M0–M3 are complete and all four completion
+> criteria are met, but the version is still `0.x` with **no backward-compatibility promise**:
+> every public API change is caught by ApiCompat and recorded in the
+> [CHANGELOG](CHANGELOG.md). Rules: [compatibility policy](docs/compat-policy.md).
+> Good for reading, trying out and writing plugins; wait for `1.0` before production use.
 
 > **Dougong** borrows the "Everything is a Plugin" idea from DeepSeek Harness (dsh) to build an independent Agent Harness SDK for the .NET ecosystem. It borrows architectural ideas only — no code is ported, and this is not an official DeepSeek project.
 
@@ -29,20 +33,35 @@ A *dougong* (斗拱) is the bracket set in traditional Chinese timber architectu
 
 ## Current Status
 
-Dougong is in an **experimental alpha stage**, targeting `net10.0`.
+Targeting `net10.0`, version `0.1.0-alpha.1`. **M0–M3 are complete**; all four M3 completion
+criteria are met (see [status](docs/status.md) and [M3 plan](docs/m3-plan.md) §9).
 
-`Dougong.Kernel` has completed a full round of lifecycle, service, event and dynamic-loading work, backed by 156 kernel behavior tests. Blocking issues confirmed across three rounds of M0 review are fixed: generations that failed or drained past their timeout can never be re-activated or unloaded; activation, cancellation, drain, events and cleanup each get an independent budget, and a cleanup timeout halts further cleanup; bare resolution is open only to the async flow of the current activation callback; `ResolveAll` returns every provider; cleanup order follows the actual dependency edges; ordinary unsubscription releases event references immediately; state deltas commit atomically inside the lock and terminate when the kernel is disposed; observer diagnostics keep only shared strings; snapshots no longer carry plugin manifests, so they cannot block dynamic plugin collection; and cross-ALC acceptance tests over a real shared contract were added. M0 was closed on 2026-10-24. For M1, the agent contracts and a deterministic comparison between MAF and the in-house loop are done; the in-house loop was selected as the official implementation, and comparison against real providers is still pending.
+**Scale**: 6 product projects, 1 kernel test project (**187 tests**), 7 sample projects,
+**41 deterministic self-check suites** (no network, no API key required).
 
-The repository currently contains:
+**Verified capabilities**:
 
-- 6 product projects: `Kernel`, `Agent`, `Ai`, `Mcp`, `Acp`, `Cli`
-- 1 kernel test project
-- 3 sample projects: basic plugin, contract plugin, shared contract
-- `Dougong.Telemetry` — not yet created
-- `Dougong.Agent` — loop, commit barrier, approval, resource coordination, file-version recheck and context compaction are implemented
-- `Dougong.Ai` — three wire-protocol connectors and the `ChatClientFactory` are implemented
-- `Dougong.Mcp` (tool bridging + change detection) and `Dougong.Acp` (agent-side minimal loop) are implemented (M2)
-- `Dougong.Cli` — a runnable host: REPL + approval + in-workspace read/write + JSONL sessions + a shell tool + context compaction
+- **Kernel** — lifecycle state machine, generation-bound service leases, dependency graph,
+  bounded async events, collectible ALC dynamic load/unload, five failure stages with hints
+- **Agent** — single tool execution entry (`ToolDispatcher`: schema validation → approval →
+  resource lock → execute), JSONL commit barrier, session recovery and branching, context
+  compaction, tool-result size limit (clamps model context only; logs stay complete),
+  plan protection (compaction never summarizes the current plan)
+- **Ai** — three wire-protocol connectors (chat-completions / responses / anthropic),
+  dialect differences contained in `WireCompat`, usage accounting
+- **Mcp** — remote tool bridging and change detection (annotations are not authorization)
+- **Acp** — agent side (line-delimited JSON-RPC), approval, `ask_user` and `plan`
+- **Cli** — reference host, REPL and `--acp` modes; `--doctor` startup checks,
+  `--report` diagnostic bundle (no keys, no conversation content), `DOUGONG_LOG` levels
+
+**L1 preference memory** is implemented and verified: hard-coded whitelist, approval bound to
+a content hash, revocable, no cross-workspace propagation. Effect measured across 6 providers
+× 2 protocols (14 combinations): **preference adherence improved 60%–90% (median 80%)**.
+See [acceptance 1](docs/skill-l1-acceptance-1.md) — that result applies only to the tested
+models and task set.
+
+**Not yet done**: `Dougong.Telemetry` (OTel export), ACP Registry listing, power-loss
+durability verification. See [status](docs/status.md) for the full list and rationale.
 
 ## Why Dougong
 
@@ -96,7 +115,7 @@ Dougong focuses on the **supporting layer** for agents — not on any particular
 
 | Package | Role | Status |
 |---|---|---|
-| `Dougong.Kernel` | Lifecycle, services, events, dependency graph, dynamic loading | M0 closed (156 tests + 13 probes) |
+| `Dougong.Kernel` | Lifecycle, services, events, dependency graph, dynamic loading, failure diagnostics | **Complete** (ApiCompat-guarded) |
 | `Dougong.Agent` | Agent runtime contracts, loop, sessions, tools, approval | M1 main body implemented |
 | `Dougong.Ai` | Three wire-protocol connectors, `ChatClientFactory`, usage accounting, metrics | M2.3 implemented |
 | `Dougong.Mcp` | MCP server ↔ agent tool bridge | Skeleton (M2) |
@@ -154,19 +173,29 @@ The API is still experimental. Before using `Dougong.Kernel`, read the status bo
 ## Roadmap
 
 ```text
-M0  plugin kernel and lifecycle counterexample verification   ← done
+M0  plugin kernel and lifecycle counterexample verification   ✅ closed
  │
  ▼
-M1  agent runtime comparison and a minimal usable agent       ← current
+M1  agent runtime comparison and a minimal usable agent       ✅ closed (in-house loop chosen)
  │
  ▼
-M2  ACP · MCP · telemetry · restricted memory
+M2  ACP · MCP · telemetry · restricted memory                 ✅ closed (metrics via BCL Meter; no OTel exporter)
  │
  ▼
-M3  plugin API stabilization and ecosystem tooling
+M3  plugin API stabilization and ecosystem tooling            ✅ all four criteria met
+ │
+ ▼
+I0  stabilization and release                                 ← current
 ```
 
-M1 does not accept "a loop that runs" as its bar. The plan compares `MAF HarnessAgent` against an in-house `IChatClient`-based loop over the same set of deterministic fake models, fake tools and failure cases before choosing the final implementation path.
+The four M3 completion criteria — an outside author can write a plugin from docs alone,
+API changes are caught automatically, repeated load/unload does not leak, and failures are
+locatable — are all met; evidence in [M3 plan](docs/m3-plan.md) §9.
+
+The project has entered **I0 stabilization and release**: turning existing capability into
+something others can install, diagnose and extend. Ordering and exit conditions for later
+iterations (I1 embeddable runtime, I3 knowledge assets, …) are in the
+[iteration roadmap](docs/vision/iteration-roadmap.md).
 
 ## Design Boundaries
 
