@@ -173,7 +173,7 @@ public static class KernelProcessChecks
         var log = new StringWriter();
 
         // 构造一个必然激活失败的插件，通过 host 的公开构造路径注册。
-        var host = await Dougong.Cli.KernelAgentHost.CreateAsync(
+        var host = await Dougong.Hosting.KernelAgentHost.CreateAsync(
             store: null,
             createDispatcher: (_, _, _) => throw new InvalidOperationException("故意失败"),
             createRuntime: (_, _) => throw new InvalidOperationException("不该被调用"),

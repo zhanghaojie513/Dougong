@@ -1,7 +1,7 @@
 using Dougong.Agent;
 using Dougong.Kernel;
 
-namespace Dougong.Cli;
+namespace Dougong.Hosting;
 
 /// <summary>
 /// 内核接线：把运行能力作为插件注册进内核，宿主只通过解析器使用它们。
@@ -11,14 +11,20 @@ namespace Dougong.Cli;
 /// CLI 直接 <c>new ToolDispatcher</c> / <c>new LoopAgentRuntime</c> 并存下来，
 /// 内核的租约、代次绑定、排空、隔离在真实会话中从未生效。
 /// <para>
-/// <b>为什么不新增工程</b>：<c>ArchitectureBoundaryTests</c> 的分层是
-/// Kernel(L0) ← Agent(L1) ← {Ai,Mcp,Acp}(L2) ← Cli(L3)。接线代码同时需要
-/// Kernel 与 Agent，只有 L3 的 <c>Dougong.Cli</c> 满足。新增工程要改分层表，
-/// 不在本切片范围。
+/// <b>为什么单独成包（2026-10-27 从 <c>Dougong.Cli</c> 移出）</b>：这段接线
+/// 是 CLI 与 Desktop 都要写一遍的东西。留在一个可执行工程里，第二个宿主只能
+/// 照抄——而抄错的后果是静默的：注册顺序错导致解析不到、异常时忘记清理、
+/// 用裸实例构造而不是 accessor 版本导致替换插件后旧实例还在跑。这三类都不会
+/// 立刻报错。
 /// </para>
 /// <para>
-/// <b>审慎的默认</b>：本类只在 <c>DOUGONG_KERNEL=1</c> 时被使用，默认路径不变。
-/// 结构改动一次性切默认会让 27 个套件同时受影响，失败时无法归因。
+/// <b>它不是产品层</b>：本类不含"用哪些工具""提示词怎么写""会话怎么开场"
+/// 这类决策——那些留在宿主里（见 <c>docs/host-layering-decision.md</c> §4.2）。
+/// 这里只有"怎么把零件装进内核"。
+/// </para>
+/// <para>
+/// <b>分层</b>：Kernel(L0) ← Agent(L1) ← Hosting(L2)。Hosting 只依赖前两层，
+/// 不依赖 Ai/Mcp/Acp——那些是具体能力，由宿主决定用不用。
 /// </para>
 /// </remarks>
 public sealed class KernelAgentHost : IAsyncDisposable
@@ -413,6 +419,7 @@ public sealed class KernelAgentHost : IAsyncDisposable
         private readonly IServiceReference<IToolDispatcher> _reference;
         private readonly IReadOnlyList<ToolDescriptor> _tools;
 
+        /// <param name="reference">dispatcher 的服务引用；每次派发经它取当前实例。</param>
         /// <param name="tools">
         /// 构造时取的描述符快照。为什么可以在构造期取：
         /// 描述符本身已是**冻结副本**（<c>Register</c> 时 clone 过），不含实现对象，

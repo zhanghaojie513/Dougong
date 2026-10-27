@@ -49,15 +49,25 @@ public static class KernelWiringChecks
     /// <remarks>
     /// 这条是 G14 的直接断言。它用元数据读取而非反射加载，因为
     /// <c>typeof</c> 只能看到类型，看不到"有没有被调用"。
+    /// <para>
+    /// <b>2026-10-27 更新：接线搬到了 <c>Dougong.Hosting</c>。</b>
+    /// 原先检查 Cli 与 Agent，理由是"接线代码在 Cli"。现在接线单独成包，
+    /// 检查对象随之变成 Hosting——**判据本身没有放宽**，仍然是"编译产物里
+    /// 必须出现对内核成员的引用"，只是被检查的程序集换了。
+    /// 同时保留对 Cli 的检查：Cli 是真实宿主，它必须真的用 Hosting 那套接线，
+    /// 否则 Hosting 就成了"库里有但没人用"（G14 当初的原始问题）。
+    /// </para>
     /// </remarks>
     private static string? CliReferencesKernelMembers()
     {
-        // 检查两个产品程序集：接线代码在 Cli（L3），而 Agent 是运行能力本体。
-        // 只要其中之一出现内核成员引用，就说明内核被产品路径使用了。
+        // 三个程序集，任一命中内核成员引用即通过：
+        //   Hosting = 接线实现所在（搬出 Cli 后）
+        //   Cli     = 真实宿主，必须真的用上接线
+        //   Agent   = 运行能力本体（历史原因保留）
         var checkedNames = new List<string>();
         var found = new List<string>();
 
-        foreach (var name in new[] { "Dougong.Cli", "Dougong.Agent" })
+        foreach (var name in new[] { "Dougong.Hosting", "Dougong.Cli", "Dougong.Agent" })
         {
             var path = ProductAssemblyPath(name);
             if (path is null) continue;
@@ -66,6 +76,16 @@ public static class KernelWiringChecks
         }
 
         if (checkedNames.Count == 0) return "找不到产品程序集（先构建产品工程）";
+
+        // Hosting 必须自己就引用内核成员——它是接线实现，不能只靠 Cli 间接提供。
+        var hostingPath = ProductAssemblyPath("Dougong.Hosting");
+        if (hostingPath is null)
+            return "找不到 Dougong.Hosting.dll：接线必须住在 Hosting 包里（先构建产品工程）";
+
+        if (!KernelMemberReferences(hostingPath).Any())
+            return "Dougong.Hosting 的编译产物中没有对 Dougong.Kernel 成员的引用——" +
+                "接线没有真的落在 Hosting 里。注意：仅 csproj 引用内核不算接线";
+
         if (found.Count > 0)
         {
             // 诊断时列出实际找到的成员引用，便于判断是不是"只有类型引用没有调用"。
@@ -252,7 +272,7 @@ public static class KernelWiringChecks
     /// 放弃枚举时，后台回合必须被取消且租约释放。
     /// </summary>
     /// <remarks>
-    /// 这是 <see cref="Dougong.Cli.KernelAgentRuntime"/> 设计里最容易漏的一处：
+    /// 这是 <see cref="Dougong.Hosting.KernelAgentRuntime"/> 设计里最容易漏的一处：
     /// 事件经 Channel 中转，调用方 <c>break</c> 或抛异常后，后台任务若继续跑，
     /// 租约就永不释放，停用会一直等到 <c>DrainTimeout</c> 超时并进隔离态。
     /// <para>
@@ -273,7 +293,7 @@ public static class KernelWiringChecks
         var reference = kernel.Resolver.Resolve<IAgentRuntime>();
         if (reference is null) return "解析不到 IAgentRuntime";
 
-        var adapter = new Dougong.Cli.KernelAgentRuntime(reference);
+        var adapter = new Dougong.Hosting.KernelAgentRuntime(reference);
         var request = new AgentRunRequest("s", "t", [], "hi");
 
         // 整个用例必须有硬超时：实现若泄漏租约，读取端可能永远等下去。
@@ -326,7 +346,7 @@ public static class KernelWiringChecks
         var reference = kernel.Resolver.Resolve<IAgentRuntime>()
             ?? throw new InvalidOperationException("解析不到 IAgentRuntime");
 
-        var adapter = new Dougong.Cli.KernelAgentRuntime(reference);
+        var adapter = new Dougong.Hosting.KernelAgentRuntime(reference);
         var texts = new List<string>();
         await foreach (var evt in adapter.RunAsync(new AgentRunRequest("s", "t", [], "hi")))
         {
@@ -388,17 +408,28 @@ public static class KernelWiringChecks
     /// </remarks>
     private static string? AcpUsesKernel()
     {
-        var path = ProductAssemblyPath("Dougong.Cli");
-        if (path is null) return "找不到 Dougong.Cli.dll（先构建产品工程）";
+        // 2026-10-27：接线搬到 Dougong.Hosting 后，两个程序集各承担一半证据：
+        //   Hosting 必须调用内核 RegisterAsync（接线真的发生在这里）
+        //   Cli     必须调用 KernelAgentHost.CreateAsync（真实宿主真的用上了它）
+        // 只看其中任何一个都不够：只有 Hosting 说明"库里有但没人用"，
+        // 只有 Cli 说明"调了个方法但里面没接内核"。
+        var hostingPath = ProductAssemblyPath("Dougong.Hosting");
+        if (hostingPath is null) return "找不到 Dougong.Hosting.dll（先构建产品工程）";
 
-        // 注意：CreateAsync 是 KernelAgentHost 的成员，但 KernelAgentHost 定义在
-        // Dougong.Cli 自己里，因此它不是"对 Dougong.Kernel 的引用"。
-        // 判据改成"存在对内核 RegisterAsync 的调用"——那才是真正的接线证据，
-        // 且 ACP 与 REPL 只要有一个走内核就会命中。
-        var calls = KernelMemberReferences(path);
-        return calls.Any(c => c.Contains("DougongKernel.RegisterAsync", StringComparison.Ordinal))
+        var cliPath = ProductAssemblyPath("Dougong.Cli");
+        if (cliPath is null) return "找不到 Dougong.Cli.dll（先构建产品工程）";
+
+        var hostingCalls = KernelMemberReferences(hostingPath);
+        if (!hostingCalls.Any(c => c.Contains("DougongKernel.RegisterAsync", StringComparison.Ordinal)))
+            return "Dougong.Hosting 未调用 DougongKernel.RegisterAsync：接线没有落在 Hosting 里";
+
+        // Cli 侧：调用的是 Hosting 的 CreateAsync，不是内核方法，
+        // 所以要查"有没有调用 KernelAgentHost 的成员"而不是内核成员。
+        var cliCalls = MemberReferencesTo(cliPath, "Dougong.Hosting");
+
+        return cliCalls.Any(c => c.Contains("KernelAgentHost", StringComparison.Ordinal))
             ? null
-            : "Dougong.Cli 未调用 DougongKernel.RegisterAsync：入口未接内核";
+            : "Dougong.Cli 未使用 KernelAgentHost：入口未接内核（Hosting 接线存在但没人调用）";
     }
 
     /// <summary>
@@ -490,7 +521,18 @@ public static class KernelWiringChecks
     /// <c>AssemblyRef</c> 只说明"引用了这个程序集"——CLI 的 csproj 早有引用但源码不用。
     /// 真正的接线证据是 <c>MemberRef</c> 或 <c>TypeRef</c> 指向内核类型。
     /// </remarks>
-    private static List<string> KernelMemberReferences(string assemblyPath)
+    private static List<string> KernelMemberReferences(string assemblyPath) =>
+        MemberReferencesTo(assemblyPath, "Dougong.Kernel");
+
+    /// <summary>
+    /// 从编译产物里找出对指定程序集的成员引用（形如 <c>命名空间.类型.成员</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 2026-10-27 泛化：接线搬到 <c>Dougong.Hosting</c> 后，需要不只看内核，
+    /// 还要看"Cli 有没有真的调用 Hosting 的成员"。同一个元数据扫描逻辑，
+    /// 只是比较的程序集名换成参数。
+    /// </remarks>
+    private static List<string> MemberReferencesTo(string assemblyPath, string scopeAssembly)
     {
         var found = new List<string>();
         using var stream = File.OpenRead(assemblyPath);
@@ -509,7 +551,7 @@ public static class KernelWiringChecks
 
             var parent = metadata.GetTypeReference((TypeReferenceHandle)member.Parent);
             var scopeName = ResolveScopeName(metadata, parent.ResolutionScope);
-            if (scopeName != "Dougong.Kernel") continue;
+            if (scopeName != scopeAssembly) continue;
 
             found.Add(
                 metadata.GetString(parent.Namespace) + "."

@@ -108,7 +108,7 @@ MCP 官方 SDK 保持拟采用底座；Tasks 等可选扩展按实际版本能�
 | `Dougong.Telemetry`（规划） | 事件到 Span/Metric；不进入 Kernel | Kernel + Agent + OTel API |
 | `Dougong.Cli` | headless 参考宿主 | 组合上述已实现包 |
 
-包图已修订，工程引用逐片同步：当前为六个产品工程（`Telemetry` 尚未创建），已有产品外部包引用——`Agent`/`Ai` 用 `Microsoft.Extensions.AI.Abstractions`，`Mcp` 用官方 `ModelContextProtocol`，`Kernel` 仍为零依赖。
+包图已修订，工程引用逐片同步：当前为七个产品工程（`Telemetry` 尚未创建），已有产品外部包引用——`Agent`/`Ai` 用 `Microsoft.Extensions.AI.Abstractions`，`Mcp` 用官方 `ModelContextProtocol`，`Kernel` 仍为零依赖。
 
 ## 4. 插件内核（核心章节）
 

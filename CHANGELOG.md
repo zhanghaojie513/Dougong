@@ -23,6 +23,23 @@
 
 ### Added
 
+- **新包 `Dougong.Hosting`**：把内核接线从 `Dougong.Cli` 抽出来，
+  CLI 与 Desktop 共用。包含 `KernelAgentHost`（注册 4 个插件进内核、
+  按依赖激活、异常时清理、把服务引用适配成接口、订阅失败诊断）与
+  `KernelAgentRuntime`（把 `IAgentRuntime` 包成内核服务，租约粒度为一回合）。
+  **它不是产品层**：不含工具集、提示词、`DOUGONG_*` 解析。
+  抽出的理由是这段代码抄错会**静默出错**（注册顺序、accessor vs 裸实例、
+  异常清理），而不是分层更好看——理由与边界见
+  [host-layering-decision.md](docs/host-layering-decision.md) §4.5。
+  ApiCompat 已覆盖（基线 `artifacts/baseline/Dougong.Hosting.nupkg`）。
+
+### Changed
+
+- `Dougong.Cli` 不再自己定义 `KernelAgentHost` / `KernelAgentRuntime`，
+  改为引用 `Dougong.Hosting`。**CLI 的命令行行为与开关完全不变。**
+- 架构分层表新增一层：`Kernel(0) ← Agent(1) ← Hosting(2) ← {Ai,Mcp,Acp}(3) ← Cli(4)`。
+  `Dougong.Hosting` **不得**引用 Ai/Mcp/Acp——同层互引被架构测试禁止。
+
 - `Dougong.Cli`：`--help`（`-h`）。**排在 provider 配置检查之前**——
   刚装完工具的人第一件事就是敲它，那时还没配 provider 密钥；
   若先报"缺少 provider 配置"，用户连有哪些命令都不知道。

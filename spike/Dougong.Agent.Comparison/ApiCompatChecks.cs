@@ -7,7 +7,7 @@ namespace Dougong.Agent.Comparison;
 /// API 兼容机制的验收：基线存在，且破坏性变更真的能被检出。
 /// </summary>
 /// <remarks>
-/// 背景：`docs/compat-policy.md` 声称"五个包的公开 API 变更都会被自动检出"。
+/// 背景：`docs/compat-policy.md` 声称"六个包的公开 API 变更都会被自动检出"。
 /// 这句话必须被验证，否则它只是一句声明——本项目已出现过
 /// "能力只在文档里"的情况（G1：上下文压缩从未接入循环）。
 /// <para>
@@ -22,7 +22,7 @@ public static class ApiCompatChecks
     /// 受 ApiCompat 保护的包。必须与 <c>scripts/update-api-baseline.sh</c> 一致。
     /// </summary>
     private static readonly string[] Packages =
-        ["Dougong.Kernel", "Dougong.Agent", "Dougong.Ai", "Dougong.Mcp", "Dougong.Acp"];
+        ["Dougong.Kernel", "Dougong.Agent", "Dougong.Hosting", "Dougong.Ai", "Dougong.Mcp", "Dougong.Acp"];
 
     public static async Task<int> RunAsync()
     {
@@ -38,7 +38,7 @@ public static class ApiCompatChecks
         return failures;
     }
 
-    /// <summary>五个包的基线包都必须存在——缺一个就等于那个包没有保护。</summary>
+    /// <summary>六个包的基线包都必须存在——缺一个就等于那个包没有保护。</summary>
     private static string? AllHaveBaseline()
     {
         var root = FindRepoRoot();

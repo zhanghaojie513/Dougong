@@ -85,6 +85,9 @@ Dougong 关注的是 Agent 的**承托层**，而不是某一个模型或某一�
 │ Dougong.Agent                                         │
 │ Agent loop · 会话 · 工具管线 · 审批 · 上下文压缩      │
 ├──────────────────────────────────────────────────────┤
+│ Dougong.Hosting                                       │
+│ 内核接线 · 租约适配 · 服务解析（CLI/Desktop 共用）     │
+├──────────────────────────────────────────────────────┤
 │ Dougong.Ai · Dougong.Mcp · Dougong.Acp                │
 │ 模型路由 · MCP 桥接 · ACP 适配                         │
 ├──────────────────────────────────────────────────────┤
@@ -117,6 +120,7 @@ Dougong 关注的是 Agent 的**承托层**，而不是某一个模型或某一�
 | `Dougong.Ai` | 三种线协议连接器、`ChatClientFactory`、用量记账 | **完成**（ApiCompat 保护） |
 | `Dougong.Mcp` | MCP 工具桥接与变化检测、可注入传输 | **完成**（ApiCompat 保护） |
 | `Dougong.Acp` | ACP Agent 端（按行分帧 JSON-RPC over stdio）、审批、`ask_user`、`plan` | **完成**（ApiCompat 保护） |
+| `Dougong.Hosting` | 宿主装配：内核接线、租约适配、服务解析。CLI 与 Desktop 共用 | **完成**（ApiCompat 保护） |
 | `Dougong.Cli` | 参考宿主：REPL + `--acp` + `--doctor` + `--report` | **完成**（工具，非库，不在 ApiCompat 范围） |
 | `Dougong.Telemetry` | OpenTelemetry 桥接 | 未开始（指标已用 BCL `Meter` 暴露，缺 exporter） |
 

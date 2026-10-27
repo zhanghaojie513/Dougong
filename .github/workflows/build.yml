@@ -58,7 +58,7 @@ jobs:
         shell: bash
         run: |
           missing=0
-          for pkg in Dougong.Kernel Dougong.Agent Dougong.Ai Dougong.Mcp Dougong.Acp; do
+          for pkg in Dougong.Kernel Dougong.Agent Dougong.Hosting Dougong.Ai Dougong.Mcp Dougong.Acp; do
             path="artifacts/baseline/$pkg.nupkg"
             if [ ! -f "$path" ]; then
               echo "::error::缺少基线：$path（见 scripts/update-api-baseline.sh）"

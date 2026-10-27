@@ -116,12 +116,13 @@ Dougong focuses on the **supporting layer** for agents — not on any particular
 | Package | Role | Status |
 |---|---|---|
 | `Dougong.Kernel` | Lifecycle, services, events, dependency graph, dynamic loading, failure diagnostics | **Complete** (ApiCompat-guarded) |
-| `Dougong.Agent` | Agent runtime contracts, loop, sessions, tools, approval | M1 main body implemented |
-| `Dougong.Ai` | Three wire-protocol connectors, `ChatClientFactory`, usage accounting, metrics | M2.3 implemented |
-| `Dougong.Mcp` | MCP server ↔ agent tool bridge | Skeleton (M2) |
-| `Dougong.Acp` | ACP agent-side adapter | Skeleton (M2) |
-| `Dougong.Cli` | Headless reference host | Runnable; REPL and `--acp` modes |
-| `Dougong.Telemetry` | OpenTelemetry bridge | Planned |
+| `Dougong.Agent` | Agent runtime contracts, loop, sessions, tools, approval, compaction, L1 memory | **Complete** (ApiCompat-guarded) |
+| `Dougong.Ai` | Three wire-protocol connectors, `ChatClientFactory`, usage accounting, metrics | **Complete** (ApiCompat-guarded) |
+| `Dougong.Mcp` | MCP bridge, change detection, injectable transport | **Complete** (ApiCompat-guarded) |
+| `Dougong.Acp` | ACP agent endpoint (line-framed JSON-RPC over stdio), approval, `ask_user`, `plan` | **Complete** (ApiCompat-guarded) |
+| `Dougong.Hosting` | Host assembly: kernel wiring, lease adapters, service resolution. Shared by CLI and Desktop | **Complete** (ApiCompat-guarded) |
+| `Dougong.Cli` | Headless reference host: REPL + `--acp` + `--doctor` + `--report` | **Complete** (tool, not a library) |
+| `Dougong.Telemetry` | OpenTelemetry bridge | Not started (metrics already exposed via BCL `Meter`) |
 
 ## Getting Started
 

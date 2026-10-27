@@ -28,6 +28,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Dougong.Kernel\Dougong.Kernel.csproj" />
     <ProjectReference Include="..\Dougong.Agent\Dougong.Agent.csproj" />
+    <!-- 内核接线（KernelAgentHost / KernelAgentRuntime）在 Hosting 包里：
+         CLI 与 Desktop 共用它，不再各自实现一遍。 -->
+    <ProjectReference Include="..\Dougong.Hosting\Dougong.Hosting.csproj" />
     <ProjectReference Include="..\Dougong.Ai\Dougong.Ai.csproj" />
     <ProjectReference Include="..\Dougong.Mcp\Dougong.Mcp.csproj" />
     <ProjectReference Include="..\Dougong.Acp\Dougong.Acp.csproj" />

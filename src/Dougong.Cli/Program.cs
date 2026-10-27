@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Dougong.Agent;
+using Dougong.Hosting;
 using Dougong.Ai;
 using Dougong.Acp;
 using Dougong.Mcp;

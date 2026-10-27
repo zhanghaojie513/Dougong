@@ -3,7 +3,7 @@ using System.Threading.Channels;
 using Dougong.Agent;
 using Dougong.Kernel;
 
-namespace Dougong.Cli;
+namespace Dougong.Hosting;
 
 /// <summary>
 /// 把一个具体的 <see cref="IAgentRuntime"/> 适配成内核服务，使宿主必须通过

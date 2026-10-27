@@ -27,14 +27,21 @@ public sealed class ArchitectureBoundaryTests
     ];
 
     /// <summary>分层等级：数字越小越底层。引用只能指向更底层，同层不得互引。</summary>
+    /// <remarks>
+    /// <c>Dougong.Hosting</c> 在 L2：它需要 Kernel（接线）与 Agent（契约），
+    /// 因此必然高于 Agent；但它**不依赖 Ai/Mcp/Acp**——那些是具体能力，
+    /// 由宿主决定用不用。同层互引被下面的测试禁止，所以 Hosting 不能引用
+    /// Ai/Mcp/Acp，这正好守住"装配不绑定具体能力"这条边界。
+    /// </remarks>
     private static readonly Dictionary<string, int> Layers = new(StringComparer.Ordinal)
     {
         ["Dougong.Kernel"] = 0,
         ["Dougong.Agent"] = 1,
-        ["Dougong.Ai"] = 2,
-        ["Dougong.Mcp"] = 2,
-        ["Dougong.Acp"] = 2,
-        ["Dougong.Cli"] = 3,
+        ["Dougong.Hosting"] = 2,
+        ["Dougong.Ai"] = 3,
+        ["Dougong.Mcp"] = 3,
+        ["Dougong.Acp"] = 3,
+        ["Dougong.Cli"] = 4,
     };
 
     [Fact]

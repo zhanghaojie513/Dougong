@@ -135,12 +135,12 @@ public static class KernelPathBehaviorChecks
         }
     }
 
-    private static async Task<Dougong.Cli.KernelAgentHost> CreateHostAsync(
+    private static async Task<Dougong.Hosting.KernelAgentHost> CreateHostAsync(
         IToolApprover approver, Action onExecute)
     {
         var store = new InMemoryAgentStore("kernel-path");
 
-        return await Dougong.Cli.KernelAgentHost.CreateAsync(
+        return await Dougong.Hosting.KernelAgentHost.CreateAsync(
             store,
             (resolvedApprover, resolvedStore, ct) =>
             {

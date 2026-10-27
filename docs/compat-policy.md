@@ -26,6 +26,7 @@
 |---|---|---|
 | `Dougong.Kernel` | ✅ | 插件内核契约 |
 | `Dougong.Agent` | ✅ | 执行层契约（dispatcher / runtime / 工具） |
+| `Dougong.Hosting` | ✅ | 宿主装配：内核接线、租约适配、服务解析 |
 | `Dougong.Ai` | ✅ | 三协议连接器与工厂 |
 | `Dougong.Mcp` | ✅ | MCP 工具桥接 |
 | `Dougong.Acp` | ✅ | ACP Agent 端 |
@@ -35,7 +36,13 @@
 
 **2026-10-26 的变化**：此前只有 Kernel 与 Agent 配了 `EnablePackageValidation`。
 Ai / Mcp / Acp 三个包共 37 个公开类型**完全没有保护**，破坏性改动不会被发现。
-现在五个包全部纳入，基线在 `artifacts/baseline/`。
+现在六个包全部纳入，基线在 `artifacts/baseline/`。
+
+**2026-10-27 新增 `Dougong.Hosting`**：它装的是"怎么把零件接进内核"——
+`KernelAgentHost`（插件注册、租约适配、失败诊断订阅）与 `KernelAgentRuntime`
+（把 IAgentRuntime 包成内核服务）。**它不是产品层**：不含"用哪些工具""提示词怎么写"
+这类决策（见 [host-layering-decision.md](host-layering-decision.md) §4.2）。
+把它单独立包的理由是 CLI 与 Desktop 都要写同一段接线，而抄错的后果是静默的。
 
 ---
 
@@ -194,7 +201,7 @@ I0 的交付清单里有一项"安装与升级：配置迁移与回滚"。核查
 
 | 机制 | 怎么验证 |
 |---|---|
-| ApiCompat 覆盖五个包 | `-- apicompat` 检查项：五份基线存在，且破坏性变更能被检出 |
+| ApiCompat 覆盖六个包 | `-- apicompat` 检查项：六份基线存在，且破坏性变更能被检出 |
 | 冒烟验证真实有效 | 同一检查项里插入一个真实的破坏性变更，断言 `CP0002` 出现 |
 | 基线不腐化 | `all-checks.sh` 在 pack 阶段执行 ApiCompat；CI 断言基线文件存在 |
 | 变更被记录 | 人工约定（见 `quality-gates.md`），无自动化 |

@@ -1,5 +1,6 @@
 using Dougong.Acp;
 using Dougong.Agent;
+using Dougong.Hosting;
 using Dougong.Ai;
 using Dougong.Mcp;
 using Microsoft.Extensions.AI;

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Dougong 宿主装配——把内核接线成可用的 Agent 能力（插件注册、租约适配、服务解析）</Description>
+    <!-- API 兼容检查：基线放在 artifacts/baseline。
+         新包首次加入时基线不存在，需要先跑一次 update-api-baseline.sh。 -->
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselinePath>$(MSBuildThisFileDirectory)../../artifacts/baseline/$(AssemblyName).nupkg</PackageValidationBaselinePath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dougong.Kernel\Dougong.Kernel.csproj" />
+    <ProjectReference Include="..\Dougong.Agent\Dougong.Agent.csproj" />
+  </ItemGroup>
+
+</Project>
