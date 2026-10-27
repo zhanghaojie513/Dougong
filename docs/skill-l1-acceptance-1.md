@@ -3,7 +3,7 @@
 > **状态**：**已用真实模型跑完（2026-10-26）**。
 > v2 任务集在 6 家 provider × 2 种协议共 14 个组合上全部达标（提升 60%–90%）。
 > v1 结果保留为基线，见 §七。
-> **上游依据**：[skills-evolution.md §7](../vision/skills-evolution.md) 验收 1、
+> **上游依据**：[skills-evolution.md §7](vision/skills-evolution.md) 验收 1、
 > [skill-l1-plan.md](skill-l1-plan.md) §六。
 
 ---

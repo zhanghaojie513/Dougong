@@ -175,7 +175,7 @@ M1 已做过候选对比，结论是自研循环。
 | 提问不走审批（`NoAccess`） | TKCode 同上 | 见 §4.5 |
 | 传输失败**不得**报成"用户跳过" | TKCode 文档记录的 Cursor 事故 | 见 §4.5 |
 | form 模式 schema 是扁平对象，属性名即字段标识 | ACP schema（`requestedSchema`） | 属性名用 `header` |
-| plan 是**全量替换**的条目列表 `{content, priority, status}` | ACP schema | 未实现，理由见 §4.6 |
+| plan 是**全量替换**的条目列表 `{content, priority, status}` | ACP schema | **已实现**（G11）：数据源是 `todo_write` 工具，不是推测；见 §4.6 |
 
 ### 4.5 elicitation（已实现）
 
@@ -235,6 +235,15 @@ M1 已做过候选对比，结论是自研循环。
   恢复语义），塞进 M2 会让它变成半成品。
 
 因此**不做**，并在 `status.md` 记为已知缺口，而不是"实现了但走不通"。
+
+> **2026-10-27 更新：已实现（G11）。** 上面列的两个做法里，第二个（让模型自己维护
+> TODO 的工具）后来真做了——但**不是塞进 M2**，而是作为独立的一小片：
+> `TodoWriteTool` + `PlanTool`，运行时把它投影成 `AgentEvent.PlanUpdated`，
+> ACP 侧翻译成 `plan` 通知。
+>
+> 关键决定是**数据源**：plan 只来自模型主动调用 `todo_write` 的结果，
+> 不从工具序列推测。这正是本文当时担心的问题——推测会把"看起来像计划"的东西
+> 报给用户，属于 P3 的反面。验收见 `-- acp-plan` 6 项。
 
 
 ### 4.3 首版范围（按门 3："从哪个入口触达"）

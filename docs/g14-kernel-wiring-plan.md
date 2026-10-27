@@ -1,6 +1,11 @@
 # G14 接线方案：让内核真正承载运行能力
 
-> **状态**：方案（2026-10-25），未实现。
+> **状态**：**已实现（2026-10-25 落地，现为默认路径）**。
+> 本方案里的租约粒度取舍（B：按回合分租约）已落地为 `KernelAgentHost` /
+> `KernelAgentRuntime`；内核接线默认启用，`DOUGONG_KERNEL=0` 可退回直连做对照。
+> 验收：`-- kernel-wiring` 10 项 + `-- kernel-path` 3 项 + `-- kernel-process` 5 项
+> + `-- replaceability` 4 项 + `-- bare-hold`（12 处持有全部说明）。
+> **原文保留**——它记录了"为什么选 B 而不是 A/C"的完整论证，改接线时仍要读。
 > **依据**：[plan.md](plan.md) §三 2.6、[kernel-vs-cordis.md](kernel-vs-cordis.md)、
 > `goal.md` P1 判定第 1 条。
 > **这份文档要解决的具体问题**：`DougongKernel` 在产品路径上零引用——

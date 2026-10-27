@@ -96,7 +96,7 @@ MCP 官方 SDK 保持拟采用底座；Tasks 等可选扩展按实际版本能�
 └────────────────────────────────────────────────────────┘
 ```
 
-**目标包清单**（`net10.0`，MIT，`Dougong.*` 前缀；当前未实现，实际引用状态见 architecture.md §2）：
+**目标包清单**（`net10.0`，MIT，`Dougong.*` 前缀；**除 `Dougong.Telemetry` 外均已实现**，实际引用状态见 architecture.md §2）：
 
 | 包 | 内容 | 目标依赖 |
 |---|---|---|
@@ -108,7 +108,7 @@ MCP 官方 SDK 保持拟采用底座；Tasks 等可选扩展按实际版本能�
 | `Dougong.Telemetry`（规划） | 事件到 Span/Metric；不进入 Kernel | Kernel + Agent + OTel API |
 | `Dougong.Cli` | headless 参考宿主 | 组合上述已实现包 |
 
-包图已修订，工程引用留待可编译的实现步骤同步：当前为六个产品工程，无产品外部包引用，Telemetry 尚未创建；不能把表中选型当作已还原或验证。
+包图已修订，工程引用逐片同步：当前为六个产品工程（`Telemetry` 尚未创建），已有产品外部包引用——`Agent`/`Ai` 用 `Microsoft.Extensions.AI.Abstractions`，`Mcp` 用官方 `ModelContextProtocol`，`Kernel` 仍为零依赖。
 
 ## 4. 插件内核（核心章节）
 
@@ -197,7 +197,7 @@ MCP 连接由插件管理并桥接到 Agent 工具契约。权限和资源计划
 
 ### 6.3 Acp 层
 
-- 手写 ACP Agent 端，锁定协议版本并进行兼容测试。v1 基线：initialize、session/new、session/prompt、session/update、session/request_permission、session/cancel；`session/load` 需声明 `loadSession` 能力。`session/list`、`session/close`、`session/resume` 与 elicitation 已实现（M2.4/M2.5）；elicitation 只声明 `form` 模式、不声明 `url`。`plan` 未实现——它要求运行时持续维护全量替换的计划，靠工具序列猜测会把推测伪装成计划。
+- 手写 ACP Agent 端，锁定协议版本并进行兼容测试。v1 基线：initialize、session/new、session/prompt、session/update、session/request_permission、session/cancel；`session/load` 需声明 `loadSession` 能力。`session/list`、`session/close`、`session/resume` 与 elicitation 已实现（M2.4/M2.5）；elicitation 只声明 `form` 模式、不声明 `url`。`plan` 也已实现（G11），但**数据源被限定为模型主动调用的 `todo_write` 工具**——不从工具序列猜测，那样会把推测伪装成计划（见 acp-reference-survey.md §4.6）。
 - 映射：审批流 ↔ permission request；模型主动澄清 ↔ elicitation（以 `ask_user` 工具发起，不产生额外审批项）；会话事件 ↔ session/update。标准入口为 UTF-8 逐行 JSON-RPC over stdio，stdout 独占协议，日志和遥测走 stderr 或独立出口。
 - 外部 ACP 客户端可通过标准入口驱动 Dougong。ACP v2 目前为 draft，含 `replayFrom` 重放与恢复时重建待处理审批；定稿后桌面内部会话语义优先收敛到标准，私有层只保留进程启动/守护、认证、单实例和 PTY 所有权（§7）。
 
@@ -239,7 +239,13 @@ DougongDesktop.PtyHost（按需启动，持有 PTY/shell 句柄）
 
 原总计 **3.5–4.5 个月**缺少产能和原型依据，不再作为交付承诺。按上述验证结果和单人可投入时间重新估算；桌面与 SDK 的两条工作线不等于人力并行。
 
-> **2026-10-23 修订状态**：内核依赖/生命周期/ALC、工具权限/并发/包图、MAF 复用门槛、事件与 Skill 信任/评测，以及桌面恢复契约均已写入候选设计。这里只关闭“缺少设计方向”的问题；实现、版本兼容、故障注入和运行验收均未完成，不能宣称技术风险已消除。
+> **2026-10-23 修订状态**：内核依赖/生命周期/ALC、工具权限/并发/包图、MAF 复用门槛、事件与 Skill 信任/评测，以及桌面恢复契约均已写入候选设计。这里只关闭"缺少设计方向"的问题。
+>
+> **2026-10-27 更新**：其中 SDK 侧（M0–M3）的**实现、版本兼容与故障注入均已完成**——
+> 内核生命周期与 ALC 装卸有 187 项测试含 18 项对抗探针，兼容性由 ApiCompat 对 5 个包
+> 自动校验，失败诊断覆盖五类阶段。**仍未完成的只有桌面侧**（§7 三进程与恢复重连，
+> Desktop 仓库尚未建立）和 §9 风险表里那几项依赖外部条件的验证。因此
+> "SDK 技术风险已消除"可以宣称，"桌面端恢复重连已解决"仍然不能。
 
 > **2026-10-26 补充（M2 记忆项的实际边界）**：L1 记忆层已实现，验收 2–6（安全性质：
 > 不可越权、可撤销、未审批/篡改/过期不加载、中断不重复、可观察可禁用）通过并逐项反证。
