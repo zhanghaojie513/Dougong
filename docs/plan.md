@@ -362,18 +362,74 @@ error IL3000: 'Assembly.Location' always returns an empty string for
    最后改成验证"单文件里能加载→激活→卸载→程序集可回收"，并用"让 UnloadAsync 提前返回"
    做反证，得到 `卸载后剩余插件: 1` → FAIL。**这才是有证据的那一条。**
 
-### 剩下的一项：ACP Registry 上架
+### 剩下的一项：ACP Registry 上架（2026-10-27 查证：三个硬阻碍）
 
-**被卡住的原因**：上架需要声明支持的协议版本与能力，而现在是 `0.x`，
-[compat-policy.md](compat-policy.md) 明确不承诺向后兼容。在 `1.0` 之前上架，
-等于让外部客户端依赖一个会随时变的协议面。
+上一版这里写的是"被 `0.x` 不承诺兼容卡住"。**查了 Registry 的实际规则后，
+这个说法是错的**——版本号根本不是主要障碍。真实情况是三条，每条都要先解决：
 
-**"上架"的成立条件**（先做哪一条都行）：
+| # | 阻碍 | 证据 | 能否绕过 |
+|---|---|---|---|
+| 1 | **仓库是私有的** | `gh repo view` → `isPrivate: true`；`https://github.com/zhanghaojie513/Dougong` 返回 404。而 `agent.json` 的 `repository` 是**必填字段**，PR 也是公开提交 | 不能。要么先开源，要么不上架 |
+| 2 | **认证方式不符合** | Registry 的 `AUTHENTICATION.md` 明确：**只接受 Agent Auth（OAuth）或 Terminal Auth**，并写明"AUTH spec 还定义了 Environment Variable Auth，但本 registry 目前只支持 Agent Auth 与 Terminal Auth"。Dougong 只有环境变量认证（`DOUGONG_PROVIDER_KEY`），`AcpAgentHost.cs:303` 的 `authMethods` 是空数组 | 不能。需要真的实现 OAuth 或终端交互认证 |
+| 3 | **分发形态不在白名单** | `agent.schema.json` 的 `distribution` 只允许 `binary` / `npx` / `uvx`，`additionalProperties: false`。**没有 `dotnet tool`** | 可以。走 `binary`：`dotnet publish` 出自包含单文件的 tar.gz/zip，附 `cmd` 与 `args`。这条路今天刚被打通（见上节单文件发布） |
 
-1. 等 `1.0`——但那需要先有外部用户验证，鸡生蛋
-2. 上一版"实验性"条目并明确标注不承诺兼容——需要先看 Registry 接受什么形态
+**阻碍 1 还有个连带问题**：仓库私有期间就算 PR 被接受，Registry 的 CI 也拉不到
+`repository` 地址、客户端也装不了 `binary` 的下载链接。所以**必须开源在前**。
 
-**这不是"待做"，是"缺前置条件"。** 与 §五 里的 G7/G10 同类。
+#### 所以正确的顺序是
+
+1. **先开源**。`status.md` 里已定的触发条件是"首个包发到 nuget.org"或"M3 插件 API 稳定化"，
+   两者取先到者——**M3 已经关闭，这条其实已满足**。这是一个可以现在做的决定。
+2. **再实现认证**。这是真正的工作量，不是配置。ACP 的 `authenticate` 流程 + 一个
+   OAuth 或终端交互实现。要注意：Dougong 是"带自己的 provider key"的 harness，
+   让每个用户走 OAuth 登录某个厂商，与它"用户自带 key"的定位有冲突——
+   更合适的是 **Terminal Auth**（引导用户在终端里填 key 并落盘到受控位置），
+   但那要先设计"密钥存哪、怎么保护"，与现在"只从环境变量读"的纪律相冲突。
+   **这一条需要先有设计，不能顺手做。**
+3. **最后打 binary 包**。三个平台的单文件产物 + sha256 + `agent.json` + 16×16
+   `currentColor` 图标，提 PR。
+
+**结论**：这不是"待做"，也不是单纯"缺前置条件"——第 2 条是一个**需要先做设计决策**
+的功能（认证与密钥存储），与 [compat-policy.md](compat-policy.md) 和现有
+"密钥只从环境变量读"的纪律直接相关。**在解决第 2 条之前，I0 不应以"上架"为关闭条件。**
+
+已把第 1、2 条登记为 I0 之后的输入，见下节。
+
+### 遗留问题总表（2026-10-27 清点）
+
+按"该不该做"分三类。**每一条都注明了触发条件，不是凭感觉挂在这里。**
+
+#### A. 有明确前置条件，条件未满足（4 项）
+
+| 项 | 卡在哪 | 触发条件 |
+|---|---|---|
+| **仓库重新开源** | 私有仓库，`gh repo view` 确认 `isPrivate: true` | `status.md` 已定：首个包发到 nuget.org **或** M3 插件 API 稳定化。**M3 已关闭，这条其实已满足**——是个可以随时执行的决定，只需你点头 |
+| **ACP Registry 上架** | 必须先开源（阻碍 1）+ 必须实现 Agent/Terminal Auth（阻碍 2） | 上面两条解决后即可，binary 打包已打通 |
+| **ACP 认证实现** | 与"密钥只从环境变量读"的纪律冲突，需先设计密钥存储 | 等上架成为真实需求时。**这是功能，不是配置** |
+| **断电级持久化（G7）** | 已调 `Flush(flushToDisk: true)`，缺掉电测试条件 | 有可控断电环境时。现在如实声明"不保证断电"，不假装 |
+
+#### B. 已判定不做，理由充分（3 项）
+
+| 项 | 理由 |
+|---|---|
+| 记忆取代关系（`SupersedesArtifactId`） | L1 只有 3 个白名单键，冲突场景不存在；等 L2 条目数上去再评估 |
+| 配置迁移与回滚 | 没有可迁移的旧数据（只有环境变量、JSONL 未标版本、外部用户 0）；见 compat-policy §7.1 |
+| 抽 `DougongHost` 装配器 / `CodingAgent` 产品层 | 98 次 `new ToolDispatcher` 里产品代码只有 1 处真实调用；见 host-layering-decision §4.4 |
+
+#### C. 外部边界，不在本仓库（3 项）
+
+| 项 | 归属 |
+|---|---|
+| Desktop 侧 4 项（§6.7 恢复重连） | Dougong Desktop 仓库 |
+| `Dougong.Telemetry`（OTel 导出） | 有真实可观测性需求时；BCL `Meter` 已就位 |
+| 工具幂等键（G10 余项） | 需远端工具配合识别重复请求 |
+
+#### D. 刻意划定范围（5 项）
+
+性能基线只测了三个场景（大会话 / 长会话 / 并发会话），其余 5 项各自写明了何时该补，
+见 [performance-baseline.md](performance-baseline.md)。**这不是漏做，是定了边界。**
+
+---
 
 ### 再往后：I1 可嵌入运行时
 

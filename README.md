@@ -58,8 +58,9 @@
 **偏好遵循率提升 60%–90%（中位数 80%）**，详见
 [验收 1 报告](docs/skill-l1-acceptance-1.md)——该结论仅适用于被测模型与任务集。
 
-**尚未做**：`Dougong.Telemetry`（OTel 导出）、ACP Registry 上架、
-断电级持久化验证。清单与判断依据见[实施状态](docs/status.md)。
+**尚未做**：`Dougong.Telemetry`（OTel 导出）、断电级持久化验证、
+ACP Registry 上架（需先开源 + 实现 Agent/Terminal Auth，见[计划](docs/plan.md) §六）。
+完整清单按"有前置条件 / 已判定不做 / 外部边界 / 刻意划范围"四类分，见[实施状态](docs/status.md)。
 
 ## 为什么是 Dougong
 
