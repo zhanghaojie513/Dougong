@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- 嵌入指南的活探针：docs/embedding-guide.md 里的代码在这里真实编译运行。
+         不求输出好看，只求"照抄能编译"这件事被 CI 一直守着。 -->
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dougong.Agent\Dougong.Agent.csproj" />
+    <ProjectReference Include="..\..\src\Dougong.Ai\Dougong.Ai.csproj" />
+  </ItemGroup>
+</Project>

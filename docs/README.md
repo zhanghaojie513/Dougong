@@ -44,6 +44,7 @@ journey/ = 开发记录：各里程碑真实发生的问题与判断。复盘素
 | [context-hygiene.md](context-hygiene.md) | 上下文卫生两项改动（工具结果裁剪、压缩保留计划）与"记忆取代关系为何不做"的评估 | 改上下文/压缩逻辑时读 |
 | [troubleshooting.md](troubleshooting.md) | 故障排查对照表：构建、provider、插件加载的实际案例与判断依据 | 出问题时读 |
 | [compat-policy.md](compat-policy.md) | 兼容策略：承诺什么、哪些包受保护、破坏性变更三档、弃用流程、实验性边界 | 改公开 API 时读 |
+| [embedding-guide.md](embedding-guide.md) | 嵌入指南：把 Dougong 装进自己的 .NET 服务（20 行最小可用 + 五个零件的职责 + 三个真实缺口） | 嵌入到自己的程序时读 |
 | [host-layering-decision.md](host-layering-decision.md) | 宿主分层：dsh 与 pi.net 怎么切库与应用，我们学什么、不学什么（不抽 CodingAgent 式产品层） | 决定 CLI/Desktop/SDK 边界时读 |
 | [performance-baseline.md](performance-baseline.md) | 性能基线：大会话/长会话/并发会话的实测数字与环境。只记录不承诺 | 做性能对比时读 |
 | [m3-plan.md](m3-plan.md) | M3 计划：四条完成判据、七个切片顺序、`Experimental` 决策点、M2 遗留的三条待办登记 | 启动 M3 前读 |
