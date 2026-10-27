@@ -55,6 +55,41 @@ Visual Studio Code：<https://code.visualstudio.com/>
 
 ---
 
+### 0.4 只想用，不想看代码？（可选）
+
+如果你不想克隆仓库，只想装上命令行工具用起来——两条命令：
+
+```bash
+dotnet tool install --global Dougong.Cli
+dougong --help
+```
+
+> **装的是包 `Dougong.Cli`，命令是 `dougong`。** 两个名字不一样是刻意的：
+> 包名跟项目命名约定（`Dougong.*`），命令名短，方便敲。
+
+**目前还没有发布到 NuGet**，所以上面第二条命令会失败。等首个正式版本发布后可用。
+在那之前请走下面的源码路径。
+
+装完之后：
+
+```bash
+dougong --doctor     # 先确认环境
+dougong              # 开始对话
+```
+
+升级与卸载：
+
+```bash
+dotnet tool update --global Dougong.Cli
+dotnet tool uninstall --global Dougong.Cli
+```
+
+> **这一节和后面的区别**：这里只装工具、不碰源码，适合"先试试能做什么"。
+> §1–§7 是给"想改代码或写插件"的人看的——那些需要 clone 仓库。
+> 两条路都需要 .NET SDK（§0.1），因为 `dotnet tool` 本身就是 SDK 的一部分。
+
+---
+
 ## 1. 把项目拿到本地
 
 打开终端，逐条运行（每行回车一次）：

@@ -36,7 +36,13 @@ echo "API: ALL PASS"
 
 echo
 echo "== 自检套件 =="
-suites="surface parity acp elicitation elicitation-process kernel-wiring kernel-path kernel-process bare-hold workspace-lock acp-plan replaceability telemetry recheck token schema tool-replacement mcp mcp-reload reachability approval-log wiring wire session usage shell failure store approval fileversion compaction contract skill-l1 l1-harness memory-cli context-hygiene doctor report apicompat load-plugin-checks tool-plugin-checks"
+# tool-package-checks 需要打包产物，所以先打一次。
+# 它验证的是"别人装了能不能用"，而清包内容与 --help 行为只有打包后才存在。
+echo "== dotnet tool 打包（供 tool-package-checks 使用）=="
+"$DOTNET" pack src/Dougong.Cli -c Release --no-build -o ./artifacts/tool -v q
+echo
+
+suites="surface parity acp elicitation elicitation-process kernel-wiring kernel-path kernel-process bare-hold workspace-lock acp-plan replaceability telemetry recheck token schema tool-replacement mcp mcp-reload reachability approval-log wiring wire session usage shell failure store approval fileversion compaction contract skill-l1 l1-harness memory-cli context-hygiene doctor report apicompat load-plugin-checks tool-plugin-checks tool-package-checks"
 
 failed=0
 failed_names=""
