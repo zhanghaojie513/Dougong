@@ -91,12 +91,37 @@ README 对组合方式的表述：
 |---|---|---|---|
 | 库 | 52 个 | 13 个 | **5 个** |
 | 可执行 | 4 个 | 4 个 | **1 个** |
-| 装配在哪 | `packages/boot` | `Pi.CodingAgent` | **`SessionComposition.cs`（`internal`）** |
-| 内置工具在哪 | `packages/fs`、`shell` | `Pi.CodingAgent` | **`FileTools.cs`（`internal`）** |
-| 启动诊断在哪 | `packages/host` + `startup-diagnostics` | 未核实 | **`Doctor.cs`（`internal`）** |
+| 装配在哪 | `packages/boot` | `Pi.CodingAgent` | **`SessionComposition.cs`（`public`，但绑 CLI 环境变量）** |
+| 内置工具在哪 | `packages/fs`、`shell` | `Pi.CodingAgent` | **`FileTools.cs`（`internal`，无耦合）** |
+| 启动诊断在哪 | `packages/host` + `startup-diagnostics` | 未核实 | **`Doctor.cs`（`public`，但绑 CLI 环境变量）** |
 | 多宿主共用 | ✅ | ✅ | ❌ 只有 CLI 一个宿主 |
 
 **依赖方向是对的**（CLI → SDK 单向，SDK 从不引用 CLI），缺的是中间那一层。
+
+### 3.1 `public` 不等于可复用——三样东西处在三种状态
+
+这张表原先一律写 `internal`，是错的。逐个核实的实际状态：
+
+| 文件 | 实际可见性 | 与 CLI 约定的耦合 | 能否被第二个宿主复用 |
+|---|---|---|---|
+| `FileTools.cs` | **`internal`** | **零**：不读环境变量、不碰 `Console` | 结构上可以，只是被藏起来了 |
+| `SessionComposition.cs` | **`public`**（22 个公开成员，文件内共 5 个类型） | **深**：`DOUGONG_MEMORY` / `DOUGONG_SHELL` / `DOUGONG_CONTEXT_WINDOW` / `DOUGONG_MCP_SERVERS` / `DOUGONG_KERNEL` | **不能**，见下 |
+| `Doctor.cs` | **`public`** | **深**：7 个 `DOUGONG_*` 变量写死在检查逻辑里 | **不能** |
+
+`SessionComposition` 与 `Doctor` 虽然是 `public`，但外部项目实际上用不了——
+`Dougong.Cli` 是 `PackAsTool`，nupkg 布局是 `tools/net10.0/any/`，不是 `lib/`，
+`PackageReference` 引用它找不到程序集（已在 `.nupkg` 里核实）。所以 `public`
+在这里只意味着"没别的项目误用"，不意味着"这是给别人用的 API"。
+
+**更要紧的是耦合方向**：它们的内容大半是**命令行程序的配置约定**——
+`DOUGONG_SHELL` 决定要不要 shell 工具、`DOUGONG_CONTEXT_WINDOW` 决定窗口大小、
+`DOUGONG_MCP_SERVERS` 用分号分隔。搬进 SDK 等于把"读环境变量"这种启动器习惯
+强加给所有宿主。dsh 的 `packages/boot` 能进库，是因为 profile 系统本身是它的产品
+机制；我们的环境变量不是。
+
+因此**这两样不搬，也不该被当作 API**。它们的正确位置就是 CLI 里，
+真正要改的是本节这张表——原先说"都藏起来了"，会让人误以为不用管，
+实际情况是"公开但绑死环境变量，所以不该被依赖"。
 
 ---
 
@@ -108,10 +133,19 @@ README 对组合方式的表述：
 
 | 内容 | 现状 | 该不该进 SDK |
 |---|---|---|
-| `read_file` / `write_file` | `FileTools`（`internal`） | **该**，但等第二个宿主出现再定契约（见 §4.4） |
+| `read_file` / `write_file` | `FileTools`（`internal`，**零 CLI 耦合**） | **该**，但等第二个宿主出现再定契约（见 §4.4） |
 | dispatcher / runtime / store 的接法 | 已是 4 行公开 API | **已够**，不再封装（见 §4.4） |
-| 内核接线、租约、提交屏障 | `KernelAgentHost`（`internal`） | 暂不 |
-| 模型连接、MCP 连接 | `SessionComposition` 的一部分 | 暂不 |
+| 内核接线、租约、提交屏障 | `KernelAgentHost`（`public`，绑 `DOUGONG_KERNEL`） | 暂不 |
+| 模型连接、MCP 连接 | `SessionComposition` 的一部分（绑多个 `DOUGONG_*`） | 暂不 |
+
+**工具是唯一"中立却放错位置"的一项**：`FileTools.cs` 141 行，不读环境变量、
+不碰 `Console`、只实现 `IAgentTool`，被 `SessionComposition` 注册、
+被 `WorkspaceLockChecks` 直接 `new`。它没有耦合，只是被 `internal` 藏起来了。
+
+但**它仍然不该现在挪**，理由与 §4.4 同源：`read_file`/`write_file` 是产品决策
+（"这个 agent 能干什么"），不是中立零件。dsh 把它放 `packages/fs`，是因为它的
+架构建立在 profile 组合之上；我们是宿主自己装，用哪些工具本就是宿主的自由。
+等 Desktop 需要时再决定"抄 141 行"还是"依赖一个工具包"——那时才有真实依据。
 
 **理由**：CLI 和 Desktop 各装一遍，会出现"两套装配、两种行为"——
 这正是 `goal.md` P1（可组合）要避免的。
@@ -167,16 +201,20 @@ pi.net 的 `Pi.CodingAgent` 不只是一个装配器，它是**"一个具体的�
 **查了调用分布之后否掉。** 统计本仓库全部 `spike/` 下的构造调用：
 
 ```
-new ToolDispatcher(...)  共 97 次
-  ├─ 60 次  new ToolDispatcher()                    ← 零参数，占 62%
-  └─ 37 次  带参数（且写法分散：approver / policy / gate / workspace / pathGuard 等）
+new ToolDispatcher(...)  共 98 次
+  ├─ 60 次  new ToolDispatcher()                    ← 零参数，占 61%
+  └─ 38 次  带参数（且写法分散：approver / policy / gate / workspace / pathGuard 等）
 
-new LoopAgentRuntime(...)  共 50 次
-  ├─ 11 次  (client, dispatcher)                    ← 最常见形态
+new LoopAgentRuntime(...)  共 51 次
+  ├─ 12 次  (client, dispatcher)                    ← 最常见形态
+  ├─  7 次  (client, new ToolDispatcher())          ← 内联零参数 dispatcher
   ├─  5 次  (client, dispatcher, new FixedStoreAccessor(store))
-  ├─  4 次  (client, new ToolDispatcher())
   └─  其余各不同
 ```
+
+> 数字于 2026-10-27 复核（此前为 97 / 50）。**它们会随新增套件继续漂移，
+> 引用时应重跑 `grep -rn "new ToolDispatcher" spike/ | wc -l` 核对**——
+> 这份文档的论点不依赖精确到个位，但一个明显过期的数字会让人怀疑整段论证。
 
 **60 次零参数调用不是"缺少装配入口"的证据，恰恰相反——它说明默认装配已经是一行。**
 
@@ -231,6 +269,10 @@ new LoopAgentRuntime(...)  共 50 次
 **注意左列第一行是"零件"而不是"装配器"**：零件共用，但装配目前只需要 4 行
 （见 §4.4），封一个装配器是过度设计。**"共用零件"与"封装装配"是两件事。**
 
+**这张表是"该往哪去"，不是"现在在哪"。** 当前实际位置见 §三：
+零件都在 SDK，装配与诊断在 CLI 且绑环境变量，工具在 CLI 但零耦合（`internal`）。
+把左列当成现状来引用会读错——它描述的是"如果出现第二个宿主，该把这些放哪"。
+
 ---
 
 ## 六、这个判断的边界
@@ -260,7 +302,9 @@ new LoopAgentRuntime(...)  共 50 次
 |---|---|
 | 零件进库、壳留应用 | P1「可组合」+ "CLI 与 Desktop 要共用组合入口" |
 | **不抽 `CodingAgent` 式产品层** | 反目标"本仓库只交付 SDK + 参考 CLI" |
-| **不抽装配器（`DougongHost`）** | `ToolDispatcher` 97 次构造里 60 次是零参数，装配已经是一行；见 §4.4 |
+| **不抽装配器（`DougongHost`）** | `ToolDispatcher` 98 次构造里 60 次是零参数，装配已经是一行；见 §4.4 |
+| **不搬 `SessionComposition` / `Doctor` 进 SDK** | 它们 `public` 但绑死 `DOUGONG_*` 环境变量，那是命令行的配置约定，不是宿主的通用装配契约；见 §3.1 |
+| **不搬 `FileTools`（暂）** | 它零耦合、结构上中立，但"用哪些工具"是产品决策；等第二个宿主出现再定契约 |
 
-**后两条都是"看了、想过、决定不做"。** 它们的价值在于：下次再有人（包括我）
+**后三条都是"看了、想过、决定不做"。** 它们的价值在于：下次再有人（包括我）
 提出同样的建议时，这里有数据和理由，不必重新论证一遍。
