@@ -48,6 +48,7 @@ public static class Program
         "memory-cli",
         "parity",
         "perf",
+        "kernel-perf",
         "reachability",
         "recheck",
         "replaceability",
@@ -217,6 +218,10 @@ public static class Program
         // 性能基线只输出数字，不参与通过/失败判定——因此不进 all-checks.sh。
         if (args.FirstOrDefault() == "perf")
             return await PerformanceBaselineChecks.RunAsync();
+
+        // 内核热路径的性能测量：租约、服务解析、事件发布。同样只出数字。
+        if (args.FirstOrDefault() == "kernel-perf")
+            return await KernelPerfChecks.RunAsync();
 
         // 供端到端测试使用的最小 stdio MCP server。
         if (args.FirstOrDefault() == "mcp-server")
