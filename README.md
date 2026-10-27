@@ -229,6 +229,7 @@ dougong --doctor
 | [M3 计划](docs/m3-plan.md) | 四条完成判据、七个切片、执行结果 |
 | [性能基线](docs/performance-baseline.md) | 大会话/长会话/并发会话的实测数字与环境，只记录不承诺 |
 | [与 dsh/Cordis 对比](docs/kernel-vs-cordis.md) | 租约/排空/超时/变化传播逐项对照，以及已定的取舍 |
+| [宿主分层决定](docs/host-layering-decision.md) | dsh 与 pi.net 怎么切库与应用；学分层、不学 `CodingAgent` 式产品层 |
 | [内核对抗审查](docs/kernel-adversarial-review.md) | 20 项攻击探针与发现 |
 
 ## 路线图

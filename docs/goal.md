@@ -77,6 +77,7 @@
 | 自研 provider 矩阵 / 重造 LLM 抽象 | 站在 `Microsoft.Extensions.AI` 上，自研范围压到"内核 + 运行时 + 协议壳" |
 | 提供 OS 级沙箱 | 插件是可信进程内代码，审批约束的是**执行入口**，不是安全边界。宣称沙箱会是安全事故 |
 | 做插件市场 / 桌面 UI / IDE 集成 | 由宿主项目承担（如 Dougong Desktop）；本仓库只交付 SDK + 参考 CLI |
+| 抽 `CodingAgent` 式的产品层（工具集 + 提示策略 + 会话行为整体） | "编码 agent 该怎么工作"是宿主的决定。写进 SDK 会让 Desktop 被 CLI 的产品决策绑住，且这类决策进入 ApiCompat 契约后改一次就是破坏性变更。详见 [host-layering-decision.md](host-layering-decision.md) §4.2 |
 | 把多 Agent 编排作为核心范围 | 不是当前生态位；强行并入会让内核契约变重 |
 | 用"代码量小"作为正确性的理由 | 小内核的代价是概念密度高，不能靠省略验证来省事 |
 
