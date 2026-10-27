@@ -211,13 +211,38 @@ git log --oneline -1
 
 ### 6.2 三个环境变量
 
-打开终端，**在项目根目录**运行（把尖括号里的换成你自己的）：
+打开终端，**在项目根目录**运行（把尖括号里的换成你自己的）。
+
+**先确认你用的是哪种终端**——两种写法不一样，抄错了会报
+"`export` 不是内部或外部命令"或"`set` 不是命令"。
+
+**Git Bash / WSL / macOS / Linux**：
 
 ```bash
 export DOUGONG_PROVIDER_BASE=https://api.deepseek.com
-export DOUGONG_PROVIDER_MODEL=deepseek-chat
+export DOUGONG_PROVIDER_MODEL=deepseek-flash
 export DOUGONG_PROVIDER_KEY=<你的密钥>
 ```
+
+**Windows 的 cmd**（命令提示符）：
+
+```bat
+set DOUGONG_PROVIDER_BASE=https://api.deepseek.com
+set DOUGONG_PROVIDER_MODEL=deepseek-flash
+set DOUGONG_PROVIDER_KEY=<你的密钥>
+```
+
+**Windows PowerShell**：
+
+```powershell
+$env:DOUGONG_PROVIDER_BASE = "https://api.deepseek.com"
+$env:DOUGONG_PROVIDER_MODEL = "deepseek-flash"
+$env:DOUGONG_PROVIDER_KEY = "<你的密钥>"
+```
+
+> **cmd 里千万不要加引号**：`set X="abc"` 会把引号一起存进去，
+> 密钥变成 `"abc"` 而不是 `abc`，然后报 401。
+> PowerShell 反而**必须**加引号。
 
 | 变量 | 填什么 | 去哪找 |
 |---|---|---|
@@ -229,14 +254,20 @@ export DOUGONG_PROVIDER_KEY=<你的密钥>
 
 | 服务商 | `BASE` | 模型名举例 |
 |---|---|---|
-| DeepSeek | `https://api.deepseek.com` | `deepseek-chat` |
+| DeepSeek | `https://api.deepseek.com` | `deepseek-flash` |
 | 智谱 BigModel | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
 | MiniMax | `https://api.minimax.chat/v1` | 见其文档 |
 
 **如果服务商用的是 Anthropic 风格接口**（路径含 `/anthropic`），再加一个：
 
 ```bash
+# Git Bash / WSL / macOS / Linux
 export DOUGONG_PROVIDER_PROTOCOL=anthropic
+```
+
+```bat
+REM Windows cmd
+set DOUGONG_PROVIDER_PROTOCOL=anthropic
 ```
 
 > **密钥只从环境变量读，本项目的任何文件都不会保存它。** 这是刻意的：
@@ -252,7 +283,7 @@ dotnet run --project src/Dougong.Cli -c Release -- --doctor
 它会做一次真实的最小请求，告诉你端点通不通、密钥对不对：
 
 ```
-[通过] provider 配置：base=https://api.deepseek.com  model=deepseek-chat  protocol=openai  key=已设置(35 字符)
+[通过] provider 配置：base=https://api.deepseek.com  model=deepseek-flash  protocol=openai  key=已设置(35 字符)
 [通过] provider 连通性：可用（已发送一次最小请求）
 ```
 
@@ -301,7 +332,7 @@ dotnet run --project src/Dougong.Cli -c Release --
 启动后会显示一行信息，然后是 `>` 提示符：
 
 ```
-dougong 0.1.0-alpha.1  模型=deepseek-chat  协议=OpenAiChatCompletions
+dougong 0.1.0-alpha.1  模型=deepseek-flash  协议=OpenAiChatCompletions
 工作区=...\dougong
 会话=...\20261026-183627.jsonl
 ...
@@ -351,7 +382,10 @@ kernel=enabled（运行能力由内核解析，每次回合取租约）
 > 用这个开关，不要用管道喂 `y`：
 >
 > ```bash
-> export DOUGONG_AUTO_APPROVE=1
+> export DOUGONG_AUTO_APPROVE=1     # Git Bash
+> ```
+> ```bat
+> set DOUGONG_AUTO_APPROVE=1        &REM Windows cmd
 > ```
 >
 > **它会批准所有权限已知的调用，等于关掉人工确认。** 只在你完全清楚
@@ -380,7 +414,10 @@ kernel=enabled（运行能力由内核解析，每次回合取租约）
 默认**不开** shell 工具——这是安全默认。需要时：
 
 ```bash
-export DOUGONG_SHELL=1
+export DOUGONG_SHELL=1     # Git Bash
+```
+```bat
+set DOUGONG_SHELL=1        &REM Windows cmd
 ```
 
 开了之后模型可以请求执行命令，同样每次都要你审批。

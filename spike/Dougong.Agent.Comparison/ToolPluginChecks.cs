@@ -280,6 +280,10 @@ public static class ToolPluginChecks
             ("git clone", "第一步「安装」：没有克隆仓库的指引"),
             ("dotnet --version", "第一步「安装」：没有验证 SDK"),
             ("DOUGONG_PROVIDER_BASE", "第二步「配置模型」：没有 provider 地址"),
+            // 真实踩过：读者在 cmd 里照着 `export` 抄，直接报"不是内部或外部命令"。
+            // Windows 用户占多数，两种写法都得给。
+            ("set DOUGONG_PROVIDER_BASE", "第二步「配置模型」：没有 Windows cmd 写法"),
+            ("$env:DOUGONG_PROVIDER_BASE", "第二步「配置模型」：没有 PowerShell 写法"),
             ("DOUGONG_PROVIDER_KEY", "第二步「配置模型」：没有密钥"),
             ("DOUGONG_PROVIDER_MODEL", "第二步「配置模型」：没有模型名"),
             ("load-tool", "第三步「跑真实任务/让工具被调用」：没有可执行的验证命令"),
