@@ -245,9 +245,59 @@ public static class Doctor
         {
             return new(Level.Warn, "provider 连通性",
                 $"{ex.GetType().Name}: {Trim(ex.Message)}",
-                "CLI 仍可启动，但对话会失败。常见原因：密钥无效、模型名不对、端点路径错。"
-                + "确认后可用一次真实对话验证。");
+                ConnectivityHint(config, ex));
         }
+    }
+
+    /// <summary>
+    /// 按错误码给出**针对性**的下一步，而不是一句笼统的"常见原因"。
+    /// </summary>
+    /// <remarks>
+    /// 修的是一个真实缺口（2026-10-28，一位读者实测）：
+    /// 他用 <c>https://api.minimaxi.com/anthropic</c> 配 <c>openai</c> 协议，
+    /// 拿到 404。当时的提示只说"密钥无效、模型名不对、端点路径错"——
+    /// **漏掉了最可能的那个原因：地址形状与协议不匹配**。
+    /// 把两者配错的后果是拼出 <c>.../anthropic/chat/completions</c> 这种
+    /// 不存在的路径，而提示里完全没提这一层。
+    /// </remarks>
+    private static string ConnectivityHint(ChatProviderConfig config, Exception error)
+    {
+        var message = error.Message;
+        var baseUrl = config.BaseUrl ?? string.Empty;
+
+        // 地址里有 /anthropic 但协议不是 anthropic，或反过来——这是 404 的头号原因。
+        var pathSaysAnthropic = baseUrl.Contains("/anthropic", StringComparison.OrdinalIgnoreCase);
+        var protocolIsAnthropic = config.Protocol is ChatProtocol.AnthropicMessages;
+
+        if (pathSaysAnthropic != protocolIsAnthropic)
+        {
+            return $"{baseUrl} {(pathSaysAnthropic ? "带" : "不带")} /anthropic，"
+                + $"而协议是 {config.Protocol}。**这两者必须配套**："
+                + (pathSaysAnthropic
+                    ? "地址带 /anthropic 时应设 DOUGONG_PROVIDER_PROTOCOL=anthropic。"
+                    : "地址不带 /anthropic 时应使用默认的 openai 协议，"
+                      + "删掉 DOUGONG_PROVIDER_PROTOCOL 或设为 openai。")
+                + "改完重跑 --doctor。";
+        }
+
+        if (message.Contains("404", StringComparison.Ordinal))
+        {
+            return "地址路径对不上。检查 BASE 该不该带 /v1（不同服务商不一样），"
+                + "以及协议是否与该端点的形状匹配。见 getting-started.md §6.3 的排查顺序。";
+        }
+
+        if (message.Contains("401", StringComparison.Ordinal))
+            return "密钥不对或已失效。重新复制一次，注意别带前后空格"
+                + "（cmd 的 set 加引号会把引号也存进去）。";
+
+        if (message.Contains("402", StringComparison.Ordinal))
+            return "账户余额不足，与配置无关。充值或换一家 provider。";
+
+        if (message.Contains("403", StringComparison.Ordinal))
+            return "该密钥没有这个模型的权限。换模型名，或确认订阅状态。";
+
+        return "CLI 仍可启动，但对话会失败。常见原因：密钥无效、模型名不对、端点路径错。"
+            + "确认后可用一次真实对话验证。";
     }
 
     private static string Trim(string text)

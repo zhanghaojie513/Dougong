@@ -348,8 +348,26 @@ dotnet run --project src/Dougong.Cli -c Release -- --doctor
 |---|---|---|
 | `401` | 密钥不对或已失效 | 重新复制一次密钥，注意别带空格 |
 | `403` | 该密钥没有这个模型的权限 | 换模型名，或确认订阅 |
-| `404` | 地址路径不对 | 检查 `BASE` 是否少/多了 `/v1` |
+| `402` | 账户余额不足 | 充值或换一家；这跟配置无关 |
+| `404` | **地址或协议对不上**（最常见） | 见下面的排查顺序 |
 | 20 秒没有响应 | 网络不通或端点很慢 | 确认地址可达；离线环境可忽略这条 |
+
+**404 的排查顺序**（按可能性从高到低）：
+
+1. **先看 `BASE` 里有没有 `/anthropic`**。有的话必须同时设
+   `DOUGONG_PROVIDER_PROTOCOL=anthropic`——否则客户端会拼出
+   `.../anthropic/chat/completions` 这种不存在的路径。反过来，
+   地址是纯域名（不带 `/anthropic`）却设了 `anthropic`，会拼出
+   `/v1/messages` 也可能 404。**这两者必须配套。**
+2. 再看 `BASE` 该不该带 `/v1`。不同服务商不一样：有的要
+   `https://host/v1`，有的只要 `https://host`。以服务商文档为准。
+3. 最后确认模型名。有的服务商模型名大小写敏感。
+
+> **怎么快速判断是不是协议问题**：`--doctor` 的 `provider 配置` 那行会打印
+> `protocol=openai` 或 `protocol=anthropic`。把它和你 `BASE` 的形状放在一起看
+> ——地址含 `/anthropic` 就该是 `anthropic`，不含就该是 `openai`。
+> 2026-10-28 有位读者用 `https://api.minimaxi.com/anthropic` 配 `openai` 协议，
+> 得到 404；把协议改成 `anthropic` 后立刻通了。
 
 > 诊断包（`--report`）里密钥只显示长度，不含内容。
 > `--doctor` 的连通性检查失败**不算致命**——离线也能用 CLI 的其它功能。

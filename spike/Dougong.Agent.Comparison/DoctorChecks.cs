@@ -33,6 +33,8 @@ public static class DoctorChecks
         failures += await CheckAsync("unknown-arg-errors-instead-of-starting-repl",
             UnknownArgRejectedAsync);
         failures += await CheckAsync("known-arg-forms-not-misjudged", KnownArgsAcceptedAsync);
+        failures += await CheckAsync("connectivity-hint-diagnoses-protocol-mismatch",
+            ProtocolMismatchHintAsync);
 
         Console.WriteLine(failures == 0
             ? "DOCTOR: ALL PASS"
@@ -548,5 +550,49 @@ public static class DoctorChecks
         }
 
         return new DoctorResult(process.ExitCode, await stdoutTask, await stderrTask);
+    }
+
+    /// <summary>
+    /// 地址形状与协议不匹配时，连通性失败的"下一步"必须指出这一点。
+    /// </summary>
+    /// <remarks>
+    /// 真实缺口（2026-10-28，一位读者实测）：用
+    /// <c>https://api.minimaxi.com/anthropic</c> 配 <c>openai</c> 协议，得到 404。
+    /// 当时的提示只说"密钥无效、模型名不对、端点路径错"，**漏掉了最可能的原因**：
+    /// 地址带 <c>/anthropic</c> 就该配 <c>anthropic</c> 协议，两者不匹配时会拼出
+    /// <c>.../anthropic/chat/completions</c> 这种不存在的路径。
+    /// </remarks>
+    private static async Task<string?> ProtocolMismatchHintAsync()
+    {
+        // 地址带 /anthropic，但协议是 openai —— 必然 404。
+        // 用不可达的域名也可以：判断发生在异常提示里，不依赖真实响应。
+        var result = await RunDoctorAsync(new Dictionary<string, string?>
+        {
+            ["DOUGONG_PROVIDER_BASE"] = "https://api.minimaxi.com/anthropic",
+            ["DOUGONG_PROVIDER_MODEL"] = "m",
+            ["DOUGONG_PROVIDER_KEY"] = "k",
+            ["DOUGONG_PROVIDER_PROTOCOL"] = "openai",
+        });
+
+        if (!result.Stdout.Contains("这两者必须配套", StringComparison.Ordinal))
+            return $"地址带 /anthropic 而协议是 openai 时，提示没指出协议不匹配。"
+                + $"stdout={Trim(result.Stdout)}";
+
+        if (!result.Stdout.Contains("DOUGONG_PROVIDER_PROTOCOL=anthropic", StringComparison.Ordinal))
+            return "提示没说清该改成什么。";
+
+        // 反向对照：配套时不出现这条提示（避免"永远显示"的假通过）。
+        var matched = await RunDoctorAsync(new Dictionary<string, string?>
+        {
+            ["DOUGONG_PROVIDER_BASE"] = "https://api.minimaxi.com/anthropic",
+            ["DOUGONG_PROVIDER_MODEL"] = "m",
+            ["DOUGONG_PROVIDER_KEY"] = "k",
+            ["DOUGONG_PROVIDER_PROTOCOL"] = "anthropic",
+        });
+
+        if (matched.Stdout.Contains("这两者必须配套", StringComparison.Ordinal))
+            return "协议与地址已配套，提示却仍在报不匹配。";
+
+        return null;
     }
 }
