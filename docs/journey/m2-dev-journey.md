@@ -3,7 +3,7 @@
 > 用途：记录 M2（协议与集成）期间真实发生的问题与转折，供后续梳理成开发历程文章。
 > 不是验收文档，也不是对外承诺。验收状态见 [status.md](../status.md)。
 > 记录原则：只写实际发生的；区分「实现缺陷 / 测试缺陷 / 判断错误」三类。
-> 上一篇：[m1-dev-journey.md](m1-dev-journey.md)。
+> 上一篇：[m1-dev-journey.md](m1-dev-journey.md)。下一篇：[m3-dev-journey.md](m3-dev-journey.md)。
 
 ---
 
