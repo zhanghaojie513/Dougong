@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
+  <title>Dougong</title>
+  <!-- 主图标：玄底 + 米白阶梯环。纯线构，无彩色点缀。 -->
+  <rect width="240" height="240" rx="54" fill="#0E0E11"/>
+  <path fill="none" stroke="#F5F1E8" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"
+        d="M56 184 V128 H96 V88 H144 V48"/>
+  <path fill="none" stroke="#F5F1E8" stroke-width="24" stroke-linecap="round"
+        d="M184 56 V112 H144 V152 H96 V192"/>
+</svg>

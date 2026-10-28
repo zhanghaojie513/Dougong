@@ -1,6 +1,10 @@
 # Dougong
 
 <p align="center">
+  <img src="assets/logo.png" width="96" alt="Dougong">
+</p>
+
+<p align="center">
   <strong>Everything is a Plugin · .NET Agent Harness SDK</strong>
 </p>
 
