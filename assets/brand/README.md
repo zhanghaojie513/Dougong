@@ -39,6 +39,27 @@
 | `icon-flat.svg` | 白底文档、印刷品、PPT |
 | `icon-mono-white.svg` | 深色底上的纯白线（不放底板） |
 | `icon-small.svg` | **16–48px 专用**。台阶减到 2 级、线宽加大 |
+| `icon-desktop.svg` | **桌面图标专用**。前后分层立体（见下方「桌面图标的立体效果」） |
+
+### 桌面图标的立体效果
+
+`icon-desktop.svg` 是唯一的富效果版本，用于 64px 以上的桌面图标。
+它靠**前后分层**做出深度：前层（米白）压在後层（冷灰）上。
+
+**三个参数缺一不可**，这是实测出来的：
+
+| 参数 | 值 | 为什么 |
+|---|---|---|
+| 底板径向提亮 | `#383842` 起 | 全黑底板会让一切深度都消失 |
+| 投影偏移 | `dy=10`, 不透明度 0.75 | `dy=6` 在 256px 下几乎看不见 |
+| 前层暖光 | `#f5f1e8` 18% | **黑底上的黑色投影本就无效**，需要亮边补足 |
+
+> **早期版本只做投影（dy=6，无发光），在深色屏幕上立体感很弱。**
+> 原因是黑底叠黑投影等于没有投影。加入暖光后才成立。
+
+**审计分数 74/100**，三条警告（滤镜、7 种颜色、3 个渐变）——这是**有意为之**：
+这个文件是桌面图标的富效果交付物，不是通用标志。主标志 `icon-primary.svg`
+仍是 99/100 的纯平版本，用于终端、印刷、单色。
 
 ### 为什么要有小尺寸专用版
 
@@ -48,7 +69,8 @@
 **尺寸对应关系（已实测）**：
 
 ```
-1024 512 256 128 64  →  icon-primary.svg
+1024 512 256 128 64  →  icon-desktop.svg（桌面图标，带立体效果）
+                       或 icon-primary.svg（通用/印刷，纯平）
 48 32 16             →  icon-small.svg
 ```
 
@@ -138,6 +160,12 @@ png/dougong-64.png      ┘
 png/dougong-48.png      ┐
 png/dougong-32.png      │ 小尺寸：icon-small
 png/dougong-16.png      ┘
+
+png-desktop/dougong-desktop-1024.png  ┐
+png-desktop/dougong-desktop-512.png   │ 桌面图标（立体效果）
+png-desktop/dougong-desktop-256.png   │
+png-desktop/dougong-desktop-128.png   │
+png-desktop/dougong-desktop-64.png    ┘
 
 board.png               场景展示（桌面/任务栏/GitHub/浅色/终端）
 ```

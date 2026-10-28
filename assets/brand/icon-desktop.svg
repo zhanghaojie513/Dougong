@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
+  <title>Dougong — desktop icon</title>
+  <!-- 桌面图标：前后分层立体。64px 以上使用，更小尺寸用 icon-small.svg。
+       立体感靠三件事，缺一在深色屏幕上就弱：
+         1. 底板径向提亮（#383842 起）—— 全黑底板让一切深度都消失
+         2. 投影偏移够大（dy=10）且不透明度 0.75 —— dy=6 在 256px 下几乎看不见
+         3. 前层一圈暖光（#f5f1e8, 18%）—— 黑底上黑色投影本就无效，需要亮边补足 -->
+  <defs>
+    <radialGradient id="plate" cx="28%" cy="12%" r="105%">
+      <stop offset="0%" stop-color="#383842"/>
+      <stop offset="60%" stop-color="#121216"/>
+      <stop offset="100%" stop-color="#050506"/>
+    </radialGradient>
+    <linearGradient id="back" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7d8798"/>
+      <stop offset="100%" stop-color="#a8b2c0"/>
+    </linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="50%" stop-color="#f3efe5"/>
+      <stop offset="100%" stop-color="#cac4b5"/>
+    </linearGradient>
+    <filter id="depth" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3" result="b1"/>
+      <feOffset in="b1" dx="6" dy="10" result="o"/>
+      <feComponentTransfer in="o" result="shadow">
+        <feFuncA type="linear" slope="0.75"/>
+      </feComponentTransfer>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="5" result="b2"/>
+      <feFlood flood-color="#f5f1e8" flood-opacity="0.18" result="warm"/>
+      <feComposite in="warm" in2="b2" operator="in" result="glow"/>
+      <feMerge>
+        <feMergeNode in="shadow"/>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="240" height="240" rx="54" fill="url(#plate)"/>
+  <rect x="1" y="1" width="238" height="238" rx="53" fill="none"
+        stroke="#ffffff" stroke-opacity="0.10" stroke-width="2"/>
+
+  <!-- 后层：冷灰，被前层遮住 -->
+  <path fill="none" stroke="url(#back)" stroke-width="24"
+        stroke-linecap="round" stroke-linejoin="round"
+        d="M184 56 V112 H144 V152 H96 V192"/>
+
+  <!-- 前层：米白，投影 + 暖光，压在上方 -->
+  <g filter="url(#depth)">
+    <path fill="none" stroke="url(#front)" stroke-width="24"
+          stroke-linecap="round" stroke-linejoin="round"
+          d="M56 184 V128 H96 V88 H144 V48"/>
+  </g>
+</svg>
