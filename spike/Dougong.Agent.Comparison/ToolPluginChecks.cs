@@ -29,6 +29,8 @@ public static class ToolPluginChecks
         failures += await CheckAsync("default-dispatcher-asks-approval", DefaultAsksAsync);
         failures += await CheckAsync("policy-approver-skips-inert-tools", PolicySkipsInertAsync);
         failures += await CheckAsync("guide-explains-reads-writes-semantics", DocExplainsAsync);
+        failures += await CheckAsync("guide-does-not-claim-none-skips-approval",
+            () => Task.FromResult(GuideNoFalseApprovalClaim()));
         failures += await CheckAsync("unknown-subcommand-errors-instead-of-silent-run",
             UnknownSubcommandAsync);
         failures += await CheckAsync("getting-started-covers-all-four-criterion-steps",
@@ -584,5 +586,48 @@ public static class ToolPluginChecks
             Console.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// 指南不得声称"填 None 就不触发审批"，且必须说明需要宿主配合。
+    /// </summary>
+    /// <remarks>
+    /// 真实发生过（2026-10-28 终检发现）：指南在工具示例的注释里写
+    /// "这类工具不会触发审批"，而同一份文档后面又写"默认对每次调用都请求审批"。
+    /// 两处自相矛盾，读者照前面的注释写就会误以为已经安全。
+    /// <para>
+    /// 实测确认行为：<c>Access=None + IsKnown=true</c> 在默认 dispatcher 下
+    /// 审批器**仍被调用 1 次**。所以前面那句是错的。
+    /// </para>
+    /// <para>
+    /// 判据是双向的：① 不得出现"不会触发审批"这类无条件断言；
+    /// ② 必须说清"需要宿主包 PermissionPolicyApprover"。
+    /// 只查 ① 会假通过——删掉整段说明同样能让 ① 成立。
+    /// </para>
+    /// </remarks>
+    private static string? GuideNoFalseApprovalClaim()
+    {
+        var guide = File.ReadAllText(
+            Path.Combine(FindRepoRoot(), "docs", "plugin-author-guide.md"));
+
+        // ① 反例：无条件声称不审批。
+        string[] falseClaims =
+        [
+            "这类工具不会触发审批",
+            "填 None 就不触发审批",
+            "Access=None 就不触发审批",
+        ];
+
+        foreach (var claim in falseClaims)
+        {
+            if (guide.Contains(claim, StringComparison.Ordinal))
+                return $"指南仍声称'{claim}'——实测 Access=None+IsKnown=true 会请求审批 1 次。";
+        }
+
+        // ② 正向对照：必须说清正确做法。
+        if (!guide.Contains("PermissionPolicyApprover", StringComparison.Ordinal))
+            return "指南没有说明跳过审批需要宿主包 PermissionPolicyApprover。";
+
+        return null;
     }
 }

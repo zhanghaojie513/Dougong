@@ -226,8 +226,10 @@ public sealed class WordCountTool : IAgentTool
     // ① 权限：这次调用要碰什么
     public ToolPermission DescribePermission(JsonElement arguments) =>
         // 纯内存计算，不碰文件/网络/进程。
-        // Access=None + IsKnown=true 表示"确实没有副作用"，
-        // 这类工具不会触发审批——用户不必为统计字数点一次"允许"。
+        // Access=None + IsKnown=true 表示"确实没有副作用"。
+        // **注意**：这不会自动免掉审批——默认的 dispatcher 对每一次调用都请求审批。
+        // 要让无副作用工具跳过询问，得由宿主包一层 PermissionPolicyApprover（见 §2.5 末）。
+        // 实测：`-- tool-plugin-checks` 里那条断言发现审批器仍被调用 1 次。
         new(ToolAccess.None, IsKnown: true, Paths: [], Commands: [], Domains: []);
 
     // ② 并发：这次调用能不能和别人的调用并行
@@ -289,8 +291,11 @@ dispatcher 不会把未知当无风险放行——它会警告并仍然询问。
 > 其余照常询问。**作为工具作者，你不能自己决定跳过审批**——
 > 你只能如实声明，由宿主决定信不信任这个声明。
 >
-> 这条最初在本指南里写错了（声称填 `None` 就不触发审批）。
-> 是 `-- tool-plugin-checks` 里那条断言实测发现的：审批器被调用了 1 次。
+> 这条在本指南里**写错过两次**：先是正文声称填 `None` 就不触发审批
+> （被 `-- tool-plugin-checks` 的断言实测推翻：审批器被调用了 1 次）；
+> 修了正文后，§2.5.1 的示例注释里还留着同样的错话，2026-10-28 终检又发现并改掉。
+> 现在有一条 `guide-does-not-claim-none-skips-approval` 双向盯着这件事——
+> 既不许出现无条件断言，也要求说明正确做法（只查前者，删掉整段说明也能假通过）。
 
 **路径写具体那个文件，不写目录**：审批时用户要看到"到底动哪个文件"。
 
@@ -329,15 +334,29 @@ public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
 工具写好之后要注册，否则模型看不到它：
 
 ```csharp
-var dispatcher = new ToolDispatcher();
+// 生产代码要传审批器，理由见下。
+var dispatcher = new ToolDispatcher(approver: myApprover);
 dispatcher.Register(new WordCountTool());
 ```
 
 `ToolDispatcher` 是**唯一执行入口**——模型请求调用后，由它统一做 schema 校验、
-权限审批、资源锁，然后才进你的 `ExecuteAsync`。框架不会绕过它直接调你的工具。
+权限审批、资源锁，然后才进你的 `ExecuteAsync`。
+
+> **省略 `approver` 就不审批，而且是静默的。**
+> `new ToolDispatcher()` 能编译、能跑，但所有工具调用**不会询问任何人**，
+> 直接执行。这条路径只为测试与对比保留，源码注释写了"生产宿主必须显式提供"，
+> **但编译器不会提醒你**。
+>
+> 换句话说，"框架不会绕过 dispatcher" 保证的是**所有调用都经过它**，
+> 不保证"经过了就会被拦"。拦截取决于你传没传 `approver`。
+> 这两件事容易被读成一件，本指南此前就是这么写的，已改。
 
 **注册在哪里**：通常在你的 `IPlugin.ActivateAsync` 里，
 从内核解析出 dispatcher 再注册。这样工具的生命周期跟着插件走，停用时自动消失。
+
+> 经内核注册的 dispatcher 从**插件上下文**拿，不要自己 `new`——
+> 自己 new 的那个不经过内核的租约与代次校验，插件停用后它仍可能被调用。
+> 正确做法见[嵌入指南](embedding-guide.md)与 `Dougong.Hosting` 的 `KernelAgentHost`。
 
 ---
 

@@ -417,7 +417,7 @@ error IL3000: 'Assembly.Location' always returns an empty string for
 
 | 项 | 卡在哪 | 触发条件 |
 |---|---|---|
-| **NuGet 发布** | 仓库已公开，但包还没发到 nuget.org——`dotnet add package` 取不到 | 想让人真正装得上时。`dotnet pack` 产物已就绪（每次全量检查都打） |
+| ~~**NuGet 发布**~~ | **已完成（2026-10-28）**：7 个包上 nuget.org，`dotnet add package Dougong.Agent` 可用 | — |
 | **ACP Registry 上架** | 只剩认证一条（开源已完成），见上节 | 认证实现后即可；binary 打包已打通 |
 | **ACP 认证实现** | 与"密钥只从环境变量读"的纪律冲突，需先设计密钥存储 | 等上架成为真实需求时。**这是功能，不是配置** |
 | **断电级持久化（G7）** | 已调 `Flush(flushToDisk: true)`，缺掉电测试条件 | 有可控断电环境时。现在如实声明"不保证断电"，不假装 |
