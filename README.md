@@ -249,37 +249,37 @@ dougong --doctor
 
 ## 文档
 
-> 全部文档的归类与阅读路径见 [docs/README.md](docs/README.md)。根目录是描述当前系统的契约与状态；`docs/vision/` 是方向与理念，不是已实现能力的承诺。
+> 完整索引（含开发台账与复盘）见 [docs/README.md](docs/README.md)。
+
+**上手就看这几份**
+
+| 文档 | 什么时候读 |
+|---|---|
+| [从零开始](docs/getting-started.md) | 第一次动手。每条命令写明"应该看到什么"，给没写过 .NET 的人 |
+| [插件作者指南](docs/plugin-author-guide.md) | 写内核插件或工具插件时；含五个易犯错误与失败定位 |
+| [嵌入指南](docs/embedding-guide.md) | 把 Dougong 装进自己的 .NET 服务（20 行最小可用） |
+| [故障排查](docs/troubleshooting.md) | 出问题时；区分"是缺陷还是环境问题" |
+
+**要理解设计**
+
+| 文档 | 什么时候读 |
+|---|---|
+| [架构](docs/architecture.md) | 分层、内核契约、状态机、动态加载、宿主边界。多处代码注释引用其章节号 |
+| [总体设计](docs/design.md) | 为什么这样设计：生态位、里程碑、关键取舍 |
+| [最终目的](docs/goal.md) | 四条不可让渡的性质与反目标；判断"要不要做"时看它 |
+| [兼容策略](docs/compat-policy.md) | 改公开 API 前必读：承诺什么、破坏性变更三档、弃用流程 |
+
+**现状与规划**
 
 | 文档 | 内容 |
 |---|---|
-| [架构](docs/architecture.md) | 分层结构、内核契约、状态机、动态加载和宿主边界 |
-| [总体设计](docs/design.md) | 生态位、里程碑、MAF 与自研循环的比较门槛 |
-| [实施状态](docs/status.md) | 已实现内容、测试基线、未完成验收和恢复入口 |
-| [M1 候选对比](docs/m1-candidate-comparison.md) | MAF 包装与自研循环的同用例对比、版本与选择理由 |
-| [M0 开发历程](docs/journey/m0-dev-journey.md) | M0 期间真实发生的问题与判断错误，供开发记录梳理 |
-| [最终目的](docs/goal.md) | 四条不可让渡的性质、反目标与可执行的达成判定 |
-| [完成定义](docs/quality-gates.md) | 六道质量门、红线、按规模裁剪 |
-| [开发计划](docs/plan.md) | 里程碑顺序、缺口台账；防跑偏用 |
-| [ACP 参照调查](docs/acp-reference-survey.md) | TKCode 与 pi.net 的实际做法，M2.4 可借鉴/不可借鉴项 |
-| [M1 开发历程](docs/journey/m1-dev-journey.md) | M1 期间的实现缺陷、测试缺陷与判断错误；含真实 provider 才暴露的协议问题 |
-| [设计理念](docs/vision/philosophy.md) | 斗拱隐喻、设计原则和明确不做的事情 |
-| [前沿调查](docs/vision/frontier-roadmap.md) | Agent Harness、协议、隔离和记忆评测的公开进展 |
-| [未来路线](docs/vision/iteration-roadmap.md) | M3 之后的演进方向和退出条件 |
-| [Skill 演进](docs/vision/skills-evolution.md) | 复盘、沉淀、审批和加载的 Skill 进化设想 |
-| [从零开始](docs/getting-started.md) | 装环境 → 构建 → 跑样例 → 接真模型 → 写插件；每条命令写明"应该看到什么" |
-| [插件作者指南](docs/plugin-author-guide.md) | 内核插件与工具插件、生命周期约束、五个易犯错误、失败定位 |
-| [兼容策略](docs/compat-policy.md) | 承诺什么、哪些包受保护、破坏性变更三档、弃用流程 |
-| [故障排查](docs/troubleshooting.md) | 构建/provider/插件加载的实际案例，注明"是缺陷还是环境问题" |
-| [L1 记忆方案](docs/skill-l1-plan.md) | 记忆层的实现范围与验收边界 |
-| [L1 验收 1 报告](docs/skill-l1-acceptance-1.md) | 14 个 provider×协议组合的效果对照：判据、阈值与结果解释规则 |
-| [上下文卫生](docs/context-hygiene.md) | 工具结果裁剪、压缩保留计划，以及"记忆取代关系为何不做" |
-| [M3 计划](docs/m3-plan.md) | 四条完成判据、七个切片、执行结果 |
-| [性能基线](docs/performance-baseline.md) | 大会话/长会话/并发会话的实测数字与环境，只记录不承诺 |
-| [与 dsh/Cordis 对比](docs/kernel-vs-cordis.md) | 租约/排空/超时/变化传播逐项对照，以及已定的取舍 |
-| [嵌入指南](docs/embedding-guide.md) | 把 Dougong 装进自己的 .NET 服务：20 行最小可用、五个零件的职责、三个真实缺口 |
-| [宿主分层决定](docs/host-layering-decision.md) | dsh 与 pi.net 怎么切库与应用；学分层、不学 `CodingAgent` 式产品层 |
-| [内核对抗审查](docs/kernel-adversarial-review.md) | 20 项攻击探针与发现 |
+| [实施状态](docs/status.md) | 做到哪一步，只认实测证据 |
+| [开发计划](docs/plan.md) | 下一步做什么、遗留问题分类 |
+| [性能基线](docs/performance-baseline.md) | 实测数字与环境，只记录不承诺 |
+
+> 其余文档是开发过程中的台账、复盘与决策依据（里程碑计划、验收报告、
+> 与同类项目的对比调查等）。它们对维护者有用，但对使用者不是必读——
+> 需要时从 [docs/README.md](docs/README.md) 的完整索引进入。
 
 ## 路线图
 
@@ -296,15 +296,19 @@ M2  ACP · MCP · 遥测 · 受限记忆        ✅ 关闭（指标用 BCL Meter
 M3  插件 API 稳定化与生态工具          ✅ 四条判据全部达成
  │
  ▼
-I0  稳定化与发布                      ← 当前阶段
+I0  稳定化与发布                      ✅ 2026-10-28 关闭（已发布到 nuget.org）
 ```
 
 M3 的四条完成判据——外部作者只看文档能写出插件、API 变更被自动发现、
 多轮装卸不泄漏、失败可定位——均已达成，证据见 [M3 计划](docs/m3-plan.md) §九。
 
-当前进入 **I0 稳定化与发布**：把已有能力变成别人能装、能诊断、能扩展的产品。
-后续迭代（I1 可嵌入运行时、I3 知识资产化等）的排序与退出条件见
-[未来路线](docs/vision/iteration-roadmap.md)。
+I0 的退出条件是"一位未参与开发的人在干净 Windows 与 Linux 环境各完成一次
+安装→配置→真实任务→写插件"，两端都有实测记录。
+
+**下一步还没有定。** 候选在 [未来路线](docs/vision/iteration-roadmap.md) 里
+（I1 可嵌入运行时、I2 执行边界、I3 知识资产化等），以及
+[开发计划](docs/plan.md) §六的遗留清单。选哪条取决于真实需求，
+不照路线图硬推——例如 I1 要等第一个真实的嵌入需求出现才值得做。
 
 ## 设计边界
 

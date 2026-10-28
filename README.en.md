@@ -195,23 +195,39 @@ API key (taken only from the `NUGET_API_KEY` environment variable).
 
 ## Documentation
 
-> Categorization and reading paths live in [docs/README.md](docs/README.md). Root-level docs describe the current system; `docs/vision/` holds direction and philosophy, not promises of implemented capability. **The documentation is currently written in Chinese.**
+> Full index (including development logs and retrospectives) in [docs/README.md](docs/README.md).
+> **The documentation is currently written in Chinese.**
+
+**Start here**
+
+| Document | When to read |
+|---|---|
+| [Getting started](docs/getting-started.md) | First time. Every command says what you should see |
+| [Plugin author guide](docs/plugin-author-guide.md) | Writing a kernel or tool plugin; five common mistakes and how to locate failures |
+| [Embedding guide](docs/embedding-guide.md) | Putting Dougong inside your own .NET service (20-line minimum) |
+| [Troubleshooting](docs/troubleshooting.md) | When something breaks; tells a defect apart from an environment issue |
+
+**Understanding the design**
+
+| Document | When to read |
+|---|---|
+| [Architecture](docs/architecture.md) | Layering, kernel contracts, state machine, dynamic loading, host boundary. Code comments cite its section numbers |
+| [Overall design](docs/design.md) | Why it is shaped this way: niche, milestones, key trade-offs |
+| [Goal](docs/goal.md) | Four non-negotiable properties and anti-goals; read before deciding what to build |
+| [Compatibility policy](docs/compat-policy.md) | Before changing a public API: what is promised, three tiers of breaking change, deprecation flow |
+
+**Status and planning**
 
 | Document | Contents |
 |---|---|
-| [Architecture](docs/architecture.md) | Layering, kernel contracts, state machine, dynamic loading, host boundary |
-| [Overall design](docs/design.md) | Ecological niche, milestones, MAF vs in-house loop decision gates |
-| [Status board](docs/status.md) | What is implemented, test baseline, open acceptance items, recovery entry |
-| [M1 candidate comparison](docs/m1-candidate-comparison.md) | Like-for-like comparison of MAF wrapping vs the in-house loop, versions, decision rationale |
-| [M0 dev journey](docs/journey/m0-dev-journey.md) | Problems and misjudgments that actually happened during M0, for retrospective writing |
-| [Goal](docs/goal.md) | Four non-negotiable properties, anti-goals, executable acceptance tests |
-| [Quality gates](docs/quality-gates.md) | Six gates, red lines, scaled by change size |
-| [Development plan](docs/plan.md) | Milestone order and gap register |
-| [M1 dev journey](docs/journey/m1-dev-journey.md) | Defects, test flaws and misjudgments during M1, including protocol issues only real providers exposed |
-| [Philosophy](docs/vision/philosophy.md) | The dougong metaphor, design principles, explicit non-goals |
-| [Frontier survey](docs/vision/frontier-roadmap.md) | Public progress in agent harnesses, protocols, isolation and memory evaluation |
-| [Iteration roadmap](docs/vision/iteration-roadmap.md) | Internal ordering and exit criteria beyond M3 |
-| [Skill evolution](docs/vision/skills-evolution.md) | A vision for skill retrospection, consolidation, approval and loading |
+| [Status board](docs/status.md) | How far along, measured evidence only |
+| [Development plan](docs/plan.md) | What is next, classified backlog |
+| [Performance baseline](docs/performance-baseline.md) | Measured numbers and environment; recorded, not promised |
+
+> The remaining documents are development logs, retrospectives and decision records
+> (milestone plans, acceptance reports, comparisons with similar projects). They matter
+> to maintainers, not to users — enter them through the full index in
+> [docs/README.md](docs/README.md).
 
 ## Roadmap
 
@@ -228,17 +244,21 @@ M2  ACP · MCP · telemetry · restricted memory                 ✅ closed (met
 M3  plugin API stabilization and ecosystem tooling            ✅ all four criteria met
  │
  ▼
-I0  stabilization and release                                 ← current
+I0  stabilization and release                                 ✅ closed 2026-10-28 (published to nuget.org)
 ```
 
 The four M3 completion criteria — an outside author can write a plugin from docs alone,
 API changes are caught automatically, repeated load/unload does not leak, and failures are
 locatable — are all met; evidence in [M3 plan](docs/m3-plan.md) §9.
 
-The project has entered **I0 stabilization and release**: turning existing capability into
-something others can install, diagnose and extend. Ordering and exit conditions for later
-iterations (I1 embeddable runtime, I3 knowledge assets, …) are in the
-[iteration roadmap](docs/vision/iteration-roadmap.md).
+I0's exit condition — a person not involved in development completes install → configure →
+real task → write a plugin, on clean Windows and Linux — has evidence on both platforms.
+
+**What comes next is undecided.** Candidates are in the
+[iteration roadmap](docs/vision/iteration-roadmap.md) (I1 embeddable runtime, I2 execution
+boundaries, I3 knowledge assets, …) and in [plan](docs/plan.md) §6. Which one to take depends
+on real demand rather than the roadmap — I1, for instance, is only worth doing once an actual
+embedding need appears.
 
 ## Design Boundaries
 
