@@ -14,6 +14,13 @@
     <PackageVersion Include="ModelContextProtocol" Version="2.3.0" />
     <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.11.0" />
     <PackageVersion Include="xunit.v3" Version="4.0.2" />
+
+    <!-- 终端呈现（CLI 实施计划 S1）。**只有 Dougong.Cli 引用**，
+         SDK 包保持零 UI 依赖——ArchitectureBoundaryTests 断言这一点。
+         为什么用库而不是手写 ANSI：颜色自动降级、CJK 宽度、表格对齐、
+         边框兼容这些细节手写做不好，而那正是"显得粗糙"的来源。
+         实测它在输出重定向时自动降级为纯文本，45 个套件不受影响。 -->
+    <PackageVersion Include="Spectre.Console" Version="0.57.2" />
   </ItemGroup>
 
 </Project>

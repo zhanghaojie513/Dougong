@@ -229,4 +229,65 @@ public sealed class ArchitectureBoundaryTests
     private static IEnumerable<string> AllProjectFiles() =>
         SdkProjectFiles().Concat(
             Directory.EnumerateFiles(Path.Combine(RepoRoot, "samples"), "*.csproj", SearchOption.AllDirectories));
+
+    /// <summary>
+    /// CLI 的可见输出必须全部经过 <c>Terminal/Output.cs</c>，不得散落 Console 调用。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条断言的作用是"改造不漏"</b>：把终端呈现改成按能力分档之后，
+    /// 只要还有一处直接 <c>Console.Write</c>，那一处就会在任何档位下都是裸文本——
+    /// 表现为"某些行有颜色、某些行没有"，而这在测试里看不出来（测试只比对文本）。
+    /// <para>
+    /// 靠人眼检查 30 多处调用会漏，所以用静态扫描钉住。它失败时会直接指出文件与行号。
+    /// </para>
+    /// <para>
+    /// <b>允许的例外只有两个</b>：<c>Output.cs</c> 自己（它就是实现），
+    /// 以及 <c>Console.Error</c> 的直接调用（错误输出不走终端装饰，
+    /// 它必须永远能在最差的环境里工作）。本断言只查 <c>Console.Write</c>/<c>WriteLine</c>。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Cli_visible_output_goes_through_Output()
+    {
+        var cliSource = Path.Combine(RepoRoot, "src", "Dougong.Cli");
+        var offenders = new List<string>();
+
+        foreach (var file in Directory.EnumerateFiles(cliSource, "*.cs", SearchOption.AllDirectories))
+        {
+            // 构建产物目录不该被扫到。
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
+                || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
+                continue;
+
+            // Output.cs 是实现本体；Diagnostics 内部用 Console.Error，本断言不查 Error。
+            if (Path.GetFileName(file) is "Output.cs") continue;
+
+            var lines = File.ReadAllLines(file);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i];
+
+                // 注释里提到 Console 不算。
+                var trimmed = line.TrimStart();
+                if (trimmed.StartsWith("//", StringComparison.Ordinal)
+                    || trimmed.StartsWith("///", StringComparison.Ordinal)
+                    || trimmed.StartsWith("*", StringComparison.Ordinal))
+                    continue;
+
+                // 只查标准输出。Console.Error 允许直接调用。
+                var isStdout = line.Contains("Console.Write(", StringComparison.Ordinal)
+                    || line.Contains("Console.WriteLine(", StringComparison.Ordinal);
+                if (!isStdout) continue;
+
+                offenders.Add($"{Path.GetFileName(file)}:{i + 1}  {trimmed}");
+            }
+        }
+
+        var detail = string.Join(Environment.NewLine + "  ", offenders);
+        Assert.True(
+            offenders.Count == 0,
+            "CLI 的标准输出必须经过 Terminal/Output.cs，以下调用绕过了它："
+            + Environment.NewLine + "  " + detail
+            + Environment.NewLine + "（Console.Error 不受此限——错误输出不走终端装饰。）");
+    }
 }

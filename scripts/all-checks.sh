@@ -42,7 +42,7 @@ echo "== dotnet tool 打包（供 tool-package-checks 使用）=="
 "$DOTNET" pack src/Dougong.Cli -c Release --no-build -o ./artifacts/tool -v q
 echo
 
-suites="surface parity acp elicitation elicitation-process kernel-wiring kernel-path kernel-process bare-hold workspace-lock acp-plan replaceability telemetry recheck token schema tool-replacement mcp mcp-reload reachability approval-log wiring wire session usage shell failure store approval fileversion compaction contract skill-l1 l1-harness memory-cli context-hygiene doctor report apicompat load-plugin-checks tool-plugin-checks tool-package-checks"
+suites="surface parity acp elicitation elicitation-process kernel-wiring kernel-path kernel-process bare-hold workspace-lock acp-plan replaceability telemetry recheck token schema tool-replacement mcp mcp-reload reachability approval-log wiring wire session usage shell failure store approval fileversion compaction contract skill-l1 l1-harness memory-cli context-hygiene doctor report apicompat terminal load-plugin-checks tool-plugin-checks tool-package-checks"
 
 failed=0
 failed_names=""

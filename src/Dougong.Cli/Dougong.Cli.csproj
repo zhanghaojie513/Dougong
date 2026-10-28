@@ -26,6 +26,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 终端呈现：颜色自动降级、CJK 宽度、表格/边框。
+         只有 Cli 用它，SDK 包保持零 UI 依赖（architecture 边界测试断言）。 -->
+    <PackageReference Include="Spectre.Console" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Dougong.Kernel\Dougong.Kernel.csproj" />
     <ProjectReference Include="..\Dougong.Agent\Dougong.Agent.csproj" />
     <!-- 内核接线（KernelAgentHost / KernelAgentRuntime）在 Hosting 包里：

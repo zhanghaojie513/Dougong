@@ -4,6 +4,7 @@ using Dougong.Agent;
 using Dougong.Hosting;
 using Dougong.Ai;
 using Dougong.Acp;
+using Dougong.Cli.Terminal;
 using Dougong.Mcp;
 using Microsoft.Extensions.AI;
 
@@ -48,7 +49,7 @@ public static class Program
 
         if (args.Contains("--version") || args.Contains("-v"))
         {
-            Console.WriteLine("dougong 0.1.0-alpha.1");
+            Output.Line("dougong 0.1.0-alpha.1");
             return 0;
         }
 
@@ -69,7 +70,7 @@ public static class Program
         // 信息包也排在 provider 配置检查之前：它要能用于"配置不完整"的场景。
         if (args.Contains("--report"))
         {
-            Console.WriteLine(await DiagnosticBundle.BuildAsync());
+            Output.Line(await DiagnosticBundle.BuildAsync());
             return 0;
         }
 
@@ -148,7 +149,7 @@ public static class Program
             sessionId = Path.GetFileNameWithoutExtension(resolved);
             history = recovered.HistoryForResume;
 
-            Console.WriteLine($"已恢复会话：{sessionId}（{history.Count} 条历史）");
+            Output.Line($"已恢复会话：{sessionId}（{history.Count} 条历史）");
         }
 
         if (FindArg(args, "--branch") is { } branchArg)
@@ -184,7 +185,7 @@ public static class Program
                 return 4;
             }
 
-            Console.WriteLine($"已从 #{result.LastSequence} 分支：{branchId}（{result.RecordCount} 条）");
+            Output.Line($"已从 #{result.LastSequence} 分支：{branchId}（{result.RecordCount} 条）");
             sessionPath = result.Path;
             sessionId = result.SessionId;
 
@@ -200,24 +201,34 @@ public static class Program
             ? window
             : 0;
 
-        Console.WriteLine($"dougong 0.1.0-alpha.1  模型={config.Model}  协议={config.Protocol}");
-        Console.WriteLine($"工作区={workspace}");
-        Console.WriteLine($"会话={sessionPath}");
-        Console.WriteLine($"shell 工具={(shellEnabled ? "已启用" : "未启用（DOUGONG_SHELL=1 开启）")}");
-        Console.WriteLine(contextWindow > 0
-            ? $"上下文压缩=已启用（窗口 {contextWindow} tokens）"
-            : "上下文压缩=未启用（DOUGONG_CONTEXT_WINDOW 开启）");
+        // 首页三档：Rich 出大字，Narrow 出单行，Plain 输出与改造前逐字一致的原文。
+        // 原文由这里传入而不是 Banner 自己拼——"兼容"这件事不能靠猜。
+        Banner.Print(
+            version: "0.1.0-alpha.1",
+            model: config.Model,
+            protocol: config.Protocol.ToString(),
+            workspace: workspace,
+            plainLines:
+            [
+                $"dougong 0.1.0-alpha.1  模型={config.Model}  协议={config.Protocol}",
+                $"工作区={workspace}",
+                $"会话={sessionPath}",
+                $"shell 工具={(shellEnabled ? "已启用" : "未启用（DOUGONG_SHELL=1 开启）")}",
+                contextWindow > 0
+                    ? $"上下文压缩=已启用（窗口 {contextWindow} tokens）"
+                    : "上下文压缩=未启用（DOUGONG_CONTEXT_WINDOW 开启）",
+            ]);
 
         await using var store = await JsonlAgentStore.OpenAsync(sessionPath, sessionId)
             .ConfigureAwait(false);
 
         // 如实展示持久化等级：这是 IAgentStore 契约的一部分，
         // 此前声明了却没有任何消费者——用户看不到自己在什么保证之下。
-        Console.WriteLine(
+        Output.Line(
             $"durability={DurabilityText.Tag(store.Durability)}（{DurabilityText.Describe(store.Durability)}）");
         if (DurabilityText.NeedsWarning(store.Durability))
         {
-            Console.WriteLine("  ⚠ 该存储不保留会话：退出后无法恢复。");
+            Output.Line("  ⚠ 该存储不保留会话：退出后无法恢复。");
         }
         // 用量记账：装饰器由共用装配包在连接器外面，不改变任何调用语义。
         // 账目随会话保存，`/usage` 可查；这里不猜单价，只汇总 token 与调用次数。
@@ -274,11 +285,11 @@ public static class Program
                     approver).ConfigureAwait(false);
 
                 runtime = kernelHost.ResolveRuntime();
-                Console.WriteLine("kernel=enabled（运行能力由内核解析，每次回合取租约）");
+                Output.Line("kernel=enabled（运行能力由内核解析，每次回合取租约）");
             }
             else
             {
-                Console.WriteLine("kernel=disabled（DOUGONG_KERNEL=0，直连路径）");
+                Output.Line("kernel=disabled（DOUGONG_KERNEL=0，直连路径）");
                 var dispatcher = composition.CreateDispatcher(store);
                 var (registries, clients) = await composition
                     .ConnectMcpAsync(dispatcher, Console.Out)
@@ -295,14 +306,14 @@ public static class Program
         }
 
         if (composition.McpServers.Count == 0)
-            Console.WriteLine("MCP：未配置（DOUGONG_MCP_SERVERS 开启）");
+            Output.Line("MCP：未配置（DOUGONG_MCP_SERVERS 开启）");
 
         var messages = new List<AgentMessage>(history);
         var turn = 0;
 
         while (true)
         {
-            Console.Write("> ");
+            Output.Text("> ");
             var input = Console.ReadLine();
             if (input is null) break;                       // EOF
             if (string.IsNullOrWhiteSpace(input)) continue;
@@ -335,29 +346,29 @@ public static class Program
                     {
                         case AgentEvent.TextDelta delta:
                             assistantText.Append(delta.Text);
-                            Console.Write(delta.Text);
+                            Output.Text(delta.Text);
                             break;
 
                         case AgentEvent.ToolCallRequested call:
-                            Console.WriteLine();
-                            Console.WriteLine($"  → 调用 {call.ToolId} {Truncate(call.Arguments.GetRawText())}");
+                            Output.Line();
+                            Output.Line($"  → 调用 {call.ToolId} {Truncate(call.Arguments.GetRawText())}");
                             break;
 
                         case AgentEvent.ToolCallCompleted done:
-                            Console.WriteLine($"  ← {done.Result.Outcome}" +
+                            Output.Line($"  ← {done.Result.Outcome}" +
                                 (done.Result.Diagnostic is { } d ? $"（{d}）" : string.Empty));
                             break;
 
                         case AgentEvent.ContextCompacted compacted:
-                            Console.WriteLine();
-                            Console.WriteLine(compacted.Applied
+                            Output.Line();
+                            Output.Line(compacted.Applied
                                 ? $"  ⇄ 已压缩 {compacted.RemovedMessages} 条历史"
                                   + $"（估算 {compacted.EstimatedTokensBefore} → {compacted.EstimatedTokensAfter} tokens）"
                                 : $"  ⇄ 未压缩：{compacted.Diagnostic}");
                             break;
 
                         case AgentEvent.RunFinished finished:
-                            Console.WriteLine();
+                            Output.Line();
                             if (finished.Outcome != AgentRunOutcome.Completed)
                                 Console.Error.WriteLine($"  [结束：{finished.Outcome}] {finished.Diagnostic}");
                             break;
@@ -366,14 +377,14 @@ public static class Program
             }
             catch (OperationCanceledException)
             {
-                Console.WriteLine();
+                Output.Line();
                 Console.Error.WriteLine("  [已取消]");
             }
 
             if (assistantText.Length > 0)
                 messages.Add(new AgentMessage(AgentRole.Assistant, assistantText.ToString()));
             messages.Add(new AgentMessage(AgentRole.User, input));
-            Console.WriteLine();
+            Output.Line();
         }
 
         return 0;
@@ -390,19 +401,19 @@ public static class Program
                 return false;
 
             case "/help":
-                Console.WriteLine("  /exit     退出");
-                Console.WriteLine("  /history  查看内存中的历史条数（会话日志以 JSONL 为准）");
-                Console.WriteLine("  /where    显示当前会话文件");
-                Console.WriteLine("  /usage    显示本会话的 token 用量与调用次数");
-                Console.WriteLine("  /memory   显示 L1 偏好记忆（含未启用的候选）");
+                Output.Line("  /exit     退出");
+                Output.Line("  /history  查看内存中的历史条数（会话日志以 JSONL 为准）");
+                Output.Line("  /where    显示当前会话文件");
+                Output.Line("  /usage    显示本会话的 token 用量与调用次数");
+                Output.Line("  /memory   显示 L1 偏好记忆（含未启用的候选）");
                 return true;
 
             case "/history":
-                Console.WriteLine($"  内存历史 {history.Count} 条；持久化记录见会话 {sessionId}。");
+                Output.Line($"  内存历史 {history.Count} 条；持久化记录见会话 {sessionId}。");
                 return true;
 
             case "/where":
-                Console.WriteLine($"  {sessionPath}");
+                Output.Line($"  {sessionPath}");
                 return true;
 
             case "/memory":
@@ -414,7 +425,7 @@ public static class Program
                 return true;
 
             default:
-                Console.WriteLine($"  未知命令：{input}");
+                Output.Line($"  未知命令：{input}");
                 return true;
         }
     }
@@ -432,8 +443,8 @@ public static class Program
     {
         if (composition.MemoryStore is null)
         {
-            Console.WriteLine("  记忆未启用。设置 DOUGONG_MEMORY=1 开启。");
-            Console.WriteLine("  开启后，历史任务中的偏好会被注入后续对话——"
+            Output.Line("  记忆未启用。设置 DOUGONG_MEMORY=1 开启。");
+            Output.Line("  开启后，历史任务中的偏好会被注入后续对话——"
                 + "这是外发数据流，因此默认关闭。");
             return;
         }
@@ -442,12 +453,12 @@ public static class Program
         var all = composition.MemoryStore.ReadArtifactsAsync().GetAwaiter().GetResult();
         if (all.Count == 0)
         {
-            Console.WriteLine("  记忆为空。");
+            Output.Line("  记忆为空。");
             return;
         }
 
-        Console.WriteLine($"  记忆产物 {all.Count} 条（未生效项会说明原因）：");
-        Console.WriteLine();
+        Output.Line($"  记忆产物 {all.Count} 条（未生效项会说明原因）：");
+        Output.Line();
 
         var now = DateTimeOffset.UtcNow;
 
@@ -459,14 +470,14 @@ public static class Program
             var reason = MemoryDiagnostics.WhyInactive(
                 artifact, composition.MemoryWorkspace, now);
 
-            Console.WriteLine($"  [{(reason is null ? "生效" : "未生效")}] {artifact.Key} = {artifact.Value}");
-            Console.WriteLine($"      状态 {artifact.State} · 版本 {artifact.Version}"
+            Output.Line($"  [{(reason is null ? "生效" : "未生效")}] {artifact.Key} = {artifact.Value}");
+            Output.Line($"      状态 {artifact.State} · 版本 {artifact.Version}"
                 + $" · 作用域 {artifact.Scope}"
                 + (string.IsNullOrEmpty(artifact.Workspace) ? "" : $"({artifact.Workspace})"));
-            Console.WriteLine($"      来源任务 {artifact.SourceTaskId}"
+            Output.Line($"      来源任务 {artifact.SourceTaskId}"
                 + (artifact.ExpiresAt is { } expires ? $" · 有效至 {expires:yyyy-MM-dd HH:mm}" : ""));
 
-            if (reason is not null) Console.WriteLine($"      原因：{reason}");
+            if (reason is not null) Output.Line($"      原因：{reason}");
         }
     }
 
@@ -511,37 +522,37 @@ public static class Program
     /// </remarks>
     private static void PrintHelp()
     {
-        Console.WriteLine("dougong 0.1.0-alpha.1 —— .NET Agent Harness 参考宿主");
-        Console.WriteLine();
-        Console.WriteLine("用法：");
-        Console.WriteLine("  dougong                      启动对话（需要 provider 配置）");
-        Console.WriteLine("  dougong --doctor             启动自检：逐项检查环境并给出下一步");
-        Console.WriteLine("  dougong --report             输出诊断信息包（不含密钥与对话内容）");
-        Console.WriteLine("  dougong --version            显示版本");
-        Console.WriteLine("  dougong --help               显示本帮助");
-        Console.WriteLine("  dougong --acp                以 ACP Agent 模式运行（stdout 归协议）");
-        Console.WriteLine("  dougong --list               列出会话");
-        Console.WriteLine("  dougong --resume <会话>      恢复会话");
-        Console.WriteLine("  dougong --branch <会话>      从某条记录分叉");
-        Console.WriteLine();
-        Console.WriteLine("第一次用：先跑 dougong --doctor 确认环境。");
-        Console.WriteLine();
-        Console.WriteLine("需要三个环境变量（密钥只从环境变量读，不写入任何文件）：");
-        Console.WriteLine("  DOUGONG_PROVIDER_BASE    服务地址，如 https://api.deepseek.com");
-        Console.WriteLine("  DOUGONG_PROVIDER_MODEL   模型名");
-        Console.WriteLine("  DOUGONG_PROVIDER_KEY     密钥");
-        Console.WriteLine();
-        Console.WriteLine("可选：");
-        Console.WriteLine("  DOUGONG_PROVIDER_PROTOCOL  openai（默认）/ anthropic / responses");
-        Console.WriteLine("  DOUGONG_WORKSPACE          工作区目录，默认当前目录");
-        Console.WriteLine("  DOUGONG_SESSION_DIR        会话目录，默认 ~/.dougong/sessions");
-        Console.WriteLine("  DOUGONG_SHELL=1            启用 shell 工具（默认关闭）");
-        Console.WriteLine("  DOUGONG_MEMORY=1           启用 L1 偏好记忆（默认关闭）");
-        Console.WriteLine("  DOUGONG_LOG=debug          分级日志：error/warn/info/debug");
-        Console.WriteLine();
-        Console.WriteLine("对话中可用：/help  /exit  /usage  /where  /memory");
-        Console.WriteLine();
-        Console.WriteLine("文档：https://github.com/zhanghaojie513/Dougong");
+        Output.Line("dougong 0.1.0-alpha.1 —— .NET Agent Harness 参考宿主");
+        Output.Line();
+        Output.Line("用法：");
+        Output.Line("  dougong                      启动对话（需要 provider 配置）");
+        Output.Line("  dougong --doctor             启动自检：逐项检查环境并给出下一步");
+        Output.Line("  dougong --report             输出诊断信息包（不含密钥与对话内容）");
+        Output.Line("  dougong --version            显示版本");
+        Output.Line("  dougong --help               显示本帮助");
+        Output.Line("  dougong --acp                以 ACP Agent 模式运行（stdout 归协议）");
+        Output.Line("  dougong --list               列出会话");
+        Output.Line("  dougong --resume <会话>      恢复会话");
+        Output.Line("  dougong --branch <会话>      从某条记录分叉");
+        Output.Line();
+        Output.Line("第一次用：先跑 dougong --doctor 确认环境。");
+        Output.Line();
+        Output.Line("需要三个环境变量（密钥只从环境变量读，不写入任何文件）：");
+        Output.Line("  DOUGONG_PROVIDER_BASE    服务地址，如 https://api.deepseek.com");
+        Output.Line("  DOUGONG_PROVIDER_MODEL   模型名");
+        Output.Line("  DOUGONG_PROVIDER_KEY     密钥");
+        Output.Line();
+        Output.Line("可选：");
+        Output.Line("  DOUGONG_PROVIDER_PROTOCOL  openai（默认）/ anthropic / responses");
+        Output.Line("  DOUGONG_WORKSPACE          工作区目录，默认当前目录");
+        Output.Line("  DOUGONG_SESSION_DIR        会话目录，默认 ~/.dougong/sessions");
+        Output.Line("  DOUGONG_SHELL=1            启用 shell 工具（默认关闭）");
+        Output.Line("  DOUGONG_MEMORY=1           启用 L1 偏好记忆（默认关闭）");
+        Output.Line("  DOUGONG_LOG=debug          分级日志：error/warn/info/debug");
+        Output.Line();
+        Output.Line("对话中可用：/help  /exit  /usage  /where  /memory");
+        Output.Line();
+        Output.Line("文档：https://github.com/zhanghaojie513/Dougong");
     }
 
     private static void PrintUsage(UsageLedger ledger, string sessionId)
@@ -549,28 +560,28 @@ public static class Program
         var summary = ledger.Summarize(sessionId);
         if (summary.Calls == 0)
         {
-            Console.WriteLine("  本会话还没有模型调用。");
+            Output.Line("  本会话还没有模型调用。");
             return;
         }
 
-        Console.WriteLine($"  调用      : {summary.Calls} 次（失败 {summary.FailedCalls}）");
-        Console.WriteLine($"  输入      : {summary.InputTokens} tokens");
-        Console.WriteLine($"  输出      : {summary.OutputTokens} tokens");
+        Output.Line($"  调用      : {summary.Calls} 次（失败 {summary.FailedCalls}）");
+        Output.Line($"  输入      : {summary.InputTokens} tokens");
+        Output.Line($"  输出      : {summary.OutputTokens} tokens");
 
         if (summary.TotalTokens is { } total)
-            Console.WriteLine($"  合计      : {total} tokens");
+            Output.Line($"  合计      : {total} tokens");
         else
-            Console.WriteLine("  合计      : 未知（provider 没有报告用量）");
+            Output.Line("  合计      : 未知（provider 没有报告用量）");
 
         if (summary.UnreportedCalls > 0)
         {
-            Console.WriteLine(
+            Output.Line(
                 $"  ⚠ 未报告  : {summary.UnreportedCalls} 次调用没有用量数据，"
                 + $"覆盖率 {summary.ReportedRatio:P0}");
         }
 
-        Console.WriteLine($"  累计耗时  : {summary.TotalElapsed.TotalSeconds:0.0}s");
-        Console.WriteLine("  成本      : 未计算（依赖 provider 价目表，本层不猜单价）");
+        Output.Line($"  累计耗时  : {summary.TotalElapsed.TotalSeconds:0.0}s");
+        Output.Line("  成本      : 未计算（依赖 provider 价目表，本层不猜单价）");
     }
 
     /// <summary>读取会话列表。只显示文件与序号范围，不解析完整历史。</summary>
@@ -579,15 +590,15 @@ public static class Program
         var sessions = SessionBranch.List(sessionDir);
         if (sessions.Count == 0)
         {
-            Console.WriteLine($"目录下没有会话：{sessionDir}");
+            Output.Line($"目录下没有会话：{sessionDir}");
             return;
         }
 
-        Console.WriteLine($"{"会话",-28} {"记录",6} {"序号范围",14}  {"最后写入",-20} 备注");
+        Output.Line($"{"会话",-28} {"记录",6} {"序号范围",14}  {"最后写入",-20} 备注");
         foreach (var session in sessions)
         {
             var note = session.HasSequenceGap ? "序号缺口（不可续跑）" : string.Empty;
-            Console.WriteLine(
+            Output.Line(
                 $"{session.SessionId,-28} {session.RecordCount,6} " +
                 $"{session.FirstSequence + ".." + session.LastSequence,14}  " +
                 $"{session.LastWriteUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}  {note}");

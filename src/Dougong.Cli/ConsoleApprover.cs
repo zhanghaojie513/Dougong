@@ -1,5 +1,7 @@
 using Dougong.Agent;
 
+using Dougong.Cli.Terminal;
+
 namespace Dougong.Cli;
 
 /// <summary>
@@ -18,27 +20,27 @@ public sealed class ConsoleApprover : IToolApprover
             ? "{}"
             : request.NormalizedArguments.GetRawText();
 
-        Console.WriteLine();
-        Console.WriteLine($"── 需要审批 ──────────────────────────────");
-        Console.WriteLine($"  工具    : {request.Tool.Name} (v{request.Tool.Version})");
-        Console.WriteLine($"  参数    : {Truncate(args, 200)}");
-        Console.WriteLine($"  工作区  : {request.Workspace}");
-        Console.WriteLine($"  并发    : {request.Execution.Concurrency}");
+        Output.Line();
+        Output.Line($"── 需要审批 ──────────────────────────────");
+        Output.Line($"  工具    : {request.Tool.Name} (v{request.Tool.Version})");
+        Output.Line($"  参数    : {Truncate(args, 200)}");
+        Output.Line($"  工作区  : {request.Workspace}");
+        Output.Line($"  并发    : {request.Execution.Concurrency}");
 
         if (!request.Permission.IsKnown)
         {
             // 未知权限不能被当作无风险：显式警告，仍然询问而非放行。
-            Console.WriteLine("  ⚠ 权限未知：该工具无法可靠描述自身访问范围。");
+            Output.Line("  ⚠ 权限未知：该工具无法可靠描述自身访问范围。");
         }
         else
         {
-            Console.WriteLine($"  权限    : {request.Permission.Access}");
+            Output.Line($"  权限    : {request.Permission.Access}");
             if (request.Permission.Paths.Count > 0)
-                Console.WriteLine($"  路径    : {string.Join(", ", request.Permission.Paths)}");
+                Output.Line($"  路径    : {string.Join(", ", request.Permission.Paths)}");
         }
 
-        Console.WriteLine($"  到期    : {request.Binding.ExpiresAt:HH:mm:ss}");
-        Console.Write("  批准？[y/N] ");
+        Output.Line($"  到期    : {request.Binding.ExpiresAt:HH:mm:ss}");
+        Output.Text("  批准？[y/N] ");
         Console.Out.Flush();
 
         var answer = await ReadLineAsync(cancellationToken).ConfigureAwait(false);
@@ -47,8 +49,8 @@ public sealed class ConsoleApprover : IToolApprover
         // 这不是缺陷而是有意的失败关闭（fail-closed）。
         if (answer is null)
         {
-            Console.WriteLine();
-            Console.WriteLine("  （输入结束，按拒绝处理）");
+            Output.Line();
+            Output.Line("  （输入结束，按拒绝处理）");
             return ToolApprovalDecision.Deny("无交互输入，按拒绝处理");
         }
 

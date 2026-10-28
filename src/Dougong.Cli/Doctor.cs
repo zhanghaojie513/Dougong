@@ -1,6 +1,8 @@
 using Dougong.Ai;
 using Microsoft.Extensions.AI;
 
+using Dougong.Cli.Terminal;
+
 namespace Dougong.Cli;
 
 /// <summary>
@@ -308,8 +310,8 @@ public static class Doctor
 
     private static void Print(IReadOnlyList<CheckResult> results)
     {
-        Console.WriteLine("dougong 启动自检");
-        Console.WriteLine();
+        Output.Line("dougong 启动自检");
+        Output.Line();
 
         foreach (var r in results)
         {
@@ -320,28 +322,28 @@ public static class Doctor
                 _ => "失败",
             };
 
-            Console.WriteLine($"  [{mark}] {r.Name}：{r.Detail}");
+            Output.Line($"  [{mark}] {r.Name}：{r.Detail}");
 
             if (r.Next is { Length: > 0 })
-                Console.WriteLine($"         下一步：{r.Next}");
+                Output.Line($"         下一步：{r.Next}");
         }
 
-        Console.WriteLine();
+        Output.Line();
 
         var failed = results.Count(r => r.Level is Level.Fail);
         var warned = results.Count(r => r.Level is Level.Warn);
 
         if (failed > 0)
         {
-            Console.WriteLine($"结论：{failed} 项失败，无法正常启动。按上面的「下一步」逐项处理后重跑本品。");
+            Output.Error($"结论：{failed} 项失败，无法正常启动。按上面的「下一步」逐项处理后重跑本品。");
         }
         else if (warned > 0)
         {
-            Console.WriteLine($"结论：可以启动，但有 {warned} 项警告。");
+            Output.Line($"结论：可以启动，但有 {warned} 项警告。");
         }
         else
         {
-            Console.WriteLine("结论：全部通过。可以直接运行 dougong 开始对话。");
+            Output.Line("结论：全部通过。可以直接运行 dougong 开始对话。");
         }
     }
 }
