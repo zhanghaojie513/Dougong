@@ -135,7 +135,7 @@ Dougong focuses on the **supporting layer** for agents — not on any particular
 **As a tool** (no need to clone the repo):
 
 ```bash
-dotnet tool install --global Dougong.Cli
+dotnet tool install --global Dougong.Cli --version 0.1.0-alpha.1
 dougong --doctor      # check the environment first; it reports each item and the next step
 dougong               # start a conversation (model config required)
 ```

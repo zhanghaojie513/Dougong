@@ -60,9 +60,15 @@ Visual Studio Code：<https://code.visualstudio.com/>
 如果你不想克隆仓库，只想装上命令行工具用起来——两条命令：
 
 ```bash
-dotnet tool install --global Dougong.Cli
+dotnet tool install --global Dougong.Cli --version 0.1.0-alpha.1
 dougong --help
 ```
+
+> **为什么要带 `--version`**：不带版本号时，`dotnet tool install` 要去 nuget.org 的
+> **搜索索引**里找"最新版"，而新发布的包在搜索索引里通常要过一段时间才出现
+> （registration 索引已经有了，搜索索引还没有）。这段时间里不带版本号会报
+> "找不到 dougong.cli"。带上版本号走的是 registration 索引，立刻可用。
+> 2026-10-28 首次发布当天实测遇到，等了约 10 分钟搜索索引仍未收录。
 
 > **装的是包 `Dougong.Cli`，命令是 `dougong`。** 两个名字不一样是刻意的：
 > 包名跟项目命名约定（`Dougong.*`），命令名短，方便敲。
@@ -70,7 +76,7 @@ dougong --help
 **已经发布到 NuGet**（`0.1.0-alpha.1`，2026-10-28）。上面的命令可以直接用。
 
 > **关于 `alpha` 的预期**：命令行功能是完整的——`--doctor`、`--report`、
-> `--help`、REPL、`--acp` 都实测过，行为由 45 个自检套件钉住。
+> `--help`、REPL、`--acp` 都实测过，行为由 44 个自检套件钉住。
 > **但交互体验（终端呈现、提示文案）仍在打磨**，后续版本会变。
 > 这是 `alpha` 的正常状态，不是"装了个半成品"。
 

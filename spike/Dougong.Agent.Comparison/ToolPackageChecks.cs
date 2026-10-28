@@ -34,6 +34,7 @@ public static class ToolPackageChecks
         failures += await CheckAsync("help-works-without-provider-config", HelpWithoutConfigAsync);
         failures += await CheckAsync("help-lists-every-user-facing-command", HelpListsCommandsAsync);
         failures += Check("gitignore-covers-pack-output", PackOutputIgnored);
+        failures += Check("docs-pin-tool-version-on-install", DocsPinVersion);
 
         Console.WriteLine(failures == 0
             ? "TOOL-PACKAGE: ALL PASS"
@@ -269,5 +270,53 @@ public static class ToolPackageChecks
             Console.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// 文档里的 <c>dotnet tool install</c> 必须带 <c>--version</c>。
+    /// </summary>
+    /// <remarks>
+    /// 真实踩到（2026-10-28 首次发布当天）：<c>dotnet tool install --global Dougong.Cli</c>
+    /// 报"找不到 dougong.cli"，而加 <c>--version 0.1.0-alpha.1</c> 立刻成功。
+    /// <para>
+    /// 根因是 nuget.org 的两套索引不同步：registration 索引已有该版本，
+    /// 搜索索引还没有。不带版本号时 NuGet 必须查搜索索引找"最新版"，
+    /// 于是失败。这不是我们代码的问题，但**读者会照着文档失败**，
+    /// 所以文档必须写带版本号的形式。
+    /// </para>
+    /// <para>
+    /// 判据：三个用户可见入口（README 中/英、getting-started、走查清单）里，
+    /// 每条 <c>dotnet tool install ... Dougong.Cli</c> 都要带 <c>--version</c>。
+    /// </para>
+    /// </remarks>
+    private static string? DocsPinVersion()
+    {
+        var root = FindRepoRoot();
+        string[] docs =
+        [
+            Path.Combine(root, "README.md"),
+            Path.Combine(root, "README.en.md"),
+            Path.Combine(root, "docs", "getting-started.md"),
+            Path.Combine(root, "docs", "walkthrough-checklist.md"),
+        ];
+
+        foreach (var path in docs)
+        {
+            if (!File.Exists(path)) continue;
+            var text = File.ReadAllText(path);
+
+            foreach (var line in text.Split('\n'))
+            {
+                // 只检查真正的命令行，跳过正文里提到它的段落。
+                if (!line.Contains("dotnet tool install", StringComparison.Ordinal)) continue;
+                if (!line.Contains("Dougong.Cli", StringComparison.Ordinal)) continue;
+                if (line.Contains("--version", StringComparison.Ordinal)) continue;
+
+                return $"{Path.GetFileName(path)} 里的安装命令没带 --version：{line.Trim()}"
+                    + "  新包在搜索索引收录前，不带版本号会报「找不到 dougong.cli」。";
+            }
+        }
+
+        return null;
     }
 }

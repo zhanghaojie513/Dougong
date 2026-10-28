@@ -134,7 +134,7 @@ Dougong 关注的是 Agent 的**承托层**，而不是某一个模型或某一�
 **命令走工具**（不需要 clone 仓库）：
 
 ```bash
-dotnet tool install --global Dougong.Cli
+dotnet tool install --global Dougong.Cli --version 0.1.0-alpha.1
 dougong --doctor      # 先确认环境，它会逐项检查并给出下一步
 dougong               # 开始对话（需要配置模型）
 ```
