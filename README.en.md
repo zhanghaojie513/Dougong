@@ -33,11 +33,12 @@ A *dougong* (斗拱) is the bracket set in traditional Chinese timber architectu
 
 ## Current Status
 
-Targeting `net10.0`, version `0.1.0-alpha.1`. **M0–M3 are complete**; all four M3 completion
-criteria are met (see [status](docs/status.md) and [M3 plan](docs/m3-plan.md) §9).
+Targeting `net10.0`, version `0.1.0-alpha.1`, **published to nuget.org** (2026-10-28).
+**M0–M3 are complete**; all four M3 completion criteria are met (see [status](docs/status.md)
+and [M3 plan](docs/m3-plan.md) §9). The I0 stabilization exit conditions are met as well.
 
-**Scale**: 6 product projects, 1 kernel test project (**187 tests**), 7 sample projects,
-**41 deterministic self-check suites** (no network, no API key required).
+**Scale**: 7 product projects, 1 kernel test project (**187 tests**), 9 sample/probe projects,
+**44 deterministic self-check suites** (no network, no API key required).
 
 **Verified capabilities**:
 
@@ -47,6 +48,9 @@ criteria are met (see [status](docs/status.md) and [M3 plan](docs/m3-plan.md) §
   resource lock → execute), JSONL commit barrier, session recovery and branching, context
   compaction, tool-result size limit (clamps model context only; logs stay complete),
   plan protection (compaction never summarizes the current plan)
+- **Hosting** — kernel wiring (plugin registration, lease adapters, service resolution).
+  Shared by the CLI and the future Desktop host so neither reimplements it — that kind of
+  duplication fails silently (registration order, accessor vs. bare instance, cleanup on error)
 - **Ai** — three wire-protocol connectors (chat-completions / responses / anthropic),
   dialect differences contained in `WireCompat`, usage accounting
 - **Mcp** — remote tool bridging and change detection (annotations are not authorization)
@@ -60,8 +64,10 @@ a content hash, revocable, no cross-workspace propagation. Effect measured acros
 See [acceptance 1](docs/skill-l1-acceptance-1.md) — that result applies only to the tested
 models and task set.
 
-**Not yet done**: `Dougong.Telemetry` (OTel export), ACP Registry listing, power-loss
-durability verification. See [status](docs/status.md) for the full list and rationale.
+**Not yet done**: `Dougong.Telemetry` (OTel export), power-loss durability verification,
+ACP Registry listing (the repo is public; the remaining blocker is auth — the Registry only
+accepts OAuth or terminal-interactive auth, while this project has environment-variable auth
+only; see [plan](docs/plan.md) §6). See [status](docs/status.md) for the full classified list.
 
 ## Why Dougong
 
@@ -124,6 +130,36 @@ Dougong focuses on the **supporting layer** for agents — not on any particular
 | `Dougong.Cli` | Headless reference host: REPL + `--acp` + `--doctor` + `--report` | **Complete** (tool, not a library) |
 | `Dougong.Telemetry` | OpenTelemetry bridge | Not started (metrics already exposed via BCL `Meter`) |
 
+## Install
+
+**As a tool** (no need to clone the repo):
+
+```bash
+dotnet tool install --global Dougong.Cli
+dougong --doctor      # check the environment first; it reports each item and the next step
+dougong               # start a conversation (model config required)
+```
+
+The package is `Dougong.Cli`; the command is `dougong`. The names differ on purpose:
+packages follow the `Dougong.*` convention, commands stay short.
+
+> In `0.1.0-alpha.1` the command surface is complete (`--doctor`, `--report`, `--help`,
+> REPL, `--acp` are all exercised, behavior pinned by 44 self-check suites), but the
+> **terminal presentation and wording are still being polished**.
+
+**As a library**:
+
+```bash
+dotnet add package Dougong.Agent     # runtime: loop, tool dispatch, sessions, compaction
+dotnet add package Dougong.Hosting   # kernel wiring: plugin registration, lease adapters
+dotnet add package Dougong.Ai        # model connections (three wire protocols)
+dotnet add package Dougong.Mcp       # MCP tool bridge
+dotnet add package Dougong.Acp       # ACP agent side
+dotnet add package Dougong.Kernel    # plugin kernel (usually pulled in by Hosting)
+```
+
+See the [embedding guide](docs/embedding-guide.md) for a 20-line minimal example.
+
 ## Getting Started
 
 ### Requirements
@@ -143,13 +179,19 @@ dotnet build Dougong.slnx -c Release
 dotnet test Dougong.slnx -c Release --no-build
 ```
 
-### Packaging
+### Packaging and publishing
 
 ```bash
 dotnet pack Dougong.slnx -c Release --output ./artifacts/packages
 ```
 
-The API is still experimental. Before using `Dougong.Kernel`, read the status board and the architecture doc, and trust the actual API and test results over this README.
+To publish to nuget.org use `bash scripts/publish-nuget.sh` (run with `--dry-run` first).
+It pushes in dependency order, stops on the first failure, and never reads or prints the
+API key (taken only from the `NUGET_API_KEY` environment variable).
+
+> **Compatibility**: the project is `0.x` and **makes no backward-compatibility promise**,
+> but every public API change is caught by ApiCompat and recorded in
+> [CHANGELOG](CHANGELOG.md). Rules in [compat policy](docs/compat-policy.md).
 
 ## Documentation
 

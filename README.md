@@ -32,11 +32,12 @@
 
 ## 当前状态
 
-目标框架 `net10.0`，版本 `0.1.0-alpha.1`。**M0–M3 已全部完成**，四条 M3 完成判据均达成
-（依据见 [实施状态](docs/status.md) 与 [M3 计划](docs/m3-plan.md) §九）。
+目标框架 `net10.0`，版本 `0.1.0-alpha.1`，**已发布到 nuget.org**（2026-10-28）。
+**M0–M3 已全部完成**，四条 M3 完成判据均达成（依据见 [实施状态](docs/status.md)
+与 [M3 计划](docs/m3-plan.md) §九）；I0 稳定化与发布的退出条件也已满足。
 
-**规模**：6 个产品工程、1 个内核测试工程（**187 项测试**）、7 个样例工程、
-**41 个确定性自检套件**（不需网络与 API Key）。
+**规模**：7 个产品工程、1 个内核测试工程（**187 项测试**）、9 个样例与探针工程、
+**44 个确定性自检套件**（不需网络与 API Key）。
 
 **已验证的关键能力**：
 
@@ -45,6 +46,9 @@
 - **Agent**：唯一工具执行入口 `ToolDispatcher`（schema 校验 → 审批 → 资源锁 → 执行）、
   JSONL 提交屏障、会话恢复与分支、上下文压缩、工具结果长度限制（只裁模型上下文，
   日志保持完整）、计划保护（压缩时不摘要当前计划）
+- **Hosting**：内核接线（插件注册、租约适配、服务解析）。CLI 与未来的 Desktop
+  共用这一层，避免各写一遍——那类重复的出错方式是静默的（注册顺序、
+  accessor 与裸实例、异常清理），不会当场报错
 - **Ai**：三种线协议连接器（chat-completions / responses / anthropic）、
   方言差异收口在 `WireCompat`、用量记账
 - **Mcp**：远端工具桥接与变化检测（annotations 不作授权依据）
@@ -59,7 +63,8 @@
 [验收 1 报告](docs/skill-l1-acceptance-1.md)——该结论仅适用于被测模型与任务集。
 
 **尚未做**：`Dougong.Telemetry`（OTel 导出）、断电级持久化验证、
-ACP Registry 上架（需先开源 + 实现 Agent/Terminal Auth，见[计划](docs/plan.md) §六）。
+ACP Registry 上架（仓库已开源，剩认证方式一条：Registry 只接受 OAuth 或终端交互认证，
+而本项目只有环境变量认证，见[计划](docs/plan.md) §六）。
 完整清单按"有前置条件 / 已判定不做 / 外部边界 / 刻意划范围"四类分，见[实施状态](docs/status.md)。
 
 ## 为什么是 Dougong
@@ -124,6 +129,36 @@ Dougong 关注的是 Agent 的**承托层**，而不是某一个模型或某一�
 | `Dougong.Cli` | 参考宿主：REPL + `--acp` + `--doctor` + `--report` | **完成**（工具，非库，不在 ApiCompat 范围） |
 | `Dougong.Telemetry` | OpenTelemetry 桥接 | 未开始（指标已用 BCL `Meter` 暴露，缺 exporter） |
 
+## 安装
+
+**命令走工具**（不需要 clone 仓库）：
+
+```bash
+dotnet tool install --global Dougong.Cli
+dougong --doctor      # 先确认环境，它会逐项检查并给出下一步
+dougong               # 开始对话（需要配置模型）
+```
+
+**装的是包 `Dougong.Cli`，命令是 `dougong`。** 两个名字不一样是刻意的：
+包名跟 `Dougong.*` 命名约定，命令名短。
+
+> `0.1.0-alpha.1` 的命令功能是完整的（`--doctor`、`--report`、`--help`、REPL、
+> `--acp` 都实测过，行为由 44 个自检套件钉住），但**终端呈现与提示文案仍在打磨**，
+> 后续版本会变。
+
+**作为库用**（在 .NET 工程里引用）：
+
+```bash
+dotnet add package Dougong.Agent     # 运行能力：循环、工具派发、会话、压缩
+dotnet add package Dougong.Hosting   # 接内核：插件注册、租约适配（CLI/Desktop 都该用）
+dotnet add package Dougong.Ai        # 模型连接（三种线协议）
+dotnet add package Dougong.Mcp       # MCP 工具桥接
+dotnet add package Dougong.Acp       # ACP Agent 端
+dotnet add package Dougong.Kernel    # 插件内核（通常由 Hosting 带入）
+```
+
+20 行的最小嵌入示例见 [嵌入指南](docs/embedding-guide.md)。
+
 ## 快速开始
 
 **完全没写过 .NET 或没写过代码？** 先看 [从零开始：第一次动手](docs/getting-started.md)
@@ -150,18 +185,23 @@ dotnet test Dougong.slnx -c Release --no-build
 运行器，因此 `dotnet test` 走新体验，不需要 VSTest adapter。
 
 ```bash
-# 全部确定性自检套件（当前 41 套，不联网、不需要 API Key）
+# 全部确定性自检套件（当前 44 套，不联网、不需要 API Key）
 # 脚本会先单独重建 spike——它不在 solution 里，全量构建不会重建它
 bash scripts/all-checks.sh
 ```
 
-### 打包
+### 打包与发布
 
 ```bash
 dotnet pack Dougong.slnx -c Release --output ./artifacts/packages
 ```
 
-当前 API 仍处于实验阶段。使用 `Dougong.Kernel` 前，请先阅读状态板和架构文档，并以实际 API 与测试结果为准。
+要发布到 nuget.org 用 `bash scripts/publish-nuget.sh`（先 `--dry-run` 看会推什么）。
+它按依赖顺序推、失败即停、不读不打印 API key（只从 `NUGET_API_KEY` 环境变量取）。
+
+> **兼容性**：项目处于 `0.x`，**不做向后兼容承诺**，但每条公开 API 变更都会被
+> ApiCompat 自动检出并记入 [CHANGELOG](CHANGELOG.md)。规则见
+> [兼容策略](docs/compat-policy.md)。
 
 ## 写第一个插件
 
