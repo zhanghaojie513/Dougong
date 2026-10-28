@@ -1,3 +1,4 @@
+using Dougong.Agent;
 using Spectre.Console;
 
 namespace Dougong.Cli.Terminal;
@@ -95,6 +96,56 @@ public static class Output
         Console.Error.WriteLine(value);
     }
 
+    /// <summary>
+    /// 一轮结束后统一列出本轮的工具调用，并给出一行汇总。
+    /// </summary>
+    /// <remarks>
+    /// <b>只在 SupportsDecoration 档调用</b>。Plain 档不走这里——那一档的工具行
+    /// 必须插在流式文本中间的原位置，与改造前逐字一致。
+    /// <para>
+    /// <b>为什么延后输出</b>：工具行原本插在流式文本里，把一段完整的回答切成几块。
+    /// 延后之后回答连续，工具调用集中列在下方，看起来像"说完话再做动作"。
+    /// </para>
+    /// </remarks>
+    public static void PrintToolSummary(
+        IReadOnlyList<(string ToolId, ToolDispatchResult Result)> tools,
+        TimeSpan elapsed)
+    {
+        ArgumentNullException.ThrowIfNull(tools);
+
+        // 空行必须无条件打：正文是流式输出的，末尾不带换行，
+        // 少这一行会让汇总直接贴在回答后面（实测踩到过）。
+        Line();
+
+        foreach (var (toolId, result) in tools)
+        {
+            var marker = result.Outcome switch
+            {
+                ToolCallOutcome.Succeeded => "✓",
+                ToolCallOutcome.Failed => "✗",
+                _ => "·",
+            };
+
+            var line = $"  {marker} {toolId} · {result.Outcome}";
+            if (result.Diagnostic is { Length: > 0 } diagnostic)
+                line += $"（{diagnostic}）";
+
+            switch (result.Outcome)
+            {
+                case ToolCallOutcome.Succeeded: Ok(line); break;
+                case ToolCallOutcome.Failed: Error(line); break;
+                default: Muted(line); break;
+            }
+        }
+
+        // 汇总行：本轮耗时 + 工具数。
+        var seconds = elapsed.TotalSeconds;
+        var summary = tools.Count > 0
+            ? $"  ─ {seconds:F1}s · {tools.Count} 个工具"
+            : $"  ─ {seconds:F1}s";
+        Muted(summary + $" {new string('─', Math.Max(0, Math.Min(20, _capability.Width - summary.Length - 4)))}");
+    }
+
     // ── 实现 ─────────────────────────────────────────────────
 
     /// <summary>
@@ -114,8 +165,28 @@ public static class Output
 
         // Spectre 会把 markup 里的方括号当标签解释。文本内容必须转义，
         // 否则诸如 "[已压缩 8 条]" 这样的输出会被吞掉或报错。
-        AnsiConsole.MarkupLine($"[{color}]{Escape(value)}[/]");
+        //
+        // **不能用静态 AnsiConsole**：它在首次使用时缓存了当时的 Console.Out，
+        // 之后 Console.SetOut 换流对它无效——表现为"第一次输出正常，之后全部丢失"。
+        // 实测确认（2026-10-29）。这里每次新建实例并绑定当前 Console.Out。
+        CreateConsole().MarkupLine($"[{color}]{Escape(value)}[/]");
     }
+
+    /// <summary>
+    /// 新建一个绑定到当前 <see cref="Console.Out"/> 的 Spectre 控制台。
+    /// </summary>
+    /// <remarks>
+    /// 每次输出都新建，代价是一次小对象分配；换来的是"流被替换后仍然输出到正确的流"。
+    /// 静态 <c>AnsiConsole</c> 会在首次访问时记住当时的 writer，此后不再跟随
+    /// <c>Console.SetOut</c>——那种行为在测试里会表现为输出凭空消失。
+    /// </remarks>
+    private static IAnsiConsole CreateConsole() =>
+        AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Out = new AnsiConsoleOutput(Console.Out),
+            ColorSystem = ColorSystemSupport.Detect,
+            Interactive = InteractionSupport.No,
+        });
 
     /// <summary>
     /// 转义 Spectre markup 的特殊字符。

@@ -1,3 +1,4 @@
+using Dougong.Agent;
 using Dougong.Cli.Terminal;
 
 namespace Dougong.Agent.Comparison;
@@ -26,6 +27,10 @@ public static class TerminalChecks
         failures += Check("width-read-failure-is-plain", WidthFailureIsPlain);
         failures += Check("plain-tier-has-no-decoration", PlainHasNoDecoration);
         failures += Check("plain-tier-output-is-verbatim", PlainOutputIsVerbatim);
+        failures += Check("tool-summary-lists-each-call", ToolSummaryListsCalls);
+        failures += Check("tool-summary-reports-failures-distinctly", ToolSummaryMarksFailures);
+        failures += Check("plain-tier-has-no-summary", PlainHasNoSummary);
+        failures += Check("summary-starts-on-new-line-without-tools", SummaryStartsOnNewLine);
 
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
@@ -180,5 +185,134 @@ public static class TerminalChecks
 
         Console.WriteLine($"FAIL {name}: {failure}");
         return 1;
+    }
+
+    /// <summary>延后输出时，每个工具调用都要出现一次。</summary>
+    private static string? ToolSummaryListsCalls()
+    {
+        return CaptureWithTier(TerminalTier.Rich, 120, () =>
+        {
+            Output.PrintToolSummary(
+            [
+                ("read_file", ToolDispatchResultFor("read_file", ToolCallOutcome.Succeeded)),
+                ("write_file", ToolDispatchResultFor("write_file", ToolCallOutcome.Succeeded)),
+            ], TimeSpan.FromSeconds(4.2));
+        }, text =>
+        {
+            if (!text.Contains("read_file", StringComparison.Ordinal))
+                return "汇总里没有 read_file";
+            if (!text.Contains("write_file", StringComparison.Ordinal))
+                return "汇总里没有 write_file";
+            if (!text.Contains("4.2s", StringComparison.Ordinal))
+                return "汇总里没有耗时";
+            return null;
+        });
+    }
+
+    /// <summary>失败必须与成功在文本上可区分，而不是只靠颜色。</summary>
+    /// <remarks>
+    /// 只看颜色是不行的：Plain 档没有颜色，色弱用户也分不出。
+    /// 所以断言要求成功与失败用的是**不同的标记字符**。
+    /// </remarks>
+    private static string? ToolSummaryMarksFailures()
+    {
+        return CaptureWithTier(TerminalTier.Rich, 120, () =>
+        {
+            Output.PrintToolSummary(
+            [
+                ("ok_tool", ToolDispatchResultFor("ok_tool", ToolCallOutcome.Succeeded)),
+                ("bad_tool", ToolDispatchResultFor("bad_tool", ToolCallOutcome.Failed)),
+            ], TimeSpan.FromSeconds(1));
+        }, text =>
+        {
+            var lines = text.Split(Environment.NewLine);
+            var okLine = lines.FirstOrDefault(l => l.Contains("ok_tool", StringComparison.Ordinal));
+            var badLine = lines.FirstOrDefault(l => l.Contains("bad_tool", StringComparison.Ordinal));
+
+            if (okLine is null) return "找不到成功工具行";
+            if (badLine is null) return "找不到失败工具行";
+
+            var okMark = okLine.TrimStart().FirstOrDefault(c => c is '✓' or '✗' or '·');
+            var badMark = badLine.TrimStart().FirstOrDefault(c => c is '✓' or '✗' or '·');
+
+            if (okMark != '✓') return $"成功行标记应为 ✓，实际 '{okMark}'";
+            if (badMark != '✗') return $"失败行标记应为 ✗，实际 '{badMark}'";
+
+            return null;
+        });
+    }
+
+    /// <summary>
+    /// Plain 档不调用 PrintToolSummary——它的工具行在原来那个位置，
+    /// 由调用方在事件循环里直接输出。
+    /// </summary>
+    /// <remarks>
+    /// 这条钉住的是"分支判据"：<c>deferToolLines = SupportsDecoration</c>。
+    /// 如果哪天有人把判据改成恒真，Plain 档的 diff 会立刻变红——
+    /// 但那时已经很难定位到具体原因，不如在这里直接断言。
+    /// </remarks>
+    private static string? PlainHasNoSummary()
+    {
+        var plain = new TerminalCapability(TerminalTier.Plain, 0, IsRedirected: true);
+        return plain.SupportsDecoration
+            ? "Plain 档不应启用延后输出（SupportsDecoration 应为 false）"
+            : null;
+    }
+
+    private static ToolDispatchResult ToolDispatchResultFor(string toolId, ToolCallOutcome outcome) =>
+        new($"inv-{toolId}", toolId, outcome);
+
+    /// <summary>在指定档位下执行一段输出并捕获文本，交给断言检查。</summary>
+    private static string? CaptureWithTier(TerminalTier tier, int width, Action action, Func<string, string?> assert)
+    {
+        var originalOut = Console.Out;
+        var originalCap = Output.Capability;
+        try
+        {
+            Output.OverrideCapability(new TerminalCapability(tier, width, IsRedirected: false));
+            var buffer = new StringWriter();
+            Console.SetOut(buffer);
+            action();
+            return assert(buffer.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            Output.OverrideCapability(originalCap);
+        }
+    }
+
+    /// <summary>
+    /// 没有工具调用的轮次，汇总行必须另起一行，不能贴在正文后面。
+    /// </summary>
+    /// <remarks>
+    /// 真实缺陷（2026-10-29 复检发现）：正文是流式输出的，末尾不带换行；
+    /// 原来的空行只写在"有工具"那个分支里，于是无工具的轮次输出成
+    /// <c>回答。  ─ 0.8s ────</c>——汇总直接黏在正文末尾。
+    /// <para>
+    /// 这条检查写出来的理由：原来的三条检查都用了非空的工具列表，
+    /// **空列表这个分支根本没被覆盖**。
+    /// </para>
+    /// </remarks>
+    private static string? SummaryStartsOnNewLine()
+    {
+        return CaptureWithTier(TerminalTier.Rich, 100, () =>
+        {
+            Output.Text("  回答正文。");
+            Output.PrintToolSummary([], TimeSpan.FromSeconds(0.8));
+        }, text =>
+        {
+            var lines = text.Split(Environment.NewLine);
+            if (lines.Length < 2)
+                return $"汇总行没有另起一行，实际内容：[{text}]";
+
+            if (!lines[0].Contains("回答正文", StringComparison.Ordinal))
+                return $"第一行应只有正文，实际：[{lines[0]}]";
+
+            if (!lines[1].Contains("0.8s", StringComparison.Ordinal))
+                return $"第二行应是汇总，实际：[{lines[1]}]";
+
+            return null;
+        });
     }
 }

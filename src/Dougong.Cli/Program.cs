@@ -337,6 +337,16 @@ public static class Program
             Log.Debug($"turn-{turn} 开始，历史 {messages.Count} 条，输入 {input.Length} 字符");
             var request = new AgentRunRequest(sessionId, $"turn-{turn}", messages, input);
             var assistantText = new StringBuilder();
+            var turnStartedAt = System.Diagnostics.Stopwatch.StartNew();
+
+            // 工具行是否延后到本轮流结束再输出。
+            //
+            // **Plain 档必须为 false**：那一档的输出要与改造前逐字一致，
+            // 包括工具行插在流式文本中间的这个位置。改成延后输出会让 diff 变红。
+            //
+            // Rich/Narrow 档为 true：工具调用不再打断正文，整轮结束后统一列出。
+            var deferToolLines = Output.Capability.SupportsDecoration;
+            var deferredTools = new List<(string ToolId, ToolDispatchResult Result)>();
 
             try
             {
@@ -350,11 +360,23 @@ public static class Program
                             break;
 
                         case AgentEvent.ToolCallRequested call:
+                            if (deferToolLines)
+                            {
+                                // 延后档：正文不被打断，这里只记录。
+                                continue;
+                            }
+
                             Output.Line();
                             Output.Line($"  → 调用 {call.ToolId} {Truncate(call.Arguments.GetRawText())}");
                             break;
 
                         case AgentEvent.ToolCallCompleted done:
+                            if (deferToolLines)
+                            {
+                                deferredTools.Add((done.Result.ToolId, done.Result));
+                                continue;
+                            }
+
                             Output.Line($"  ← {done.Result.Outcome}" +
                                 (done.Result.Diagnostic is { } d ? $"（{d}）" : string.Empty));
                             break;
@@ -379,6 +401,12 @@ public static class Program
             {
                 Output.Line();
                 Console.Error.WriteLine("  [已取消]");
+            }
+
+            // 延后档：本轮流结束后统一列出工具行 + 一行汇总。
+            if (deferToolLines)
+            {
+                Output.PrintToolSummary(deferredTools, turnStartedAt.Elapsed);
             }
 
             if (assistantText.Length > 0)
