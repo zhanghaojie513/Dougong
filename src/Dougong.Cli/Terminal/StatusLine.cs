@@ -169,7 +169,7 @@ public static class StatusLine
         if (width <= 0) return content;
 
         // 可用宽度减 1：最后一列留空，杜绝自动折行。
-        var limit = width;
+        var limit = width - 1;
         var visible = DisplayWidth(content);
 
         if (visible > limit) content = TruncateToWidth(content, limit);

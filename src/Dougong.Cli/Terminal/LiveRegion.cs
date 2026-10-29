@@ -273,7 +273,7 @@ public sealed class LiveRegion : IDisposable
     {
         if (width <= 1) return text;
 
-        var limit = width;
+        var limit = width - 1;
         var used = 0;
         var builder = new System.Text.StringBuilder(text.Length);
 

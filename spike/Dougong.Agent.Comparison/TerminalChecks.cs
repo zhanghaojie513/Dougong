@@ -1314,7 +1314,6 @@ public static class TerminalChecks
                 var display = DisplayWidthOf(line);
 
                 // 显示宽度必须严格小于终端宽度：等于就会折行。
-                Console.WriteLine($"[diag] w={width} display={display} len={line.Length}");
                 if (display >= width)
                     return $"宽 {width} 的行占了 {display} 格（写满最后列会折行）：[{line.TrimEnd()}]";
             }
@@ -1352,27 +1351,31 @@ public static class TerminalChecks
     private static string? BinaryNotStale()
     {
         var root = FindRepoRoot();
-        var assembly = Path.Combine(
-            root, "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
 
-        if (!File.Exists(assembly)) return $"找不到 {assembly}（先构建）";
+        string[] projects = ["Dougong.Cli", "Dougong.Agent", "Dougong.Ai"];
 
-        var built = File.GetLastWriteTimeUtc(assembly);
-
-        foreach (var dir in new[] { "Dougong.Cli", "Dougong.Agent", "Dougong.Ai" })
+        foreach (var project in projects)
         {
-            var source = Path.Combine(root, "src", dir);
+            var source = Path.Combine(root, "src", project);
+            var assembly = Path.Combine(source, "bin", "Release", "net10.0", project + ".dll");
+
             if (!Directory.Exists(source)) continue;
+            if (!File.Exists(assembly)) return $"找不到 {project}.dll（先构建）";
+
+            var built = File.GetLastWriteTimeUtc(assembly);
 
             foreach (var file in Directory.EnumerateFiles(source, "*.cs", SearchOption.AllDirectories))
             {
                 if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
                         StringComparison.Ordinal)) continue;
 
+                // **逐个程序集与它自己的源码比**，不能拿 Cli.dll 比 Ai 的源码：
+                // 改 Ai 时 Ai.dll 会重建、Cli.dll 不必重建（增量构建的正常行为），
+                // 那样比会误报。第一版就是这么写的，立刻在正常构建上报了假错。
                 var modified = File.GetLastWriteTimeUtc(file);
                 if (modified > built)
                 {
-                    return $"{Path.GetFileName(file)} 比 Dougong.Cli.dll 新 "
+                    return $"{project}: {Path.GetFileName(file)} 比 {project}.dll 新 "
                         + $"（源码 {modified:HH:mm:ss}，程序集 {built:HH:mm:ss}）——"
                         + "现在跑的是旧构建，任何结论都不作数";
                 }
