@@ -70,7 +70,7 @@ public static class Program
 
         if (args.Contains("--version") || args.Contains("-v"))
         {
-            Output.Line("dougong 0.1.0-alpha.1");
+            Output.Line($"dougong {ProductInfo.Version}");
             return 0;
         }
 
@@ -225,13 +225,13 @@ public static class Program
         // 首页三档：Rich 出大字，Narrow 出单行，Plain 输出与改造前逐字一致的原文。
         // 原文由这里传入而不是 Banner 自己拼——"兼容"这件事不能靠猜。
         Banner.Print(
-            version: "0.1.0-alpha.1",
+            version: ProductInfo.Version,
             model: config.Model,
             protocol: config.Protocol.ToString(),
             workspace: workspace,
             plainLines:
             [
-                $"dougong 0.1.0-alpha.1  模型={config.Model}  协议={config.Protocol}",
+                $"dougong {ProductInfo.Version}  模型={config.Model}  协议={config.Protocol}",
                 $"工作区={workspace}",
                 $"会话={sessionPath}",
                 $"shell 工具={(shellEnabled ? "已启用" : "未启用（DOUGONG_SHELL=1 开启）")}",
@@ -610,7 +610,7 @@ public static class Program
     /// </remarks>
     private static void PrintHelp()
     {
-        Output.Line("dougong 0.1.0-alpha.1 —— .NET Agent Harness 参考宿主");
+        Output.Line($"dougong {ProductInfo.Version} —— .NET Agent Harness 参考宿主");
         Output.Line();
         Output.Line("用法：");
         Output.Line("  dougong                      启动对话（需要 provider 配置）");

@@ -298,7 +298,7 @@ public sealed class AcpAgentHost
             {
                 ["name"] = "dougong",
                 ["title"] = "Dougong",
-                ["version"] = "0.1.0-alpha.1",
+                ["version"] = AcpVersion.Value,
             },
             ["authMethods"] = new JsonArray(),
         };

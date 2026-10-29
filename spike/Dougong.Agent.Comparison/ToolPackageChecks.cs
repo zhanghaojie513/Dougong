@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
+using System.Text.Json;
 
 namespace Dougong.Agent.Comparison;
 
@@ -36,6 +37,8 @@ public static class ToolPackageChecks
         failures += Check("gitignore-covers-pack-output", PackOutputIgnored);
         failures += Check("docs-pin-tool-version-on-install", DocsPinVersion);
         failures += Check("readme-test-count-matches-reality", ReadmeTestCount);
+        failures += Check("no-hardcoded-version-in-sources", NoHardcodedVersion);
+        failures += await CheckAsync("version-is-consistent-across-outputs", VersionConsistentAsync);
 
         Console.WriteLine(failures == 0
             ? "TOOL-PACKAGE: ALL PASS"
@@ -439,5 +442,146 @@ public static class ToolPackageChecks
         }
 
         return total;
+    }
+    /// <summary>
+    /// 源码里不得出现硬编码的版本文本。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条防的是一个发版级事故</b>：版本号曾硬编码在 6 处
+    /// （CLI 5 处、ACP 1 处）。只改 <c>Directory.Build.props</c> 时，
+    /// `dougong --version` 会报旧版本——而用户和脚本正是靠它判断装没装对。
+    /// <para>
+    /// 判据是"源码里不出现形如 <c>N.N.N-xxx</c> 的字符串字面量"，
+    /// **注释除外**（文档里举例是合理的）。用行级判断而不是全文匹配，
+    /// 就是为了不误报注释。
+    /// </para>
+    /// </remarks>
+    private static string? NoHardcodedVersion()
+    {
+        var root = FindRepoRoot();
+        var pattern = new System.Text.RegularExpressions.Regex(
+            @"\d+\.\d+\.\d+-(alpha|beta|rc|preview)");
+
+        foreach (var dir in new[] { "src", "spike", "samples" })
+        {
+            var path = Path.Combine(root, dir);
+            if (!Directory.Exists(path)) continue;
+
+            foreach (var file in Directory.EnumerateFiles(path, "*.cs", SearchOption.AllDirectories))
+            {
+                if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                        StringComparison.Ordinal)) continue;
+
+                var lines = File.ReadAllLines(file);
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    var line = lines[i];
+                    var trimmed = line.TrimStart();
+
+                    // 注释行放过：文档与示例里写版本号是正常的。
+                    if (trimmed.StartsWith("//", StringComparison.Ordinal)
+                        || trimmed.StartsWith("*", StringComparison.Ordinal)
+                        || trimmed.StartsWith("/*", StringComparison.Ordinal)) continue;
+
+                    if (!pattern.IsMatch(line)) continue;
+
+                    // 行内注释里提到版本号不算违规。
+                    if (line.Contains("///", StringComparison.Ordinal)) continue;
+
+                    return $"{Path.GetFileName(file)}:{i + 1} 硬编码了版本号：{trimmed}";
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// `--version`、`--help` 首行、ACP <c>agentInfo.version</c> 三者必须一致。
+    /// </summary>
+    /// <remarks>
+    /// 三条路径分别从不同的程序集读版本（CLI 自己、CLI 自己、Acp）。
+    /// 只要有人把它们改回字面量，这里就会不等——而单看任何一条都看不出来。
+    /// </remarks>
+    private static async Task<string?> VersionConsistentAsync()
+    {
+        var version = await RunCliAsync(["--version"], clearProviderConfig: true);
+        if (version.ExitCode != 0) return $"--version 退出码 {version.ExitCode}";
+
+        var declared = version.Stdout.Trim().Split(' ').LastOrDefault();
+        if (string.IsNullOrWhiteSpace(declared)) return $"--version 输出无法解析：{Trim(version.Stdout)}";
+
+        var help = await RunCliAsync(["--help"], clearProviderConfig: true);
+        var helpFirst = help.Stdout.ReplaceLineEndings("\n").Split('\n')[0];
+        if (!helpFirst.Contains(declared, StringComparison.Ordinal))
+            return $"--help 首行的版本与 --version 不一致：{Trim(helpFirst)} vs {declared}";
+
+        var acp = await RunAcpInitializeAsync();
+        if (acp is null) return "ACP initialize 没有返回 agentInfo.version";
+        if (acp != declared)
+            return $"ACP agentInfo.version={acp} 与 --version={declared} 不一致";
+
+        return null;
+    }
+
+    /// <summary>起一次 ACP，取 agentInfo.version。</summary>
+    private static async Task<string?> RunAcpInitializeAsync()
+    {
+        var cliDll = Path.Combine(
+            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+
+        if (!File.Exists(cliDll)) return null;
+
+        var startInfo = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+        startInfo.ArgumentList.Add(cliDll);
+        startInfo.ArgumentList.Add("--acp");
+
+        // ACP 模式要求 provider 配置存在，否则起不来；给占位值即可，
+        // 这条检查只读 initialize 的响应，不发任何模型请求。
+        startInfo.Environment["DOUGONG_PROVIDER_BASE"] = "https://example.invalid";
+        startInfo.Environment["DOUGONG_PROVIDER_MODEL"] = "probe";
+        startInfo.Environment["DOUGONG_PROVIDER_KEY"] = "probe";
+
+        using var process = new Process { StartInfo = startInfo };
+        process.Start();
+
+        await process.StandardInput.WriteLineAsync(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1}}");
+        await process.StandardInput.FlushAsync();
+
+        var readLine = process.StandardOutput.ReadLineAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var completed = await Task.WhenAny(readLine, Task.Delay(Timeout.Infinite, timeout.Token));
+
+        if (completed != readLine)
+        {
+            try { process.Kill(entireProcessTree: true); } catch (Exception) { }
+            return null;
+        }
+
+        var line = await readLine;
+        try { process.Kill(entireProcessTree: true); } catch (Exception) { }
+
+        if (string.IsNullOrWhiteSpace(line)) return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            return document.RootElement
+                .GetProperty("result").GetProperty("agentInfo").GetProperty("version")
+                .GetString();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 }

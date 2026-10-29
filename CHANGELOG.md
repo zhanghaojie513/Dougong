@@ -21,6 +21,10 @@
 
 ## [Unreleased]
 
+（暂无）
+
+## [0.1.0-alpha.2] — 2026-10-29
+
 ### Added
 
 - **新包 `Dougong.Hosting`**：把内核接线从 `Dougong.Cli` 抽出来，
