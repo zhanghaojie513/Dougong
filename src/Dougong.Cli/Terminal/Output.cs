@@ -24,8 +24,24 @@ public static class Output
 {
     private static TerminalCapability _capability = TerminalCapability.Detect();
 
+    private static LiveRegion? _region;
+
     /// <summary>当前终端能力。测试与诊断可读。</summary>
     public static TerminalCapability Capability => _capability;
+
+    /// <summary>
+    /// 底部固定区域。启动时设置一次，之后所有输出自动与它协作。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么放在这里而不是让调用方自己协调</b>：底部区域一旦存在，
+    /// 任何直接写终端的动作都会把它的位置挤乱。把"擦掉再写、写完重画"
+    /// 挂在唯一出口上，调用方（包括第三方插件打日志）就不需要知道它存在。
+    /// </remarks>
+    public static LiveRegion? LiveRegion
+    {
+        get => _region;
+        set => _region = value;
+    }
 
     /// <summary>
     /// 覆盖探测结果。**仅供测试**——真实运行不要调。
@@ -44,14 +60,14 @@ public static class Output
     public static void Text(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        Console.Write(value);
+        Guard(() => Console.Write(value));
     }
 
     /// <summary>输出一行正文。</summary>
     public static void Line(string value = "")
     {
         ArgumentNullException.ThrowIfNull(value);
-        Console.WriteLine(value);
+        Guard(() => Console.WriteLine(value));
     }
 
     /// <summary>主色文本（版本号、模型名这类）。</summary>
@@ -94,6 +110,21 @@ public static class Output
     {
         ArgumentNullException.ThrowIfNull(value);
         Console.Error.WriteLine(value);
+    }
+
+    /// <summary>
+    /// 写入原始控制序列（光标定位、清行）。**只给 <see cref="LiveRegion"/> 用。**
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么收到这里而不是让 LiveRegion 自己写 Console</b>：架构边界测试要求
+    /// CLI 里所有可见输出都经过本类，一个出口才好审计"到底往终端写了什么"。
+    /// 这条路径不经 <see cref="Guard"/>：它本身就是底部区域的重绘动作，
+    /// 再加一层擦除会造成递归。
+    /// </remarks>
+    internal static void Control(string sequence)
+    {
+        ArgumentNullException.ThrowIfNull(sequence);
+        Console.Write(sequence);
     }
 
     /// <summary>
@@ -159,7 +190,7 @@ public static class Output
     {
         if (!_capability.SupportsDecoration || !decorate)
         {
-            Console.WriteLine(value);
+            Guard(() => Console.WriteLine(value));
             return;
         }
 
@@ -169,7 +200,29 @@ public static class Output
         // **不能用静态 AnsiConsole**：它在首次使用时缓存了当时的 Console.Out，
         // 之后 Console.SetOut 换流对它无效——表现为"第一次输出正常，之后全部丢失"。
         // 实测确认（2026-10-29）。这里每次新建实例并绑定当前 Console.Out。
-        CreateConsole().MarkupLine($"[{color}]{Escape(value)}[/]");
+        Guard(() => CreateConsole().MarkupLine($"[{color}]{Escape(value)}[/]"));
+    }
+
+    /// <summary>
+    /// 执行一次输出，期间让底部区域让位。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是"底部区域不被打乱"的唯一保证</b>：区域画在光标下方，正文写出来
+    /// 就会跑到区域上面，区域随即错位。所以在每次写之前擦掉、写之后重画。
+    /// 没有活动区域时（Plain 档、重定向）两条都是空操作，不产生任何额外输出。
+    /// </remarks>
+    private static void Guard(Action write)
+    {
+        var region = _region;
+
+        if (region is null || !region.IsActive)
+        {
+            write();
+            return;
+        }
+
+        // 擦、写、画必须是同一段临界区，否则后台刷新会插进正文中间。
+        region.RunExclusive(write);
     }
 
     /// <summary>

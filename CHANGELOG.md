@@ -33,6 +33,23 @@
   [host-layering-decision.md](docs/host-layering-decision.md) §4.5。
   ApiCompat 已覆盖（基线 `artifacts/baseline/Dougong.Hosting.nupkg`）。
 
+- **底部活动行与状态栏**（CLI，真终端下）：等待模型响应时显示当前阶段、
+  已耗时、模型名、上下文占用率与本轮耗时。**没有任何"等待模型"的 AgentEvent**，
+  所以它由事件加计时混合驱动——指令发出瞬间亮起，不用等第一个字。
+  - 输出被重定向时**完全不启用**（实测 `Console.SetCursorPosition` 抛
+    `IOException`，且写控制序列会污染全部 44 个自检套件的断言）
+  - 正文流式输出期间整块收起，不与正文抢光标
+  - `DOUGONG_TUI=0` 可关闭
+  - 不做全屏（`AlternateScreen`）：历史仍归终端自己的 scrollback 管理
+
+- **`/status` 命令**：显示本次会话的完整配置——会话路径、工作区、shell 开关、
+  压缩阈值、L1 记忆、MCP server 列表、终端档位、底部活动区是否生效。
+  首页为保持简洁折叠掉的信息都在这里。所有值**读实际状态**而不是重算环境变量。
+
+- **终端宽度按显示宽度计算**：中文在等宽终端占两格，此前按 `String.Length`
+  算会让补白溢出，整行折行后重绘时上一帧擦不干净（状态栏越用越乱）。
+  现在 CJK 与全角符号按 2 格计，活动行与状态栏在所有宽度下都不超出终端。
+
 ### Fixed
 
 - **未知命令行参数不再被静默忽略**。此前 `dougong --docter`（拼错 `--doctor`）

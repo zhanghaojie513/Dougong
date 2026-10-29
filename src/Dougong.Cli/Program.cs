@@ -29,6 +29,8 @@ namespace Dougong.Cli;
 /// <item><c>DOUGONG_MEMORY</c> 可选：启用 L1 偏好记忆。<c>1</c>/<c>true</c> 用默认目录，
 /// 或直接给目录路径。**默认关闭**——启用意味着历史偏好会进入后续每次 prompt，
 /// 可能发给远端模型，因此必须显式开启。开启后 <c>/memory</c> 可查看全部产物</item>
+/// <item><c>DOUGONG_TUI</c> 可选：设为 <c>0</c> 关闭底部活动行。真终端里默认开启，
+/// 输出被重定向时无条件关闭（那里写控制序列只会污染输出）</item>
 /// </list>
 /// 会话参数：
 /// <list type="bullet">
@@ -311,6 +313,22 @@ public static class Program
         var messages = new List<AgentMessage>(history);
         var turn = 0;
 
+        // 底部固定区域（活动行 + 状态栏）。三个条件同时满足才启用：
+        // 富终端、没被 DOUGONG_TUI=0 关掉、输出没被重定向。
+        // 重定向那一层由 LiveRegion.Create 内部兜住，这里只表达用户意图。
+        var tuiRequested = Environment.GetEnvironmentVariable("DOUGONG_TUI") is not ("0" or "false");
+        using var liveRegion = LiveRegion.Create(
+            Output.Capability, force: tuiRequested ? null : false);
+
+        await using var activity = new ActivityReporter(
+            liveRegion,
+            config.Model,
+            composition.ContextWindow,
+            () => TokensUsed(ledger, sessionId));
+
+        // 让所有正文输出自动与底部区域协作：写之前擦、写之后画。
+        Output.LiveRegion = liveRegion;
+
         while (true)
         {
             Output.Text("> ");
@@ -350,8 +368,14 @@ public static class Program
 
             try
             {
+                // 必须在拉取第一个事件之前启动：等待模型是整轮最长的静默段，
+                // 而这段时间一个事件都不会来。放在循环里就永远不会按时亮起。
+                activity.StartTurn();
+
                 await foreach (var evt in runtime.RunAsync(request))
                 {
+                    activity.OnEvent(evt);
+
                     switch (evt)
                     {
                         case AgentEvent.TextDelta delta:
@@ -403,6 +427,9 @@ public static class Program
                 Console.Error.WriteLine("  [已取消]");
             }
 
+            // 先收起底部区域再打汇总：区域还在时写正文，光标位置会被它挤乱。
+            await activity.FinishTurnAsync();
+
             // 延后档：本轮流结束后统一列出工具行 + 一行汇总。
             if (deferToolLines)
             {
@@ -429,6 +456,7 @@ public static class Program
                 return false;
 
             case "/help":
+                Output.Line("  /status   显示本次会话的完整配置（路径、开关、内核、MCP）");
                 Output.Line("  /exit     退出");
                 Output.Line("  /history  查看内存中的历史条数（会话日志以 JSONL 为准）");
                 Output.Line("  /where    显示当前会话文件");
@@ -450,6 +478,10 @@ public static class Program
 
             case "/usage":
                 PrintUsage(ledger, sessionId);
+                return true;
+
+            case "/status":
+                PrintStatus(sessionPath, sessionId, composition);
                 return true;
 
             default:
@@ -576,11 +608,65 @@ public static class Program
         Output.Line("  DOUGONG_SESSION_DIR        会话目录，默认 ~/.dougong/sessions");
         Output.Line("  DOUGONG_SHELL=1            启用 shell 工具（默认关闭）");
         Output.Line("  DOUGONG_MEMORY=1           启用 L1 偏好记忆（默认关闭）");
+        Output.Line("  DOUGONG_CONTEXT_WINDOW     上下文窗口，设置后启用历史压缩");
+        Output.Line("  DOUGONG_TUI=0              关闭底部活动行（默认在真终端里开启）");
         Output.Line("  DOUGONG_LOG=debug          分级日志：error/warn/info/debug");
         Output.Line();
-        Output.Line("对话中可用：/help  /exit  /usage  /where  /memory");
+        Output.Line("对话中可用：/help  /status  /exit  /usage  /where  /memory");
         Output.Line();
         Output.Line("文档：https://github.com/zhanghaojie513/Dougong");
+    }
+
+    /// <summary>
+    /// 状态栏用的已用 token 数。**没有数据时返回 null，不用 0 冒充。**
+    /// </summary>
+    /// <remarks>
+    /// provider 不报 usage 时显示 0 会让人以为"没花钱"，那是假信息。
+    /// 返回 null 后状态栏直接不显示占用率那一段。
+    /// </remarks>
+    private static int? TokensUsed(UsageLedger ledger, string sessionId)
+    {
+        var summary = ledger.Summarize(sessionId);
+        if (summary.UnreportedCalls > 0) return null;
+
+        var total = summary.InputTokens + summary.OutputTokens;
+        return total > 0 ? (int)Math.Min(int.MaxValue, total) : null;
+    }
+
+    /// <summary>
+    /// <c>/status</c>：本次会话的完整配置。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么要有它</b>：首页为了不啰嗦，把大量信息折叠掉了（会话路径、
+    /// 记忆开关、MCP 数量、终端档位）。用户在出问题时需要一处能看到**全部**
+    /// 生效配置的地方，而不必回头翻启动那一屏。
+    /// <para>
+    /// 所有值都**读实际状态**，不重算环境变量：写"按环境变量应该是 X"
+    /// 会和真实行为脱节，那正是这类命令最容易造出来的假信息。
+    /// </para>
+    /// </remarks>
+    private static void PrintStatus(string sessionPath, string sessionId, SessionComposition composition)
+    {
+        Output.Line($"  会话      : {sessionId}");
+        Output.Line($"  文件      : {sessionPath}");
+        Output.Line($"  工作区    : {composition.MemoryWorkspace}");
+        Output.Line($"  shell 工具: {(composition.ShellEnabled ? "已启用" : "未启用")}");
+        Output.Line($"  上下文压缩: {(composition.ContextWindow > 0
+            ? $"{composition.ContextWindow} tokens"
+            : "未启用")}");
+        Output.Line($"  L1 记忆   : {(composition.Memory is null ? "未启用" : "已启用")}");
+        Output.Line($"  MCP server: {composition.McpServers.Count} 个");
+
+        foreach (var server in composition.McpServers)
+            Output.Line($"    · {server.Name}");
+
+        var capability = Output.Capability;
+        Output.Line($"  终端      : {capability.Tier}（宽 {capability.Width}，"
+            + $"{(capability.IsRedirected ? "已重定向" : "交互")}）");
+
+        var tui = Environment.GetEnvironmentVariable("DOUGONG_TUI") is "0" or "false";
+        Output.Line($"  底部活动区: {(tui ? "已关闭（DOUGONG_TUI=0）" : capability.SupportsDecoration
+            ? "启用" : "不适用（当前档位）")}");
     }
 
     private static void PrintUsage(UsageLedger ledger, string sessionId)
