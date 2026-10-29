@@ -57,6 +57,8 @@ public static class TerminalChecks
         failures += Check("vt-replay-streaming-keeps-prompt-line", VtReplayPromptLine);
         failures += Check("vt-replay-region-does-not-reset-column", VtReplayColumn);
         failures += Check("live-region-skips-identical-repaint", RepaintSkipsIdentical);
+        failures += Check("clear-then-write-does-not-resurrect-region", ClearThenWrite);
+        failures += Check("stderr-line-does-not-collide-with-region", StderrDoesNotCollide);
 
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
@@ -828,6 +830,13 @@ public static class TerminalChecks
     /// <summary>
     /// 正文写入不能被区域覆盖——这是底部固定区域最容易出的问题。
     /// </summary>
+    /// <remarks>
+    /// <b>这条不再要求"写入后活动行仍可见"</b>：写入路径现在是"擦→写"，
+    /// 由刷新循环在下一个 tick 重画到新位置（写完后立刻在旧位置重画，
+    /// 会因为光标已被正文推走而留下残影——真机实测过）。
+    /// 所以这里只验证两件事：正文完整、没有区域压在正文上。
+    /// 区域自身的可见性由 <c>vt-replay-shows-activity-then-clean</c> 负责。
+    /// </remarks>
     private static string? VtReplayBodyIntact()
     {
         var (live, _) = ReplayRegion(rich =>
@@ -845,10 +854,7 @@ public static class TerminalChecks
         if (!text.Contains("正文第二行", StringComparison.Ordinal))
             return "正文第二行丢失：\n" + live.Dump();
 
-        // 活动行必须还在，但不能压在正文上。
-        if (!text.Contains("思考中", StringComparison.Ordinal))
-            return "进行中活动行应当仍可见：\n" + live.Dump();
-
+        // 区域若还可见，绝不能压在正文行上。
         var firstLine = text.Split('\n')[0];
         if (firstLine.Contains("思考中", StringComparison.Ordinal))
             return "活动行覆盖了第一行正文：\n" + live.Dump();
@@ -887,9 +893,15 @@ public static class TerminalChecks
     /// </summary>
     private static (VtScreen Live, VtScreen AfterDispose) ReplayRegion(Action<LiveRegion> action)
     {
+        // stderr 与 stdout 写的是同一块屏幕，只是流不同。两者必须拼成一条
+        // 字节流再喂给模拟器，否则看不出"stderr 打在活动行上面"这类叠加。
         var captured = new StringWriter();
-        var original = Console.Out;
+        var originalOut = Console.Out;
+        var originalError = Console.Error;
+
+        // 两个流写进同一个 StringWriter：终端只有一块屏幕。
         Console.SetOut(captured);
+        Console.SetError(captured);
 
         LiveRegion? region = null;
         string whileLive;
@@ -909,7 +921,8 @@ public static class TerminalChecks
         finally
         {
             region?.Dispose();
-            Console.SetOut(original);
+            Console.SetOut(originalOut);
+            Console.SetError(originalError);
         }
 
         var live = new VtScreen(columns: 80, rows: 12);
@@ -950,6 +963,13 @@ public static class TerminalChecks
                 {
                     i = ApplyCsi(text, i + 2);
                     continue;
+                }
+
+                // DECSC / DECRC：两字节序列，不是 CSI。
+                if (c == '\u001b' && i + 1 < text.Length)
+                {
+                    if (text[i + 1] == '7') { _savedRow = _row; _savedColumn = _column; i++; continue; }
+                    if (text[i + 1] == '8') { _row = _savedRow; _column = _savedColumn; i++; continue; }
                 }
 
                 switch (c)
@@ -997,17 +1017,17 @@ public static class TerminalChecks
                     break;
 
                 case 's':
-                    // 保存光标（SCO）。不支持的话被测代码的正确性完全看不出来——
-                    // 模拟器会静默丢弃序列，一切看起来都对。
-                    _savedRow = _row;
-                    _savedColumn = _column;
-                    break;
+                    // **故意不支持**。ESC[s/ESC[u 是 SCO 私有序列，
+                    // 真实终端与 pyte 都不保证保存/还原位置——用 pyte 实测过：
+                    // ESC[s...ESC[u 之后光标停在错误位置，ESC7/ESC8 才正确。
+                    // 这里直接报错，逼实现用 DECSC/DECRC，而不是让模拟器
+                    // "宽容地"把它当成能用的序列（那样检查会假通过）。
+                    throw new InvalidOperationException(
+                        "被测代码用了 ESC[s（SCO 保存光标），真实终端不保证生效，应改用 ESC7");
 
                 case 'u':
-                    // 恢复光标（SCO）。
-                    _row = _savedRow;
-                    _column = _savedColumn;
-                    break;
+                    throw new InvalidOperationException(
+                        "被测代码用了 ESC[u（SCO 恢复光标），真实终端不保证生效，应改用 ESC8");
 
                 default:
                     // 未识别的序列必须让检查失败，不能静默跳过。
@@ -1132,6 +1152,97 @@ public static class TerminalChecks
         {
             Console.SetOut(original);
         }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 调过 <see cref="LiveRegion.Clear"/> 之后再写正文，不得把旧内容重新画出来。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条对应真机上看到的缺陷</b>（2026-10-29 用户截图）：一轮失败结束后，
+    /// 汇总行都打完了，状态栏 <c>MiniMax-M3.1-Flash · 2s</c> 却还留在最下面。
+    /// <para>
+    /// 根因：<c>Clear()</c> 只调 <c>Erase()</c> 擦屏幕，**没有清空 <c>_lines</c>**。
+    /// 于是后续任何一次写入（<c>Output.Line</c> 会走 <c>RunExclusive</c>：
+    /// 擦、写、画）都会在写完正文之后把那份陈旧内容重新画到下方。
+    /// </para>
+    /// </remarks>
+    private static string? ClearThenWrite()
+    {
+        var (live, afterDispose) = ReplayRegion(rich =>
+        {
+            rich.SetLines(["  思考中… 2s", "  模型 · 2s"]);
+            rich.Clear();
+            rich.RunExclusive(() => Output.Control("本轮结束\n"));
+        });
+
+        var text = live.Text();
+
+        if (!text.Contains("本轮结束", StringComparison.Ordinal))
+            return "正文没写出来：\n" + live.Dump();
+
+        if (text.Contains("模型", StringComparison.Ordinal))
+            return "Clear 之后写正文，旧区域又被画回来了：\n" + live.Dump();
+
+        if (text.Contains("思考中", StringComparison.Ordinal))
+            return "Clear 之后写正文，活动行又被画回来了：\n" + live.Dump();
+
+        // Dispose 之后同样不能有残留。
+        if (afterDispose.Text().Contains("模型", StringComparison.Ordinal))
+            return "退出后仍有残留：\n" + afterDispose.Dump();
+
+        return null;
+    }
+
+    /// <summary>
+    /// 写 stderr 时底部区域必须让位，不能两行叠在一起。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条对应真机上看到的第二个缺陷</b>（2026-10-29 用户截图）：
+    /// 一轮失败时 <c>[结束：Failed] ...</c> 直接打在底部活动行上面，
+    /// 因为那行走的是 <c>Console.Error</c>，绕过了 <see cref="Output"/> 的就位保护。
+    /// <para>
+    /// 架构检查 <c>Cli_visible_output_goes_through_Output</c> 豁免了
+    /// <c>Console.Error</c>，理由是"错误输出不走终端装饰"。**那个理由本身没错，
+    /// 但漏了一点**：装饰与否跟占不占屏幕位置是两件事。stderr 与 stdout
+    /// 写的是同一块屏幕，只是流不同。
+    /// </para>
+    /// </remarks>
+    private static string? StderrDoesNotCollide()
+    {
+        // 复现真机布局：先有一段正文，再画出区域（区域在正文下方），
+        // 然后写 stderr。真机上区域已经占了底部两行，stderr 直接打在
+        // 光标当前行——若不先擦区域，就会把那两行覆盖掉或与之重叠。
+        var (live, _) = ReplayRegion(rich =>
+        {
+            rich.RunExclusive(() => Output.Control("你好\n"));
+            rich.SetLines(["  思考中… 2s", "  模型 · 2s"]);
+            Output.Diagnostics("  [结束：Failed] 模型流中断\n");
+        });
+
+        var text = live.Text();
+        var lines = text.Split('\n');
+
+        var errorLine = Array.FindIndex(lines, l => l.Contains("结束：Failed", StringComparison.Ordinal));
+
+        if (Environment.GetEnvironmentVariable("DUMP_SCREEN") == "1")
+            Console.WriteLine("SCREEN>>>\n" + live.Dump());
+
+        if (errorLine < 0) return "错误行没写出来：\n" + live.Dump();
+
+        // 错误行必须完整可读——被区域覆盖时会缺字或叠字。
+        if (!lines[errorLine].Contains("模型流中断", StringComparison.Ordinal))
+            return "错误行被区域覆盖或截断：\n" + live.Dump();
+
+        // 正文不能被挤掉。
+        if (!text.Contains("你好", StringComparison.Ordinal))
+            return "正文丢失：\n" + live.Dump();
+
+        // 区域内容若还在，必须在错误行下方，不能压在它上面。
+        var activityLine = Array.FindIndex(lines, l => l.Contains("思考中", StringComparison.Ordinal));
+        if (activityLine >= 0 && activityLine <= errorLine)
+            return "活动行压在错误行上方：\n" + live.Dump();
 
         return null;
     }

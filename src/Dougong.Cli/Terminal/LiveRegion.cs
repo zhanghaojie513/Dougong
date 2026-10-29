@@ -26,11 +26,19 @@ namespace Dougong.Cli.Terminal;
 /// </remarks>
 public sealed class LiveRegion : IDisposable
 {
-    /// <summary>保存光标位置（SCO）。</summary>
-    private const string SaveCursor = "\u001b[s";
+    /// <summary>保存光标位置（DECSC）。</summary>
+    /// <remarks>
+    /// <b>必须是 <c>ESC 7</c>，不能用 <c>ESC[s</c></b>。<c>ESC[s</c> 是 SCO 的
+    /// 私有序列，pyte 等实现只“认识”却不保存位置，真实终端里也有变异。
+    /// 用 pyte 实测过：<c>ESC[s</c> … <c>ESC[u</c> 之后光标停在错误位置，
+    /// <c>ESC 7</c> … <c>ESC 8</c> 才正确回到原处（2026-10-29）。
+    /// 光标没回去 ⇒ 区域画错位置 ⇒ 屏幕上是两行字叠在一起，
+    /// 正是真机截图里看到的症状。
+    /// </remarks>
+    private const string SaveCursor = "\u001b7";
 
-    /// <summary>恢复光标位置（SCO）。</summary>
-    private const string RestoreCursor = "\u001b[u";
+    /// <summary>恢复光标位置（DECRC）。</summary>
+    private const string RestoreCursor = "\u001b8";
 
     /// <summary>清整行。</summary>
     private const string ClearLine = "\u001b[2K";
@@ -105,6 +113,13 @@ public sealed class LiveRegion : IDisposable
     /// <b>为什么写动作必须进锁</b>：刷新循环在另一个线程上跑，完全可能在
     /// "已擦除、正文刚写一半"的间隙把区域画回来，插进正文中间。
     /// 擦、写、画做成一个原子段才真正排除这种撕裂。
+    /// <para>
+    /// <b>写完之后不再重画</b>：区域由刷新循环在下一个 tick 重新画到
+    /// 新的光标位置。这里如果立刻重画，用的还是写入前的位置基准，
+    /// 而正文已经把光标推走了——画出来的区域会落在旧位置，
+    /// 表现为残影或与正文叠字（真机实测过）。
+    /// 少画一次最多让活动行空白 100ms，刷错了却会一直留在屏幕上。
+    /// </para>
     /// </remarks>
     public void RunExclusive(Action write)
     {
@@ -120,14 +135,31 @@ public sealed class LiveRegion : IDisposable
         {
             Erase();
             write();
-            Repaint();
+            // 不在这里 Repaint：见上面的理由。刷新循环会接手。
         }
     }
 
-    /// <summary>擦掉底部区域。退出前必须调用。</summary>
+    /// <summary>
+    /// 擦掉底部区域并**丢弃内容**。轮次结束、退出前都必须调用。
+    /// </summary>
+    /// <remarks>
+    /// <b>必须同时清空 <c>_lines</c>，不能只擦屏幕。</b>
+    /// 只擦屏幕的话，后续任何一次写入都会走 <see cref="RunExclusive"/> 的
+    /// "擦、写、画"流程，把那份陈旧内容重新画到正文下方——
+    /// 2026-10-29 真机上看到的就是这个：一轮失败结束后汇总行都打完了，
+    /// 状态栏却还留在最下面。
+    /// <para>
+    /// 它与 <see cref="Erase"/> 的分工：<c>Erase</c> 是"暂时让位，还要再画"，
+    /// <c>Clear</c> 是"不要了"。混用会让状态在"已清除"与"待重绘"之间摇摆。
+    /// </para>
+    /// </remarks>
     public void Clear()
     {
-        lock (_sync) Erase();
+        lock (_sync)
+        {
+            Erase();
+            _lines.Clear();
+        }
     }
 
     /// <inheritdoc />
@@ -143,25 +175,22 @@ public sealed class LiveRegion : IDisposable
 
     /// <summary>把区域重画一遍。</summary>
     /// <remarks>
-    /// <b>区域永远画在光标所在行的下方，画完把光标放回原处。</b>
-    /// 这条不变量是整个重绘协议的基础：
-    /// <list type="bullet">
-    /// <item>区域不占正文的行，下一次正文写入不会撞上它</item>
-    /// <item>光标回到正文末尾的**原列**，流式续写才接得上</item>
-    /// </list>
+    /// <b>每次全画，先滚出足够的空间再写。</b>
+    /// 区域用 <c>SaveCursor</c> 记下正文末尾的位置，往下写 N 行，再恢复。
+    /// 这样正文与区域互不覆盖，光标也回到正文末尾供后续续写。
     /// <para>
-    /// <b>两处实测踩到的坑，都是"光标位置"造成的</b>：
-    /// ① 直接在原地画，下一次 <c>ESC[2K</c> 会把正文整行抹掉；
-    /// ② 擦除后用 <c>\r</c> 回行首，后续不带换行的正文从列 0 开始写，
-    /// 把用户输入的 <c>&gt; hello</c> 覆盖成 <c>你好hello</c>。
-    /// 所以擦与画都必须 save/restore 光标，不能靠回行首。
+    /// <b>这里不再假设"区域在光标下方"</b>：正文写入会把光标往下推
+    /// （<see cref="Output.Line"/> 带换行），于是区域落在光标上方。
+    /// 早先的 <c>Erase</c> 按"区域在下方"上移 N 行去清，擦的是错的屏幕位置，
+    /// 结果旧位置残留、新位置又画一遍——真机上表现为两行文字叠在一起
+    /// （2026-10-29 用户截图）。
     /// </para>
     /// </remarks>
     private void Repaint()
     {
         if (!_enabled || _disposed) return;
 
-        // 行数或内容变了，先把旧区域擦干净——否则缩行时会留下鬼影。
+        // 先把上一次画的内容清掉，否则缩行/移位都会留残留。
         Erase();
 
         if (_lines.Count == 0) return;

@@ -106,10 +106,16 @@ public static class Output
     }
 
     /// <summary>写到 stderr。ACP 模式下所有日志都必须走这里。</summary>
+    /// <remarks>
+    /// <b>stderr 同样要让底部区域让位</b>：它和 stdout 写的是同一块屏幕，
+    /// 只是流不同。真机实测过——一轮失败时 `[结束：Failed]` 直接打在底部
+    /// 活动行上面，两行叠在一起（2026-10-29 用户截图）。
+    /// 只保护 stdout 是不够的。
+    /// </remarks>
     public static void Diagnostics(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        Console.Error.WriteLine(value);
+        Guard(() => Console.Error.WriteLine(value));
     }
 
     /// <summary>

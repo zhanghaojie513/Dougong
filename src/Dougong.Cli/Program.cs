@@ -444,7 +444,7 @@ public static class Program
                         case AgentEvent.RunFinished finished:
                             Output.Line();
                             if (finished.Outcome != AgentRunOutcome.Completed)
-                                Console.Error.WriteLine($"  [结束：{finished.Outcome}] {finished.Diagnostic}");
+                                Output.Diagnostics($"  [结束：{finished.Outcome}] {finished.Diagnostic}");
                             break;
                     }
                 }
@@ -452,7 +452,7 @@ public static class Program
             catch (OperationCanceledException)
             {
                 Output.Line();
-                Console.Error.WriteLine("  [已取消]");
+                Output.Diagnostics("  [已取消]");
             }
 
             // 先收起底部区域再打汇总：区域还在时写正文，光标位置会被它挤乱。
