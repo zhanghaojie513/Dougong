@@ -52,6 +52,146 @@ public sealed partial class DougongKernel
         }
     }
 
+    /// <summary>
+    /// 扫描目录下的程序集并逐个加载其中的插件。**不递归子目录**。
+    /// </summary>
+    /// <param name="directoryPath">插件目录。子目录视为依赖区，不扫描。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>
+    /// 每个被扫描到的 <c>*.dll</c> 一条结果，顺序按文件名的字典序。
+    /// **单个失败不会中断整批**，也不会抛异常——部分失败由结果逐条表达。
+    /// </returns>
+    /// <remarks>
+    /// <b>为什么需要它</b>：<see cref="LoadAsync"/> 一次只处理一个 dll、一个
+    /// <see cref="IPlugin"/> 类型。真实插件包通常是 <c>Plugin.dll</c> +
+    /// <c>Helpers.dll</c> + <c>Contracts.dll</c>，而宿主无从知道"这个目录里
+    /// 有哪些插件要装"——<see cref="PluginLoadContext"/> 只按单 dll 解析依赖，
+    /// 没有目录级的概念。
+    /// <para>
+    /// <b>为什么不做 NuGet 下载</b>：下载解包是分发策略，不是内核能力。
+    /// 塞进 SDK 会引入 HTTP + 包解析依赖，以及版本冲突、预发布、私有源、
+    /// 认证一整套问题；而宿主可能想用自己的源（自托管市场、内网镜像、离线介质）。
+    /// 宿主的正确做法是自己下载解包到目录，再调用本方法。
+    /// </para>
+    /// <para>
+    /// <b>扫描语义</b>（宿主 UI 依赖这些行为）：
+    /// <list type="bullet">
+    /// <item>只扫 <c>*.dll</c>，不递归子目录——子目录是依赖区</item>
+    /// <item>没有 <see cref="IPlugin"/> 实现的 → <see cref="PluginLoadStatus.Skipped"/>，
+    /// 其依赖仍交给 <c>AssemblyDependencyResolver</c></item>
+    /// <item>一个 dll 内有多个实现 → <see cref="PluginLoadStatus.Ambiguous"/>，
+    /// **不擅自挑一个**，并列出候选类型名</item>
+    /// <item>加载失败 → <see cref="PluginLoadStatus.Failed"/>，带原因</item>
+    /// </list>
+    /// 后两条必须分开：UI 上"加载失败"要用户排查，"多个候选"要用户选择。
+    /// </para>
+    /// </remarks>
+    public async ValueTask<IReadOnlyList<PluginLoadResult>> LoadFromDirectoryAsync(
+        string directoryPath,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureLifecycleCallAllowed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var fullDirectory = Path.GetFullPath(directoryPath);
+        if (!Directory.Exists(fullDirectory))
+            throw new DirectoryNotFoundException($"插件目录不存在：{fullDirectory}");
+
+        // 排序保证结果稳定：宿主按顺序渲染列表，文件系统枚举顺序不保证跨平台一致。
+        var assemblies = Directory
+            .EnumerateFiles(fullDirectory, "*.dll", SearchOption.TopDirectoryOnly)
+            .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var results = new List<PluginLoadResult>(assemblies.Length);
+
+        foreach (var assemblyPath in assemblies)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            results.Add(await ProbeAndLoadAsync(assemblyPath, cancellationToken)
+                .ConfigureAwait(false));
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// 探测单个程序集并加载。任何异常都转成结果条目，不向上抛。
+    /// </summary>
+    /// <remarks>
+    /// 探测与加载分开两步：先只读元数据判断"是不是插件、有几个插件"，
+    /// 再决定要不要真正登记。这样"不是插件"的依赖库不会被登记，
+    /// "多个候选"的也不会先装一个再报错——先装后报会在内核里留下
+    /// 一个用户没要的插件。
+    /// </remarks>
+    private async ValueTask<PluginLoadResult> ProbeAndLoadAsync(
+        string assemblyPath,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<string> candidates;
+
+        // 探测阶段单独用一个 ALC，结束即卸载：只需读类型清单，
+        // 不需要保留它。若后续要真正加载，LoadAsync 会再建一个。
+        var probe = new PluginLoadContext(assemblyPath, _sharedContracts);
+        try
+        {
+            var assembly = probe.LoadFromAssemblyPath(assemblyPath);
+            candidates = assembly.GetTypes()
+                .Where(t => typeof(IPlugin).IsAssignableFrom(t)
+                    && t is { IsAbstract: false, IsInterface: false })
+                .Select(t => t.FullName ?? t.Name)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray();
+        }
+        catch (Exception ex)
+        {
+            probe.Unload();
+
+            // 读不到类型通常意味着依赖缺失或目标框架不符。这时既不能判定
+            // "不是插件"，也不能判定"是插件但坏了"——按失败报，
+            // 因为静默跳过会让用户以为目录里没有这个插件。
+            return new PluginLoadResult(
+                assemblyPath, PluginLoadStatus.Failed,
+                Reason: FindMissingAssembly(ex) is { } missing
+                    ? DescribeMissingAssembly(missing)
+                    : $"{ex.GetType().Name}: {ex.Message}");
+        }
+
+        probe.Unload();
+
+        if (candidates.Count == 0)
+        {
+            return new PluginLoadResult(
+                assemblyPath, PluginLoadStatus.Skipped,
+                Reason: "无 IPlugin 实现（依赖库）");
+        }
+
+        if (candidates.Count > 1)
+        {
+            return new PluginLoadResult(
+                assemblyPath, PluginLoadStatus.Ambiguous,
+                Reason: $"程序集内有 {candidates.Count} 个 IPlugin 类型，需显式指定 typeName",
+                AmbiguousTypeNames: candidates);
+        }
+
+        try
+        {
+            var handle = await LoadAsync(assemblyPath, candidates[0], cancellationToken)
+                .ConfigureAwait(false);
+            return new PluginLoadResult(
+                assemblyPath, PluginLoadStatus.Loaded, handle.Id);
+        }
+        catch (Exception ex)
+        {
+            // 单个插件失败不影响同目录其它插件：宿主需要知道"9 个成了、1 个没成"，
+            // 而不是整批失败。
+            return new PluginLoadResult(
+                assemblyPath, PluginLoadStatus.Failed,
+                Reason: $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     /// <summary>沿内部异常查找缺失程序集名；反射类型加载错误会包一层。</summary>
     private static string? FindMissingAssembly(Exception? error)
     {

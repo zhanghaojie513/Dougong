@@ -8,7 +8,9 @@
   <Project Path="src/Dougong.Cli/Dougong.Cli.csproj" />
   <Project Path="tests/Dougong.Kernel.Tests/Dougong.Kernel.Tests.csproj" />
   <Project Path="samples/Dougong.Sample.Plugin/Dougong.Sample.Plugin.csproj" />
-  <Folder Name="/samples/" />
+  <Folder Name="/samples/">
+    <Project Path="samples/Dougong.Sample.TwoPlugins/Dougong.Sample.TwoPlugins.csproj" />
+  </Folder>
   <Folder Name="/samples/embedding-probe/">
     <Project Path="samples/embedding-probe/Probe.csproj" />
   </Folder>

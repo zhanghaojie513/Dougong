@@ -853,7 +853,12 @@ public sealed partial class DougongKernel : IAsyncDisposable
         new(entry.Id, entry.Manifest.Version, entry.State);
 
     private static PluginSummary ToSummary(PluginEntry entry) =>
-        new(entry.Id, entry.Manifest.Version, entry.State);
+        new(entry.Id, entry.Manifest.Version, entry.State)
+        {
+            // 只拷字符串字段：manifest 里的 ServiceRequirement.Type 可能指向
+            // 插件 ALC，长期保留会阻止程序集回收。
+            Display = entry.Manifest.Display,
+        };
 
     /// <summary>调用方须持有 <c>_sync</c>。超出保留上限时丢弃最旧的增量。</summary>
     private void AppendHistory(StateDelta delta)

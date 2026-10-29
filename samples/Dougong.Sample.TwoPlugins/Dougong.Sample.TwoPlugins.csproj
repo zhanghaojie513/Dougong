@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 一个程序集里放两个 IPlugin 实现。
+       用途：验证 LoadFromDirectoryAsync 遇到"多个候选"时报 Ambiguous
+       而不是擅自挑一个——挑错的后果是装了用户没要的东西，
+       而用户看不到"其实还有别的"。
+       这个场景真实存在：插件作者常把相关插件打进同一个包。 -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dougong.Kernel\Dougong.Kernel.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

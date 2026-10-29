@@ -57,7 +57,8 @@ public sealed record PluginManifest
         string version,
         IReadOnlyList<ServiceRequirement>? requiredServices = null,
         IReadOnlyList<PluginId>? dependsOn = null,
-        IReadOnlyList<ContractVersion>? contractVersions = null)
+        IReadOnlyList<ContractVersion>? contractVersions = null,
+        PluginDisplayInfo? display = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
         Id = id;
@@ -66,6 +67,7 @@ public sealed record PluginManifest
         RequiredServices = Copy(requiredServices);
         DependsOn = Copy(dependsOn);
         ContractVersions = Copy(contractVersions);
+        Display = display;
         foreach (var contract in ContractVersions) contract.Parse();
     }
 
@@ -84,6 +86,21 @@ public sealed record PluginManifest
 
     /// <summary>插件声明支持的宿主契约版本范围；为空表示不做版本校验。</summary>
     public IReadOnlyList<ContractVersion> ContractVersions { get; }
+
+    /// <summary>
+    /// 展示元信息。为 null 时宿主应回退到 <see cref="PluginId.Value"/>。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么放在 manifest 而不是插件目录旁的元数据文件</b>：两个数据源
+    /// 会不一致——目录里写着 Title、程序集里是另一个，宿主无法判断以谁为准。
+    /// manifest 来自插件本身，是唯一权威。
+    /// <para>
+    /// <b>图标刻意不在其中</b>：图标是 UI 资源，SDK 一旦支持路径引用就要定义
+    /// 目录布局、体积上限、越界与符号链接校验规则——那是宿主的产品策略。
+    /// 宿主自己约定插件目录旁边放什么文件更干净。
+    /// </para>
+    /// </remarks>
+    public PluginDisplayInfo? Display { get; }
 
     public static PluginManifest Create(string id, string version, params ServiceRequirement[] requiredServices) =>
         new(PluginId.Parse(id), version, requiredServices);

@@ -35,6 +35,13 @@
 
 ### Breaking
 
+- **`PluginManifest` 的手写构造函数新增 `display` 参数**（末尾可选）。
+  这里要更正一个容易想错的地方：**手写构造函数 + 可选参数 ≠ 二进制兼容**。
+  `PluginManifest` 虽是手写构造，但它是 record，构造签名变了之后
+  已编译的调用方同样会 `MissingMethodException`。ApiCompat 报 `CP0002`。
+  源码级调用不用改，重新编译即可。
+  （`PluginSummary` 改用 `init` 属性，就是为了避开这个问题。）
+
 - **`PluginStateChange` 与 `ToolDispatchResult` 的构造函数新增参数**：
   - `PluginStateChange(..., PluginDiagnostic? Diagnostic = null, TimeSpan? Elapsed = null)`
   - `ToolDispatchResult(..., ToolPermission? Permission = null,
@@ -45,6 +52,31 @@
   重新编译即可，无需改代码。
 
 ### Added
+
+- **`LoadFromDirectoryAsync`：目录级批量加载**。一次扫描目录下的
+  `*.dll` 并逐个加载其中的插件，返回每个程序集一条 `PluginLoadResult`。
+  真实插件包通常是 `Plugin.dll` + `Helpers.dll` + `Contracts.dll`，
+  而 `LoadAsync` 一次只处理一个 dll、一个 `IPlugin` 类型，宿主无从知道
+  "这个目录里有哪些插件要装"。
+  - 只扫 `*.dll`，**不递归子目录**（子目录是依赖区）
+  - 无 `IPlugin` 实现的 → `Skipped`（依赖库，不是失败）
+  - 一个 dll 内有多个实现 → `Ambiguous` 并列出候选，**不擅自挑一个**
+  - 单个失败不抛异常，整批结果照常返回——"9 成功 1 失败"要如实报成 9+1
+  - **不做 NuGet 下载**：那是分发策略不是内核能力，塞进 SDK 会引入
+    HTTP + 包解析依赖以及版本冲突、私有源、认证一整套问题
+
+- **`PluginDisplayInfo`：插件的展示元信息**（`Title` / `Description` / `Author`，
+  全部可选）。载体是 `PluginManifest` 而非目录旁的元数据文件——两个数据源
+  会不一致，manifest 来自插件本身才是唯一权威。
+  - 图标刻意不进 manifest：那是 UI 资源，SDK 一旦支持路径引用就要定义
+    目录布局、体积上限、越界与符号链接校验，属于宿主的产品策略
+  - 不做多语言：本项目还没有外部插件作者，先冻结语言协商与回退链
+    正是 host-layering-decision §4.4 反对的"预先冻结格式"
+
+- **`PluginSummary.Display`**（`init` 属性）。列表页因此能显示标题而不是只显示
+  `sess-xxx` 风格的 Id。只带字符串值、不带 `PluginManifest`——
+  manifest 里的 `ServiceRequirement.Type` 对动态插件而言是插件 ALC 的类型，
+  长期保留会阻止程序集回收。
 
 - **工具派发耗时分成两段**：`ToolDispatchResult.ApprovalElapsed`（等审批）与
   `ExecutionElapsed`（工具执行）。合成一个总耗时无法归因——前者取决于人多快确认，
