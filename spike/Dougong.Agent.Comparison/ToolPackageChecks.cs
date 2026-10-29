@@ -36,6 +36,7 @@ public static class ToolPackageChecks
         failures += await CheckAsync("help-lists-every-user-facing-command", HelpListsCommandsAsync);
         failures += Check("gitignore-covers-pack-output", PackOutputIgnored);
         failures += Check("docs-pin-tool-version-on-install", DocsPinVersion);
+        failures += Check("docs-install-version-matches-build", DocsVersionMatchesBuild);
         failures += Check("readme-test-count-matches-reality", ReadmeTestCount);
         failures += Check("no-hardcoded-version-in-sources", NoHardcodedVersion);
         failures += await CheckAsync("version-is-consistent-across-outputs", VersionConsistentAsync);
@@ -583,5 +584,65 @@ public static class ToolPackageChecks
         {
             return null;
         }
+    }
+    /// <summary>
+    /// 文档里安装命令写的版本号必须等于当前构建版本。
+    /// </summary>
+    /// <remarks>
+    /// <b>已有的 <c>docs-pin-tool-version-on-install</c> 只查"带没带 --version"</b>，
+    /// 不查版本号对不对。所以发版后四处安装命令全都指向旧版本，检查照样全绿——
+    /// 2026-10-29 发 alpha.2 时就是这样漏掉的，靠人工 grep 才发现。
+    /// <para>
+    /// 比较对象是 <c>Directory.Build.props</c> 的 <c>&lt;Version&gt;</c>（构建的真实版本），
+    /// 不是从 nuget.org 查——检查必须离线可跑。发布失败或包尚未上架时，
+    /// 版本号已经在 props 里了，文档就该跟着走。
+    /// </para>
+    /// </remarks>
+    private static string? DocsVersionMatchesBuild()
+    {
+        var root = FindRepoRoot();
+
+        var props = Path.Combine(root, "Directory.Build.props");
+        if (!File.Exists(props)) return "找不到 Directory.Build.props";
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            File.ReadAllText(props), @"<Version>([^<]+)</Version>");
+        if (!match.Success) return "Directory.Build.props 里没有 <Version>";
+
+        var expected = match.Groups[1].Value.Trim();
+
+        string[] docs =
+        [
+            Path.Combine(root, "README.md"),
+            Path.Combine(root, "README.en.md"),
+            Path.Combine(root, "docs", "getting-started.md"),
+            Path.Combine(root, "docs", "walkthrough-checklist.md"),
+        ];
+
+        foreach (var path in docs)
+        {
+            if (!File.Exists(path)) continue;
+
+            var lines = File.ReadAllLines(path);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i];
+                if (!line.Contains("dotnet tool install", StringComparison.Ordinal)) continue;
+                if (!line.Contains("Dougong.Cli", StringComparison.Ordinal)) continue;
+
+                var versionMatch = System.Text.RegularExpressions.Regex.Match(
+                    line, @"--version\s+(\S+)");
+                if (!versionMatch.Success) continue;   // 不带版本号由另一条检查负责
+
+                var declared = versionMatch.Groups[1].Value.Trim();
+                if (declared != expected)
+                {
+                    return $"{Path.GetFileName(path)}:{i + 1} 写 --version {declared}，" +
+                        $"但当前构建版本是 {expected}";
+                }
+            }
+        }
+
+        return null;
     }
 }

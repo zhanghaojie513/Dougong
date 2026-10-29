@@ -118,7 +118,7 @@ dotnet run --project spike/Dougong.Agent.Comparison \
 ## B1. 装工具
 
 ```bash
-dotnet tool install --global Dougong.Cli --version 0.1.0-alpha.1
+dotnet tool install --global Dougong.Cli --version 0.1.0-alpha.2
 dougong --help
 ```
 
