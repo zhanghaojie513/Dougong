@@ -19,8 +19,46 @@ namespace Dougong.Agent;
 public sealed class SlidingWindowCompactor(
     int preservedHead = 2,
     int preservedTail = 6,
-    double triggerRatio = 0.75) : IContextCompactor
+    double triggerRatio = 0.75,
+    double retainRatio = 0.16) : IContextCompactor
 {
+    /// <summary>保留最近历史的条数下限。</summary>
+    /// <remarks>
+    /// <b>条数下限与 token 比例互补，不是二选一</b>：小窗口下 16% 可能只够
+    /// 2–3 条，需要条数保底；大窗口下条数远远不够，需要比例兜住
+    /// "最近若干轮完整对话"。
+    /// </remarks>
+    private readonly int _preservedTail = preservedTail >= 0
+        ? preservedTail
+        : throw new ArgumentOutOfRangeException(nameof(preservedTail), "保留条数不能为负。");
+
+    /// <summary>保留最近历史占有效预算的比例。</summary>
+    /// <remarks>
+    /// <b>必须严格小于触发比例</b>，构造时校验。
+    /// 否则压缩后仍越过阈值，每次调用都压一次——摘要要花模型调用，
+    /// 表现是会话越来越慢、账单越来越高，且**没有任何错误提示**。
+    /// <para>
+    /// 0.16 与 dsh 的 <c>retainRatio</c> 一致，按 1M 窗口设计：触发 0.75、
+    /// 保留 0.16，压缩后降到 0.16–0.2，能跑很久再触发。
+    /// 按 128K 那种小窗口反推会得出偏小的值，而 128K 已不是典型值。
+    /// </para>
+    /// </remarks>
+    private readonly double _retainRatio = retainRatio > 0 && retainRatio < 1
+        ? retainRatio
+        : throw new ArgumentOutOfRangeException(nameof(retainRatio), "保留比例必须落在 (0, 1)。");
+
+    private readonly double _triggerRatio = triggerRatio > 0 && triggerRatio < 1
+        && retainRatio < triggerRatio
+            ? triggerRatio
+            : throw new ArgumentOutOfRangeException(
+                nameof(triggerRatio),
+                $"触发比例必须落在 (0, 1) 且大于保留比例 {retainRatio}；"
+                + "否则压缩后仍高于阈值，每次调用都会重复压缩。");
+
+    private readonly int _preservedHead = preservedHead >= 0
+        ? preservedHead
+        : throw new ArgumentOutOfRangeException(nameof(preservedHead), "保留条数不能为负。");
+
     public CompactionPlan? Plan(CompactionInput input, bool force = false)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -28,7 +66,7 @@ public sealed class SlidingWindowCompactor(
             input.ContextWindowTokens, input.MaxOutputTokens, input.EstimateErrorTokens);
 
         var before = TokenBudget.Estimate(input.CommittedHistory);
-        var trigger = (int)(effective * triggerRatio);
+        var trigger = (int)(effective * _triggerRatio);
 
         // force：跳过阈值检查。用于 provider 已判定溢出的情形——
         // 那时按窗口算出的阈值本身就是错的（窗口配置不可信），
@@ -38,8 +76,8 @@ public sealed class SlidingWindowCompactor(
         if (!force && before <= trigger) return null;
 
         // 必须同时保留头尾，否则没有可压缩空间。
-        var head = Math.Min(preservedHead, input.CommittedHistory.Count);
-        var tail = Math.Min(preservedTail, input.CommittedHistory.Count - head);
+        var head = Math.Min(_preservedHead, input.CommittedHistory.Count);
+        var tail = ResolveTail(input.CommittedHistory, head, effective);
         var first = head;
         var last = input.CommittedHistory.Count - tail - 1;
 
@@ -62,7 +100,54 @@ public sealed class SlidingWindowCompactor(
 
         return new CompactionPlan(
             first, last, head, before, after,
-            $"历史 {before} tokens 超过触发阈值 {trigger}（有效预算 {effective} 的 {triggerRatio:P0}）。");
+            $"历史 {before} tokens 超过触发阈值 {trigger}（有效预算 {effective} 的 {_triggerRatio:P0}）。");
+    }
+
+    /// <summary>
+    /// 算出尾部保留多少条：条数下限与 token 比例取较大者，且至少留 1 条可压。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么不能只用条数</b>：固定 6 条在两种极端下都不对——6 条短对话约
+    /// 300 token（保住了但没意义），6 条含工具输出的消息可能两万 token
+    /// （保留太多，压完等于没压，很快又触发）。
+    /// <para>
+    /// <b>为什么不能只用比例</b>：小窗口下 16% 可能只够 2–3 条，会把最近的工作上下文切碎。
+    /// </para>
+    /// <para>
+    /// <b>必须留至少 1 条可压</b>：否则 <c>last &lt; first</c>，压缩永远返回 null。
+    /// 这是加比例约束后引入的新风险——比例算出的保留量可能吃掉整个历史，
+    /// 不加这个上限就会让小窗口用户从"压得太狠"变成"完全压不动"。
+    /// </para>
+    /// </remarks>
+    private int ResolveTail(IReadOnlyList<AgentMessage> history, int head, int effective)
+    {
+        // 至少留 1 条能被压缩，否则没有可压区间。
+        var maxTail = Math.Max(0, history.Count - head - 1);
+        if (maxTail == 0) return 0;
+
+        // 条数下限：保证最近若干条完整（短会话靠它）。
+        var byCount = Math.Min(_preservedTail, maxTail);
+        if (effective <= 0) return byCount;
+
+        // 比例下限：保证最近若干轮完整（长会话靠它）。
+        // 从尾部往前累加，直到达到预算或碰到 head。
+        var tailBudget = (int)(effective * _retainRatio);
+        if (tailBudget <= 0) return byCount;
+
+        var accumulated = 0;
+        var byRatio = 0;
+
+        for (var i = history.Count - 1; i >= head; i--)
+        {
+            var cost = TokenBudget.Estimate(history[i].Content);
+            if (accumulated + cost > tailBudget) break;
+
+            accumulated += cost;
+            byRatio++;
+        }
+
+        // 取较大者：条数保底优先，比例在长会话时提供更大的保留量。
+        return Math.Min(maxTail, Math.Max(byCount, byRatio));
     }
 
     /// <summary>

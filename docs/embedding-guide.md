@@ -335,10 +335,17 @@ var dispatcher = new ToolDispatcher();   // 编译通过，无任何警告
 
 ```csharp
 var runtime = new LoopAgentRuntime(client, dispatcher, store,
-    limits: new ContextLimits { ContextWindowTokens = 128_000, MaxOutputTokens = 4_096 },
-    compactor: new SlidingWindowCompactor(preservedHead: 2, preservedTail: 6),
+    // ContextWindowTokens 填**你所用模型的实际窗口**，不要照抄这里的数字。
+    // 主流模型现在普遍是 1M；填小了会导致过早压缩，填大了会撞 provider 上限。
+    limits: new ContextLimits { ContextWindowTokens = 1_000_000, MaxOutputTokens = 8_192 },
+    compactor: new SlidingWindowCompactor(),
     summarize: (transcript, ct) => MySummarizeAsync(client, transcript, ct));
 ```
+
+**`SlidingWindowCompactor` 的默认值**（`triggerRatio: 0.75`、`retainRatio: 0.16`）
+是按 1M 窗口调的：到 75% 触发压缩，保留最近 16% 的对话。
+`retainRatio` **必须小于 `triggerRatio`**，否则压缩后仍在阈值以上、
+每次调用都会重复压缩——这种情况会在构造时直接抛异常拦住。
 
 **三个缺一个都不生效**，而且**不报错**——这是最容易踩的坑。本文写在这里就是为了避免它。
 

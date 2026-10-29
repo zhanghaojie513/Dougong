@@ -28,6 +28,9 @@ public static class CompactionChecks
             PlanNearHeadStillCompressesAsync);
         failures += await CheckAsync("plan-at-head-boundary-degrades-safely",
             PlanAtHeadBoundaryDegradesSafelyAsync);
+        failures += await CheckAsync("tail-retention-follows-token-ratio", TailFollowsRatio);
+        failures += await CheckAsync("tail-retention-never-eats-whole-history", TailNeverEatsAll);
+        failures += await CheckAsync("retain-ratio-must-be-below-trigger", RetainBelowTrigger);
 
         Console.WriteLine(failures == 0
             ? "COMPACTION: ALL PASS"
@@ -296,7 +299,11 @@ public static class CompactionChecks
     // 没有计划时，区间末端应与原来一致（不能被保护逻辑误伤）。
     private static Task<string?> NoPlanFullRangeAsync()
     {
-        var compactor = new SlidingWindowCompactor(preservedHead: 1, preservedTail: 2);
+        // **显式把 retainRatio 设成极小值**，让这条只测"有没有计划保护"。
+        // 不这么做的话比例逻辑会参与算尾部保留量（默认 0.16），
+        // 测到的就不是本来要测的东西——第一版这么写，加了比例后立刻误报。
+        var compactor = new SlidingWindowCompactor(
+            preservedHead: 1, preservedTail: 2, retainRatio: 0.0001);
         var history = BuildHistory(30, "padding content to burn tokens ");
 
         var plan = compactor.Plan(new CompactionInput(history, 200, 20, 8));
@@ -440,5 +447,124 @@ public static class CompactionChecks
             Console.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// 长消息下尾部保留量要跟着 token 比例走，不能死守固定条数。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条对应一个真实的性能问题</b>：固定保留 6 条在工具输出密集的
+    /// 会话里可能占掉两万 token——压缩完等于没压，很快就再次触发。
+    /// 而 1M 窗口下 16% 的保留预算是 160K，应该保留更多轮完整对话。
+    /// </remarks>
+    private static async Task<string?> TailFollowsRatio()
+    {
+        // 1M 窗口、每条 8000 token（8000 字符 ASCII ≈ 2000 token）的长消息。
+        // 历史要**超过 75% 触发线**才会给计划，所以条数按 400 条准备
+        // （约 800K token）。第一版只给 100 条（200K），根本没到阈值，
+        // 检查报"应当触发压缩"——那是测试场景不成立，不是实现问题。
+        var limits = new ContextLimits
+        {
+            ContextWindowTokens = 1_000_000,
+            MaxOutputTokens = 8_000,
+            OverheadTokens = 512,
+        };
+
+        var history = Enumerable.Range(0, 400).Select(i =>
+            new AgentMessage(
+                i % 2 == 0 ? AgentRole.User : AgentRole.Assistant,
+                new string('x', 8_000))).ToList();   // 约 2000 token/条
+
+        var compactor = new SlidingWindowCompactor();
+        var plan = compactor.Plan(limits.ToInput(history))
+            ?? throw new InvalidOperationException("应当触发压缩");
+
+        // 尾部保留的条数：从 plan.LastIndex 之后到最后。
+        var tailKept = history.Count - plan.LastIndex - 1;
+
+        // 6 条是下限；16% 的 1M 预算能装约 80 条——远多于 6。
+        if (tailKept <= 6)
+        {
+            return $"1M 窗口下尾部只保留了 {tailKept} 条，"
+                + "说明没走 token 比例（长会话会压缩过度）";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 尾部保留不能吃掉整个历史 —— 必须至少留 1 条可压。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是加比例约束引入的新风险</b>：小窗口 + 长消息时，
+    /// 16% 预算可能覆盖全部历史，导致 <c>last &lt; first</c>、压缩永远返回 null。
+    /// 不加这个上限，小窗口用户会从"压得太狠"变成"完全压不动"——那是倒退。
+    /// </remarks>
+    private static async Task<string?> TailNeverEatsAll()
+    {
+        // **大窗口 + 小历史**：16% 预算远大于全部历史，比例会把整段都划进保留区。
+        // 第一版用小窗口 + 长消息，比例预算反而装不下第一条，
+        // 从没走到"比例过大"这条路径——反证时才发现测错了场景。
+        var limits = new ContextLimits
+        {
+            ContextWindowTokens = 1_000_000,
+            MaxOutputTokens = 1_000,
+            OverheadTokens = 200,
+        };
+
+        // 30 条短消息，总计约 300 token；16% 的预算约 160K，远超历史总量。
+        var history = Enumerable.Range(0, 30).Select(i =>
+            new AgentMessage(
+                i % 2 == 0 ? AgentRole.User : AgentRole.Assistant,
+                "short message")).ToList();
+
+        // force：否则 300 token 远达不到 75% 触发线，Plan 直接返回 null。
+        var compactor = new SlidingWindowCompactor();
+        var plan = compactor.Plan(limits.ToInput(history), force: true);
+
+        if (plan is null)
+        {
+            return "比例预算大于历史总量时完全压不动——maxTail 上限没生效";
+        }
+
+        // 必须真的压掉了东西。
+        if (plan.LastIndex < plan.FirstIndex)
+            return "压区间为空";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 保留比例 ≥ 触发比例时必须构造即失败。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么必须在构造时拦住</b>：这种配置下压缩后仍在阈值以上，
+    /// 每次调用都会再压一次。摘要是要花模型调用的，表现是会话越来越慢、
+    /// 账单越来越高，而且**没有任何错误提示**——用户只会觉得"这工具很慢"。
+    /// </remarks>
+    private static async Task<string?> RetainBelowTrigger()
+    {
+        // retainRatio (0.9) > triggerRatio (0.5)：配置无效。
+        try
+        {
+            _ = new SlidingWindowCompactor(triggerRatio: 0.5, retainRatio: 0.9);
+            return "保留比例大于触发比例时应当构造失败，否则每次调用都会重复压缩";
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // 预期内。
+        }
+
+        // 正常配置不能抛。
+        try
+        {
+            _ = new SlidingWindowCompactor(triggerRatio: 0.75, retainRatio: 0.16);
+        }
+        catch (Exception ex)
+        {
+            return $"正常配置（0.75 / 0.16）不应抛异常：{ex.GetType().Name}";
+        }
+
+        return null;
     }
 }
