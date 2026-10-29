@@ -35,6 +35,10 @@
 
 ### Breaking
 
+- **`UsageRecord` 新增 `FailureKind` 参数**（末尾可选）。
+  同样是"record 加参数 = 构造签名变化"，已编译的调用方需要重新编译。
+  本版已是破坏性版本（见上一条），一并处理。
+
 - **`PluginManifest` 的手写构造函数新增 `display` 参数**（末尾可选）。
   这里要更正一个容易想错的地方：**手写构造函数 + 可选参数 ≠ 二进制兼容**。
   `PluginManifest` 虽是手写构造，但它是 record，构造签名变了之后
@@ -52,6 +56,26 @@
   重新编译即可，无需改代码。
 
 ### Added
+
+- **LLM 调用失败现在有分类**：`UsageRecord.FailureKind`（`UsageFailureKind` 枚举）。
+  此前只有 `Succeeded: true/false`，"今天失败率 30%"无法回答是 key 过期、
+  还是 provider 挂了、还是我们代码出错——三种处理方式完全不同。
+  - 类别：`Unauthorized`（401/403）、`QuotaExceeded`（402）、`RateLimited`（429）、
+    `NotFound`（404）、`ServerError`（5xx）、`NetworkError`、`Timeout`、
+    `Cancelled`、`InvalidResponse`、`Unknown`
+  - **`Cancelled` 与 `Timeout` 必须分开**：两者都是 `OperationCanceledException`，
+    区别只在"调用方令牌有没有触发"。混在一起会让用户按 Ctrl+C 污染故障率。
+    `UsageFailureClassifier.CountsAsFault` 明确排除 `Cancelled`。
+  - **判不出来的归 `Unknown`，不挑一个最像的凑数**：错的分类比没有分类更糟，
+    会把排查引向错误方向。
+  - `failure_kind` 作为低基数标签进入指标（11 个值）；
+    具体错误消息是高基数的，绝不进标签。
+  - **范围只含 LLM 调用**：工具审批拒绝、schema 校验失败发生在调用模型之外，
+    不计 token，由 `ToolDispatchResult.Outcome` 表达。
+
+- **`HttpClientChatClient` 把 HTTP 状态码放进 `HttpRequestException.StatusCode`**。
+  此前只写进消息文本，要靠正则解析才能取到——上游改措辞就会静默退化成
+  `Unknown`。这是修一个已有缺陷：结构化数据本来该有，只是没设。
 
 - **`LoadFromDirectoryAsync`：目录级批量加载**。一次扫描目录下的
   `*.dll` 并逐个加载其中的插件，返回每个程序集一条 `PluginLoadResult`。

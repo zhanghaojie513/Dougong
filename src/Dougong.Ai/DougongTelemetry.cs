@@ -39,6 +39,15 @@ public static class DougongTelemetry
     public const string ProtocolTag = "protocol";
     public const string ResultTag = "result";
 
+    /// <summary>
+    /// 失败类别标签。**只在失败调用上出现**，值为 <see cref="UsageFailureKind"/> 的成员名。
+    /// </summary>
+    /// <remarks>
+    /// 低基数维度（11 个可能值），适合做指标标签。
+    /// 具体错误消息是高基数的，绝不进标签——那会让后端时间序列数爆炸。
+    /// </remarks>
+    public const string FailureKindTag = "failure_kind";
+
     private static readonly Meter Meter = new(MeterName, MeterVersion);
 
     /// <summary>输入 token 数。仅在 provider 报告了用量时记录。</summary>

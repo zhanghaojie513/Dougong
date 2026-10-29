@@ -21,6 +21,11 @@ public static class UsageChecks
         failures += await CheckAsync("records-streaming-usage", StreamingUsageAsync);
         failures += await CheckAsync("unreported-is-not-zero", UnreportedAsync);
         failures += await CheckAsync("failed-call-is-counted", FailedCallAsync);
+        failures += await CheckAsync("failure-kind-classifies-http-status", ClassifyStatusAsync);
+        failures += await CheckAsync("failure-kind-separates-cancel-from-timeout", ClassifyCancelAsync);
+        failures += await CheckAsync("failure-kind-does-not-guess", ClassifyUnknownAsync);
+        failures += await CheckAsync("cancelled-is-not-counted-as-fault", CancelNotFaultAsync);
+        failures += await CheckAsync("http-status-reaches-exception", HttpStatusReachesExceptionAsync);
         failures += await CheckAsync("cancelled-call-keeps-elapsed", CancelledAsync);
         failures += await CheckAsync("summarizes-per-session", PerSessionAsync);
         failures += await CheckAsync("summarizes-per-day", PerDayAsync);
@@ -344,4 +349,212 @@ public static class UsageChecks
             return 1;
         }
     }
+    /// <summary>HTTP 状态码要映射到对应的失败类别。</summary>
+    /// <remarks>
+    /// 这几类在排查上动作完全不同：401 换 key、402 充值、429 降速、
+    /// 404 改地址、5xx 等待。全部归成"失败"等于没分类。
+    /// </remarks>
+    private static async Task<string?> ClassifyStatusAsync()
+    {
+        (int Status, UsageFailureKind Expected)[] cases =
+        [
+            (401, UsageFailureKind.Unauthorized),
+            (403, UsageFailureKind.Unauthorized),
+            (402, UsageFailureKind.QuotaExceeded),
+            (404, UsageFailureKind.NotFound),
+            (429, UsageFailureKind.RateLimited),
+            (500, UsageFailureKind.ServerError),
+            (503, UsageFailureKind.ServerError),
+        ];
+
+        foreach (var (status, expected) in cases)
+        {
+            var kind = await KindOfFailedCallAsync(
+                new HttpRequestException("boom", inner: null,
+                    (System.Net.HttpStatusCode)status));
+
+            if (kind != expected)
+                return $"HTTP {status} 应为 {expected}，实际 {kind}";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 取消与超时必须是两类——**判据是调用方的令牌有没有触发**，不是异常类型。
+    /// </summary>
+    /// <remarks>
+    /// 两者都是 <see cref="OperationCanceledException"/>。只看类型无法区分，
+    /// 而混在一起会让"用户按了几次 Ctrl+C"污染故障率。
+    /// </remarks>
+    private static async Task<string?> ClassifyCancelAsync()
+    {
+        var cancelledKind = await KindOfFailedCallAsync(
+            new OperationCanceledException(), callerCancels: true);
+        if (cancelledKind != UsageFailureKind.Cancelled)
+            return $"调用方取消应为 Cancelled，实际 {cancelledKind}";
+
+        var timeoutKind = await KindOfFailedCallAsync(
+            new OperationCanceledException(), callerCancels: false);
+        if (timeoutKind != UsageFailureKind.Timeout)
+            return $"非调用方取消的取消异常应为 Timeout，实际 {timeoutKind}";
+
+        // TaskCanceledException 是 OperationCanceledException 的子类，
+        // HTTP 客户端超时实际抛的就是它。
+        var taskTimeout = await KindOfFailedCallAsync(
+            new TaskCanceledException("timeout"), callerCancels: false);
+        if (taskTimeout != UsageFailureKind.Timeout)
+            return $"TaskCanceledException 应为 Timeout，实际 {taskTimeout}";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 判不出来的异常必须归 Unknown，不能挑一个"最像的"凑数。
+    /// </summary>
+    /// <remarks>
+    /// <b>错的分类比没有分类更糟</b>：它会让排查往错误方向走。
+    /// 例如把"我们自己的 NullReferenceException"归成 NetworkError，
+    /// 用户会去查网络，而问题在 SDK 里。
+    /// </remarks>
+    private static Task<string?> ClassifyUnknownAsync()
+    {
+        var kind = UsageFailureClassifier.Classify(
+            new NullReferenceException("bug in our code"), callerCancelled: false);
+
+        return Task.FromResult<string?>(kind == UsageFailureKind.Unknown
+            ? null
+            : $"无法判定的异常应归 Unknown，实际 {kind}");
+    }
+
+    /// <summary>
+    /// 主动取消不计入故障率，其它失败都计入。
+    /// </summary>
+    private static async Task<string?> CancelNotFaultAsync()
+    {
+        var cancelled = await KindOfFailedCallAsync(
+            new OperationCanceledException(), callerCancels: true);
+
+        if (UsageFailureClassifier.CountsAsFault(cancelled))
+            return "主动取消不应计入故障率——那会让用户按 Ctrl+C 污染监控";
+
+        if (!UsageFailureClassifier.CountsAsFault(UsageFailureKind.Timeout))
+            return "超时必须计入故障率";
+
+        if (UsageFailureClassifier.CountsAsFault(UsageFailureKind.None))
+            return "成功不该计入故障率";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 让一次调用以指定异常失败，返回账目里记下的失败类别。
+    /// </summary>
+    /// <remarks>
+    /// 走真实的 <see cref="UsageRecordingChatClient"/> 而不是直接调分类器：
+    /// 那样才能证明"异常确实被分类并写进了账目"——只测分类器的话，
+    /// 记录路径忘了传 kind 也会全绿。
+    /// </remarks>
+    private static async Task<UsageFailureKind> KindOfFailedCallAsync(
+        Exception error, bool callerCancels = false)
+    {
+        var ledger = new UsageLedger();
+        var client = new UsageRecordingChatClient(
+            new ThrowingClient(error), ledger, "s", "p", "m",
+            ChatProtocol.OpenAiChatCompletions);
+
+        using var cts = new CancellationTokenSource();
+        if (callerCancels) cts.Cancel();
+
+        try
+        {
+            await client.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, "hi")], cancellationToken: cts.Token);
+        }
+        catch (Exception)
+        {
+            // 预期内：这里只关心账目里记了什么。
+        }
+
+        var record = ledger.Records.LastOrDefault();
+        return record?.FailureKind ?? UsageFailureKind.Unknown;
+    }
+
+    /// <summary>固定抛指定异常的客户端。</summary>
+    private sealed class ThrowingClient(Exception error) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) => Task.FromException<ChatResponse>(error);
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw error;
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose() { }
+    }
+
+    /// <summary>
+    /// 真实的 HTTP 客户端必须把状态码放进异常，分类才有依据。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是补一个真被漏掉的覆盖</b>：分类器能正确映射状态码，但如果
+    /// <c>HttpClientChatClient</c> 只把状态码写进消息文本、不设
+    /// <c>HttpRequestException.StatusCode</c>，整条分类链就是空转——
+    /// 所有 HTTP 错误都会落到 Unknown。
+    /// <para>
+    /// 反证实测：把 StatusCode 参数去掉，其它检查仍全绿。
+    /// 那是因为分类器测的是手造的异常，没有一条走真实传输层。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> HttpStatusReachesExceptionAsync()
+    {
+        using var http = new HttpClient(new StatusOnlyHandler(
+            System.Net.HttpStatusCode.Unauthorized, "invalid api key"))
+        {
+            BaseAddress = new Uri("https://example.invalid"),
+        };
+
+        var client = new HttpClientChatClient(
+            "https://example.invalid", "key", "model",
+            new OpenAiChatCompletionsFormat(), http);
+
+        try
+        {
+            await CollectTextAsync(client);
+            return "应当抛异常（401）";
+        }
+        catch (HttpRequestException ex)
+        {
+            // 第一条：状态码必须结构化地带出来，不能只在消息文本里。
+            if (ex.StatusCode != System.Net.HttpStatusCode.Unauthorized)
+            {
+                return $"异常的 StatusCode 是 {ex.StatusCode?.ToString() ?? "null"}，"
+                    + "应为 Unauthorized——只写进消息文本的话分类器拿不到";
+            }
+
+            // 第二条：分类器据此给出正确类别。
+            var kind = UsageFailureClassifier.Classify(ex, callerCancelled: false);
+            if (kind != UsageFailureKind.Unauthorized)
+                return $"401 应归 Unauthorized，实际 {kind}";
+
+            return null;
+        }
+    }
+
+    /// <summary>始终返回指定状态码的处理器。</summary>
+    private sealed class StatusOnlyHandler(System.Net.HttpStatusCode status, string body)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
+            });
+    }
+
 }

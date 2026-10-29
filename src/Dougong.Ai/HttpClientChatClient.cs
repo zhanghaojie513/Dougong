@@ -89,8 +89,15 @@ public sealed class HttpClientChatClient : IChatClient
         {
             var error = await response.Content.ReadAsStringAsync(cancellationToken)
                 .ConfigureAwait(false);
+
+            // **必须把 StatusCode 传进构造**，不能只写进消息文本。
+            // 消息文本要靠正则解析才能取状态码，而解析会失败——
+            // 上游任何一处改措辞，失败分类就静默退化成 Unknown。
+            // .NET 的 HttpRequestException 有专门的 StatusCode 属性，用它。
             throw new HttpRequestException(
-                $"provider 返回 {(int)response.StatusCode}：{error[..Math.Min(400, error.Length)]}");
+                $"provider 返回 {(int)response.StatusCode}：{error[..Math.Min(400, error.Length)]}",
+                inner: null,
+                response.StatusCode);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken)

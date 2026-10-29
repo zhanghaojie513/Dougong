@@ -10,6 +10,11 @@ namespace Dougong.Ai;
 /// <remarks>
 /// <see cref="Reported"/> 为 false 表示 provider 没有给出 usage。
 /// 这种情况必须如实记录为"未知"，不能用 0 冒充——0 会被读成"这次调用没花钱"。
+/// <para>
+/// <b><see cref="FailureKind"/> 与 <see cref="Succeeded"/> 并存而不是替代它</b>：
+/// 前者是分类（用于聚合与告警），后者是不会出错的总量判据。
+/// 只留分类的话，任何一处分类写错都会让"这次到底成没成"跟着错。
+/// </para>
 /// </remarks>
 public sealed record UsageRecord(
     string Provider,
@@ -20,7 +25,8 @@ public sealed record UsageRecord(
     long? TotalTokens,
     TimeSpan Elapsed,
     bool Succeeded,
-    string? Failure)
+    string? Failure,
+    UsageFailureKind FailureKind = UsageFailureKind.None)
 {
     /// <summary>provider 是否真的报告了用量。</summary>
     public bool Reported => InputTokens is not null || OutputTokens is not null;
@@ -28,6 +34,9 @@ public sealed record UsageRecord(
     /// <summary>未报告时返回 null，让调用方区分"零消耗"与"不知道"。</summary>
     public long? EffectiveTotal => TotalTokens
         ?? (InputTokens is { } input && OutputTokens is { } output ? input + output : null);
+
+    /// <summary>这次失败是否值得计入故障率（主动取消不算）。</summary>
+    public bool IsFault => UsageFailureClassifier.CountsAsFault(FailureKind);
 }
 
 /// <summary>
@@ -201,7 +210,8 @@ public sealed class UsageRecordingChatClient(
         }
         catch (Exception ex)
         {
-            Record(started, null, succeeded: false, failure: Describe(ex));
+            Record(started, null, succeeded: false, failure: Describe(ex),
+                kind: UsageFailureClassifier.Classify(ex, cancellationToken.IsCancellationRequested));
             throw;
         }
     }
@@ -229,7 +239,9 @@ public sealed class UsageRecordingChatClient(
             catch (Exception ex)
             {
                 // 流中断：已收到的 usage 仍算数（有些 provider 在终结帧前就给出）。
-                Record(started, usage, succeeded: false, failure: Describe(ex));
+                Record(started, usage, succeeded: false, failure: Describe(ex),
+                    kind: UsageFailureClassifier.Classify(
+                        ex, cancellationToken.IsCancellationRequested));
                 throw;
             }
 
@@ -244,8 +256,13 @@ public sealed class UsageRecordingChatClient(
         Record(started, usage, succeeded: true, failure: null);
     }
 
+    /// <remarks>
+    /// <c>kind</c> 成功时必须是 <see cref="UsageFailureKind.None"/>。
+    /// 这里不校验：调用点只有两处且都显式传了值，加校验只会让成功路径多一次分支。
+    /// </remarks>
     private void Record(
-        DateTimeOffset started, UsageDetails? usage, bool succeeded, string? failure)
+        DateTimeOffset started, UsageDetails? usage, bool succeeded, string? failure,
+        UsageFailureKind kind = UsageFailureKind.None)
     {
         var elapsed = _clock() - started;
 
@@ -256,7 +273,8 @@ public sealed class UsageRecordingChatClient(
             usage?.TotalTokenCount,
             elapsed,
             succeeded,
-            failure));
+            failure,
+            kind));
 
         // 同一份事实同时投递到标准计量出口。标签只放低基数维度：
         // provider / model / protocol / result。会话 ID 属于日志，不属于指标。
@@ -267,6 +285,14 @@ public sealed class UsageRecordingChatClient(
             { DougongTelemetry.ProtocolTag, protocol.ToString() },
             { DougongTelemetry.ResultTag, succeeded ? "success" : "failure" },
         };
+
+        // 失败类别只加在失败调用上：成功时它是 None，加进去等于给每条成功
+        // 记录多一个恒定标签，白白增加时间序列。
+        //
+        // failure_kind 是低基数维度（11 个值），适合做标签；
+        // 而具体错误消息是高基数，绝不能进标签——那会让后端序列数爆炸。
+        if (!succeeded && kind != UsageFailureKind.None)
+            tags.Add(DougongTelemetry.FailureKindTag, kind.ToString());
 
         DougongTelemetry.Calls.Add(1, tags);
         DougongTelemetry.CallDuration.Record(elapsed.TotalMilliseconds, tags);
