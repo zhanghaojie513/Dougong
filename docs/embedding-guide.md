@@ -227,7 +227,25 @@ await foreach (var evt in runtime.RunAsync(request))
 `Compacting` / `Streaming` / `Failed`。`Thinking` 与 `Reasoning` 的区别是
 "什么都还没来"与"模型确实在动"——长时间没输出时，这两者给用户的感受完全不同。
 
-`RunFinished.Outcome` 有五种，**必须处理，不能只认 `Completed`**：
+### 5.3 跨进程宿主：事件怎么过线
+
+如果你的宿主是**独立进程**（UI 进程 + Agent 进程，像桌面端那样），
+事件要序列化过线。三条实践，来自桌面端的真实问题：
+
+**① 推理与正文必须是不同的条目类型。** 不要共用一个 `text` 字段加个 `isReasoning`
+标志——UI 折叠、样式、历史重放的处理方式都不同，后期再分家要改协议。
+
+**② 每个事件带单调递增序号。** 客户端据此检测缺口。序号**必须全连接唯一**，
+不能每会话从 0 计数——否则同一条连接上多会话时序号会错乱，客户端误判成丢消息。
+
+**③ 流式条目的"结束"要显式发。** 流式文本推进时是"更新同一条目"，
+回合结束时要把 `isStreaming` 关掉，否则 UI 的光标永远在闪。
+这一点在 `RunFinished` 之后、且 `Cancelled` / `Failed` 路径上也要做到——
+异常退出时最容易漏。
+
+### 5.4 结束状态：`RunFinished.Outcome`
+
+有五种，**必须处理，不能只认 `Completed`**：
 
 ```csharp
 switch (end.Outcome)

@@ -51,10 +51,12 @@ and [M3 plan](docs/m3-plan.md) §9). The I0 stabilization exit conditions are me
 - **Agent** — single tool execution entry (`ToolDispatcher`: schema validation → approval →
   resource lock → execute), JSONL commit barrier, session recovery and branching, context
   compaction, tool-result size limit (clamps model context only; logs stay complete),
-  plan protection (compaction never summarizes the current plan)
+  plan protection (compaction never summarizes the current plan); reasoning is a separate
+  stream (`ReasoningDelta`, never mixed into the answer), plus `AgentPhaseTracker` so hosts
+  don't have to guess "what should be on screen right now" from the event stream alone
 - **Hosting** — kernel wiring (plugin registration, lease adapters, service resolution).
-  Shared by the CLI and the future Desktop host so neither reimplements it — that kind of
-  duplication fails silently (registration order, accessor vs. bare instance, cleanup on error)
+  Shared by the CLI and a second host (the desktop app) so neither reimplements it — that
+  kind of duplication fails silently (registration order, accessor vs. bare instance, cleanup)
 - **Ai** — three wire-protocol connectors (chat-completions / responses / anthropic),
   dialect differences contained in `WireCompat`, usage accounting
 - **Mcp** — remote tool bridging and change detection (annotations are not authorization)

@@ -41,6 +41,7 @@ public static class WireFormatChecks
         failures += await CheckAsync("runtime-history-carries-tool-result-text", RuntimeToolResultTextAsync);
         failures += await CheckAsync("reasoning-produces-live-event", ReasoningProducesEventAsync);
         failures += await CheckAsync("no-reasoning-yields-no-event", NoReasoningNoEventAsync);
+        failures += Check("embedding-guide-lists-every-event", GuideListsEveryEvent);
 
         Console.WriteLine(failures == 0
             ? "WIRE: ALL PASS"
@@ -636,4 +637,79 @@ public static class WireFormatChecks
             return 1;
         }
     }
+    /// <summary>向上找含 Dougong.slnx 的目录。</summary>
+    private static string FindRepoRoot()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir is not null && !File.Exists(Path.Combine(dir, "Dougong.slnx")))
+        {
+            dir = Path.GetDirectoryName(dir);
+        }
+
+        return dir ?? throw new InvalidOperationException("找不到仓库根目录（Dougong.slnx）");
+    }
+
+    /// <summary>
+    /// <c>embedding-guide.md</c> 的事件清单必须与实际事件类型完全一致。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条已经错过一次</b>：文档写"七种事件"，而表格实际列了八行；
+    /// 加上 <c>ReasoningDelta</c> 后是九种。这类错误靠人通读看不出来——
+    /// 数字和表格都在同一页，谁也不会去数。
+    /// <para>
+    /// 判据双向：文档提到的每个事件名必须真实存在（防写错名字），
+    /// 每个真实事件也必须在文档里出现（防新增后漏写）。
+    /// </para>
+    /// </remarks>
+    private static string? GuideListsEveryEvent()
+    {
+        var root = FindRepoRoot();
+        var guide = Path.Combine(root, "docs", "embedding-guide.md");
+        if (!File.Exists(guide)) return "找不到 docs/embedding-guide.md";
+
+        var text = File.ReadAllText(guide);
+
+        // 从源码里取真实事件名：AgentEvent 的嵌套 record。
+        var source = Path.Combine(root, "src", "Dougong.Agent", "IAgentRuntime.cs");
+        if (!File.Exists(source)) return "找不到 IAgentRuntime.cs";
+
+        var actual = System.Text.RegularExpressions.Regex
+            .Matches(File.ReadAllText(source), @"public sealed record (\w+)\s*[(:][^;]*: AgentEvent")
+            .Select(m => m.Groups[1].Value)
+            .ToHashSet(StringComparer.Ordinal);
+
+        if (actual.Count == 0) return "没从源码解析出任何 AgentEvent 类型——检查失效";
+
+        // **只查事件表格那一段**：正文里提到事件名是正常的（§5.1 标题就写着
+        // ReasoningDelta），拿全文匹配会让"表格漏了一行"查不出来——
+        // 反证实测过一次：删掉表格行仍 PASS，因为标题还在。
+        var tableStart = text.IndexOf("`ReasoningDelta` | 模型在推理", StringComparison.Ordinal);
+        var heading = text.IndexOf("### 5.1", StringComparison.Ordinal);
+        var tableStartFallback = text.IndexOf("| 事件 |", StringComparison.Ordinal);
+
+        var from = tableStartFallback >= 0 ? tableStartFallback : tableStart;
+        var to = heading > from ? heading : text.Length;
+        var table = from >= 0 ? text[from..to] : text;
+
+        var missing = actual
+            .Where(name => !table.Contains($"`{name}`", StringComparison.Ordinal))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        if (missing.Length > 0)
+            return $"embedding-guide 漏了事件：{string.Join(", ", missing)}";
+
+        // 反向：文档里写成 `XxxDelta`/`XxxEvent` 这类形式却不存在的，多半是笔误。
+        var claimed = System.Text.RegularExpressions.Regex
+            .Matches(text, @"`([A-Z]\w*(?:Delta|Update|Requested|Completed|Started|Finished|Truncated|Compacted))`")
+            .Select(m => m.Groups[1].Value)
+            .Where(name => !actual.Contains(name))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        return claimed.Length == 0
+            ? null
+            : $"embedding-guide 提到不存在的事件：{string.Join(", ", claimed)}";
+    }
+
 }

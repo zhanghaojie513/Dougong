@@ -449,12 +449,22 @@ error IL3000: 'Assembly.Location' always returns an empty string for
 
 `iteration-roadmap.md` 的 I1：从"一个 CLI"变成"能被 .NET 服务嵌入的库"。
 
-**但先别急着开。** [embedding-guide.md](embedding-guide.md) 已经把"怎么嵌"写清了
-（20 行）。真要推进 I1，该等第一个真实的嵌入需求出现——那时才知道
-"可嵌入运行时"缺的是什么，而不是照着路线图造。
+**判据已满足：第二个消费者出现了（2026-10-29）。**
+
+桌面端是独立仓库、独立进程的宿主（UI 进程 + Agent 进程，IPC 通信），
+直接引用 nuget 上的 `Dougong.*` 包，走 `KernelAgentHost` 装配。
+它的第一个真实需求是**推理内容的实时流**——API 层拿不到就做不了，
+于是补出了 `AgentEvent.ReasoningDelta` 与 `AgentPhase` / `AgentPhaseTracker`。
+
+**这件事本身验证了当初的判断**：不是照着路线图造"可嵌入运行时"，
+而是等真实宿主撞上具体缺口再补。补出来的东西有明确用途。
+
+**仍未做的**：不为"可嵌入"而抽 `DougongHost.Create()` 这类一行装配器。
+桌面端用 `KernelAgentHost` + 自己的 `SessionComposer` 就已经够了，
+没有第二个宿主提出不同需求前，抽象只会有一种形状可用——那就是碰运气。
 
 这与 [host-layering-decision.md](host-layering-decision.md) §4.4 的结论一致：
-**先有第二个消费者，再抽抽象。**
+**先有第二个消费者，再抽抽象。现在有第二个了，但抽什么仍取决于它真正缺什么。**
 
 ---
 
