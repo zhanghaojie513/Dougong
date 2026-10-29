@@ -155,19 +155,27 @@ public static class StatusLine
 
     /// <summary>用空格把内容补到整行宽，抹掉上一帧的残留。</summary>
     /// <remarks>
-    /// <b>这里不做截断，因为活动行结构上不会超宽</b>：内容固定是
-    /// <c>缩进 + spinner + 面孔 + 文案 + 耗时</c>，最长约 32 格
-    /// （<c>整理中…</c> 4 个汉字 + 最长面孔 7 格 + <c>99m59s</c>），
-    /// 而低于 40 格就走"只输出 spinner"的极窄分支。
-    /// 加一层截断是永远不会执行的代码——写进去反而是负担。
-    /// 状态栏内容长度由模型名决定，那里才需要截断（见 <see cref="RenderStatus"/>）。
+    /// <b>必须留最后一列不写</b>：真实终端在写满最右列时会自动折行，
+    /// 光标跳到下一行行首。底部区域依赖"画完这一行光标还在这一行"
+    /// 这个前提来定位下一行（<c>ESC[1E</c>），一旦折行，后续每一行都偏移，
+    /// 表现为活动行文字消失、内容错位。
+    /// <para>
+    /// 真机实测（2026-10-29 用户截图）：120 列终端上活动行只剩 <c>  |</c>，
+    /// 文字跑到别处去了。自制 VT 模拟器没有自动折行，所以查不出来。
+    /// </para>
     /// </remarks>
     private static string PadToWidth(string content, int width)
     {
         if (width <= 0) return content;
 
+        // 可用宽度减 1：最后一列留空，杜绝自动折行。
+        var limit = width;
         var visible = DisplayWidth(content);
-        return visible >= width ? content : content + new string(' ', width - visible);
+
+        if (visible > limit) content = TruncateToWidth(content, limit);
+        visible = DisplayWidth(content);
+
+        return visible >= limit ? content : content + new string(' ', limit - visible);
     }
 
     /// <summary>

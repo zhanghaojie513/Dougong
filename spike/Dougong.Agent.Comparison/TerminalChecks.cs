@@ -59,6 +59,8 @@ public static class TerminalChecks
         failures += Check("live-region-skips-identical-repaint", RepaintSkipsIdentical);
         failures += Check("clear-then-write-does-not-resurrect-region", ClearThenWrite);
         failures += Check("stderr-line-does-not-collide-with-region", StderrDoesNotCollide);
+        failures += Check("binary-is-not-stale", BinaryNotStale);
+        failures += Check("padded-activity-line-does-not-wrap", PaddedLineNoWrap);
 
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
@@ -638,17 +640,38 @@ public static class TerminalChecks
         return line[2].ToString();
     }
 
-    /// <summary>测宽用的独立实现：不复用被测代码，否则宽度 bug 会一起错。</summary>
+    /// <summary>
+    /// 测宽用的独立实现。**区间必须与 StatusLine.IsWide 一致**。
+    /// </summary>
+    /// <remarks>
+    /// 早先这里只把 CJK 判为 2 格，而被测代码还覆盖 U+2E80–U+303E 等区间
+    /// （含 <c>◉</c> 这类符号）。两边口径不一致，"补白有没有补满整行"
+    /// 这种检查会永远对不上而假通过——实测踩到过。
+    /// </remarks>
     private static int DisplayWidthOf(string text)
     {
         var width = 0;
         foreach (var c in text)
         {
-            if (c == '') continue; // 本套件断言的都是不含 ANSI 的纯文本
-            width += c is >= '一' and <= '鿿' or >= '　' and <= '〿' ? 2 : 1;
+            if (c == '\u001b') continue; // 本套件断言的都是不含 ANSI 的纯文本
+            width += IsWideChar(c) ? 2 : 1;
         }
         return width;
     }
+
+    /// <summary>与 <c>StatusLine.IsWide</c> 保持同一套区间。</summary>
+    private static bool IsWideChar(char c) => c is
+        >= '\u1100' and <= '\u115F' or
+        >= '\u2E80' and <= '\u303E' or
+        >= '\u3041' and <= '\u33FF' or
+        >= '\u3400' and <= '\u4DBF' or
+        >= '\u4E00' and <= '\u9FFF' or
+        >= '\uA000' and <= '\uA4CF' or
+        >= '\uAC00' and <= '\uD7A3' or
+        >= '\uF900' and <= '\uFAFF' or
+        >= '\uFE30' and <= '\uFE6F' or
+        >= '\uFF00' and <= '\uFF60' or
+        >= '\uFFE0' and <= '\uFFE6';
 
     /// <summary>
     /// 不活动的区域**不得向终端写任何字节**。
@@ -977,7 +1000,19 @@ public static class TerminalChecks
                     case '\n': _row = Math.Min(rows - 1, _row + 1); break;
                     case '\r': _column = 0; break;
                     default:
-                        if (_column < columns) _grid[_row][_column++] = c;
+                        // **写满最后一列要自动折行**。真实终端就是这么做的，
+                        // 而底部区域依赖"写完这一行光标还留在这一行"来定位下一行。
+                        // 早期版本直接丢弃越界字符、不折行，于是"补白正好补满整行"
+                        // 这种缺陷在模拟器里完全看不出来——真机上却是活动行文字
+                        // 全部消失（2026-10-29 用户截图）。
+                        _grid[_row][_column] = c;
+                        _column++;
+
+                        if (_column >= columns)
+                        {
+                            _column = 0;
+                            _row = Math.Min(rows - 1, _row + 1);
+                        }
                         break;
                 }
             }
@@ -1243,6 +1278,106 @@ public static class TerminalChecks
         var activityLine = Array.FindIndex(lines, l => l.Contains("思考中", StringComparison.Ordinal));
         if (activityLine >= 0 && activityLine <= errorLine)
             return "活动行压在错误行上方：\n" + live.Dump();
+
+        return null;
+    }
+
+    /// <summary>
+    /// 补白后的活动行不得触发终端自动折行。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条防的是真机上真实发生过的缺陷</b>（2026-10-29 截图）：
+    /// 活动行被补白到正好等于终端宽度，写满最后一列时终端自动折行，
+    /// 光标跳到下一行；于是 <c>ESC[1E</c> 定位多走一行，文字全错位，
+    /// 屏幕上只剩一个 spinner。
+    /// <para>
+    /// <b>前几条 VT 检查查不到它</b>：那些用 <c>SetLines</c> 直接塞短字符串，
+    /// 根本不经过补白。这条必须真的走 <see cref="StatusLine.RenderActivity"/>。
+    /// </para>
+    /// </remarks>
+    private static string? PaddedLineNoWrap()
+    {
+        var state = new ActivityState();
+        state.OnRunStarted(T0);
+        var now = T0.AddSeconds(3);
+
+        // 用几个典型宽度：80 是 Rich 档下限，120 是常见宽屏。
+        foreach (var width in new[] { 80, 100, 120 })
+        {
+            var activity = StatusLine.RenderActivity(state, now, width);
+            if (activity is null) return $"宽 {width} 应渲染活动行";
+
+            var status = StatusLine.RenderStatus("model", null, 0, TimeSpan.FromSeconds(3), width);
+
+            foreach (var line in new[] { activity, status })
+            {
+                var display = DisplayWidthOf(line);
+
+                // 显示宽度必须严格小于终端宽度：等于就会折行。
+                Console.WriteLine($"[diag] w={width} display={display} len={line.Length}");
+                if (display >= width)
+                    return $"宽 {width} 的行占了 {display} 格（写满最后列会折行）：[{line.TrimEnd()}]";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>向上找含 Dougong.slnx 的目录。</summary>
+    private static string FindRepoRoot()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir is not null && !File.Exists(Path.Combine(dir, "Dougong.slnx")))
+        {
+            dir = Path.GetDirectoryName(dir);
+        }
+
+        return dir ?? throw new InvalidOperationException("找不到仓库根目录（Dougong.slnx）");
+    }
+
+    /// <summary>
+    /// 被测的 CLI 程序集不得比源码旧。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条防的是本项目最顽固的一类失误：跑了旧 DLL 还当成通过。</b>
+    /// 已因此白费至少四次排查（最近一次：2026-10-29，因为用户还开着
+    /// 交互会话，Dougong.Cli.exe 被文件锁占用，构建报 MSB3027 失败，
+    /// 而我看的是 `grep "error CS"` 的结果 0，误判成构建成功）。
+    /// <para>
+    /// 判据：CLI 程序集与它所有源码的最晚修改时间比较。<c>obj/</c> 下的
+    /// 生成文件不计。程序集比源码旧 ⇒ 现在跑的代码与读到的源码不一致，
+    /// 任何结论都无效。
+    /// </para>
+    /// </remarks>
+    private static string? BinaryNotStale()
+    {
+        var root = FindRepoRoot();
+        var assembly = Path.Combine(
+            root, "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+
+        if (!File.Exists(assembly)) return $"找不到 {assembly}（先构建）";
+
+        var built = File.GetLastWriteTimeUtc(assembly);
+
+        foreach (var dir in new[] { "Dougong.Cli", "Dougong.Agent", "Dougong.Ai" })
+        {
+            var source = Path.Combine(root, "src", dir);
+            if (!Directory.Exists(source)) continue;
+
+            foreach (var file in Directory.EnumerateFiles(source, "*.cs", SearchOption.AllDirectories))
+            {
+                if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                        StringComparison.Ordinal)) continue;
+
+                var modified = File.GetLastWriteTimeUtc(file);
+                if (modified > built)
+                {
+                    return $"{Path.GetFileName(file)} 比 Dougong.Cli.dll 新 "
+                        + $"（源码 {modified:HH:mm:ss}，程序集 {built:HH:mm:ss}）——"
+                        + "现在跑的是旧构建，任何结论都不作数";
+                }
+            }
+        }
 
         return null;
     }

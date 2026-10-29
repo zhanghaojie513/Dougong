@@ -264,16 +264,23 @@ public sealed class LiveRegion : IDisposable
     }
 
     /// <summary>按显示宽度截断，避免折行破坏区域布局。</summary>
-    private static string Truncate(string text, int width)    {
-        if (width <= 0) return text;
+    /// <remarks>
+    /// <b>上限是 <c>width - 1</c>，不是 <c>width</c></b>：写满最右列会让终端
+    /// 自动折行，光标跳到下一行，后续 <c>ESC[1E</c> 就多走一行、整块区域错位。
+    /// 真机上表现为活动行只剩 spinner、文字消失（2026-10-29 截图）。
+    /// </remarks>
+    private static string Truncate(string text, int width)
+    {
+        if (width <= 1) return text;
 
+        var limit = width;
         var used = 0;
         var builder = new System.Text.StringBuilder(text.Length);
 
         foreach (var c in text)
         {
             var w = WidthOf(c);
-            if (used + w > width) break;
+            if (used + w > limit) break;
             builder.Append(c);
             used += w;
         }
