@@ -21,7 +21,17 @@
 
 ## [Unreleased]
 
-（暂无）
+## [0.1.2-alpha.2] — 2026-10-30
+
+**只改文档，无代码变更。**
+
+### Changed
+
+- `architecture.md` §2.3 加一条指向：将来若要公开宿主协议，抽的是
+  「会话协议包」而不是「分帧包」。桌面端已有的 `DougongDesktop.Ipc`
+  比 `Pi.Protocol` 更贴业务（有会话/条目/审批这些概念，不止是字节怎么切），
+  其成熟度评估与抽包触发条件记在 Desktop 仓库的
+  `docs/ipc-protocol-readiness.md`。
 
 ## [0.1.2-alpha.1] — 2026-10-30
 
