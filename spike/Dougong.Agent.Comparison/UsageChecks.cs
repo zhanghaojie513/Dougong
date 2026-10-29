@@ -27,6 +27,8 @@ public static class UsageChecks
         failures += await CheckAsync("cancelled-is-not-counted-as-fault", CancelNotFaultAsync);
         failures += await CheckAsync("http-status-reaches-exception", HttpStatusReachesExceptionAsync);
         failures += await CheckAsync("malformed-stream-is-not-silent-success", MalformedStreamAsync);
+        failures += await CheckAsync("partial-consumption-still-records", PartialConsumptionAsync);
+        failures += await CheckAsync("stream-failure-is-recorded-once", FailureRecordedOnceAsync);
         failures += await CheckAsync("cancelled-call-keeps-elapsed", CancelledAsync);
         failures += await CheckAsync("summarizes-per-session", PerSessionAsync);
         failures += await CheckAsync("summarizes-per-day", PerDayAsync);
@@ -605,6 +607,131 @@ public static class UsageChecks
                 ? null
                 : $"抛了 {ex.GetType().Name} 但被分成 {kind}，应为 InvalidResponse";
         }
+    }
+
+    /// <summary>
+    /// 调用方中途停止消费流，账目仍必须有一条记录。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是复检发现的漏记</b>：成功记录写在 <c>while</c> 循环之后，
+    /// 而消费方 <c>break</c> 会让枚举器直接 Dispose、循环退出——
+    /// 那一行永远不执行，这次调用在账目里完全消失。
+    /// <para>
+    /// 漏记比记错更隐蔽：总数只是偏低，没有任何异常迹象。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> PartialConsumptionAsync()
+    {
+        var ledger = new UsageLedger();
+        var client = new UsageRecordingChatClient(
+            new MultiChunkClient(["a", "b", "c"]), ledger, "s", "p", "m",
+            ChatProtocol.OpenAiChatCompletions);
+
+        var seen = 0;
+        await foreach (var _ in client.GetStreamingResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")]))
+        {
+            seen++;
+            if (seen == 1) break;   // 只要第一个片段
+        }
+
+        var record = ledger.Records.LastOrDefault();
+        if (record is null)
+        {
+            return "调用方中途停止消费，账目里没有任何记录——"
+                + "真实原因是成功记录写在循环之后，break 让它没机会执行";
+        }
+
+        return null;
+    }
+
+    /// <summary>分成多段输出的客户端。</summary>
+    private sealed class MultiChunkClient(string[] chunks) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation]
+            CancellationToken cancellationToken = default)
+        {
+            foreach (var chunk in chunks)
+            {
+                await Task.Yield();
+                yield return new ChatResponseUpdate(ChatRole.Assistant, chunk);
+            }
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    /// <summary>
+    /// 流中途失败时，账目里必须**恰好一条**失败记录，不能记两次。
+    /// </summary>
+    /// <remarks>
+    /// 用 <c>finally</c> 保证覆盖所有退出路径之后，最直接的风险就是
+    /// 异常路径记一次、finally 再记一次。用 <c>recorded</c> 标志挡住，
+    /// 这条检查钉住它——重复记账会让失败率虚高，同样是假数据。
+    /// </remarks>
+    private static async Task<string?> FailureRecordedOnceAsync()
+    {
+        var ledger = new UsageLedger();
+        var client = new UsageRecordingChatClient(
+            new FailingStreamClient(), ledger, "s", "p", "m",
+            ChatProtocol.OpenAiChatCompletions);
+
+        try
+        {
+            await foreach (var _ in client.GetStreamingResponseAsync(
+                [new ChatMessage(ChatRole.User, "hi")]))
+            {
+                // 消费第一个片段后流会失败。
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // 预期内。
+        }
+
+        var records = ledger.Records;
+
+        if (records.Count != 1)
+            return $"账目里有 {records.Count} 条记录，应为 1 条（重复记账会让失败率虚高）";
+
+        if (records[0].Succeeded)
+            return "流失败却记成了成功";
+
+        return records[0].FailureKind == UsageFailureKind.InvalidResponse
+            ? null
+            : $"失败类别应为 InvalidResponse，实际 {records[0].FailureKind}";
+    }
+
+    /// <summary>先给一个片段，然后抛异常的客户端。</summary>
+    private sealed class FailingStreamClient : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation]
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "partial");
+
+            await Task.Yield();
+            throw new InvalidOperationException("流中断");
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
     }
 
 }

@@ -228,32 +228,51 @@ public sealed class UsageRecordingChatClient(
             .GetStreamingResponseAsync(messages, options, cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
 
-        while (true)
+        // 记录必须覆盖**所有**退出路径，包括调用方提前 break。
+        //
+        // 复检发现的漏记：成功记录原先写在 while 之后，而消费方 break 会让
+        // 枚举器直接 Dispose、循环退出——那一行永远不执行，这次调用在账目里
+        // 完全消失。漏记比记错更隐蔽：总数只是偏低，没有任何异常迹象。
+        //
+        // 用 finally 而不是在每个 return 前补一行：退出路径有三种
+        // （正常结束、提前 break、抛异常），逐个补必然漏。
+        var recorded = false;
+
+        try
         {
-            ChatResponseUpdate current;
-            try
+            while (true)
             {
-                if (!await enumerator.MoveNextAsync().ConfigureAwait(false)) break;
-                current = enumerator.Current;
-            }
-            catch (Exception ex)
-            {
-                // 流中断：已收到的 usage 仍算数（有些 provider 在终结帧前就给出）。
-                Record(started, usage, succeeded: false, failure: Describe(ex),
-                    kind: UsageFailureClassifier.Classify(
-                        ex, cancellationToken.IsCancellationRequested));
-                throw;
-            }
+                ChatResponseUpdate current;
+                try
+                {
+                    if (!await enumerator.MoveNextAsync().ConfigureAwait(false)) break;
+                    current = enumerator.Current;
+                }
+                catch (Exception ex)
+                {
+                    // 流中断：已收到的 usage 仍算数（有些 provider 在终结帧前就给出）。
+                    Record(started, usage, succeeded: false, failure: Describe(ex),
+                        kind: UsageFailureClassifier.Classify(
+                            ex, cancellationToken.IsCancellationRequested));
+                    recorded = true;
+                    throw;
+                }
 
-            foreach (var content in current.Contents)
-            {
-                if (content is UsageContent usageContent) usage = usageContent.Details;
-            }
+                foreach (var content in current.Contents)
+                {
+                    if (content is UsageContent usageContent) usage = usageContent.Details;
+                }
 
-            yield return current;
+                yield return current;
+            }
         }
-
-        Record(started, usage, succeeded: true, failure: null);
+        finally
+        {
+            // 走到这里说明流正常结束或调用方提前停止，两种都是"成功但没记过账"。
+            // 已经记过失败的不重复记——一次调用只能有一条记录。
+            if (!recorded)
+                Record(started, usage, succeeded: true, failure: null);
+        }
     }
 
     /// <remarks>

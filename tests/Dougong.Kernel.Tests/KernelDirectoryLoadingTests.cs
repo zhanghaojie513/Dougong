@@ -199,6 +199,42 @@ public sealed class KernelDirectoryLoadingTests
         Assert.Empty(results);
     }
 
+    /// <summary>
+    /// 非托管 dll（原生库）不能中断整批扫描。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是复检发现的真缺陷</b>：<c>PluginLoadContext</c> 的构造函数里就建了
+    /// <c>AssemblyDependencyResolver</c>，对非托管 dll 会抛异常。而构造在
+    /// <c>try</c> 之外，一个原生依赖库就能让整个目录加载失败——
+    /// 恰好与"单个失败不中断整批"的承诺相反。
+    /// </remarks>
+    [Fact]
+    public async Task Native_library_does_not_abort_scan()
+    {
+        using var dir = new PluginDirectory();
+        dir.CopyIn(SamplePluginPath, "Dougong.Sample.Plugin.dll");
+
+        // 造一个非 PE 文件，扩展名是 .dll。
+        File.WriteAllBytes(
+            Path.Combine(dir.Path, "native-not-managed.dll"),
+            [0x7F, 0x45, 0x4C, 0x46, 0x02, 0x01]);   // ELF 魔数，明确不是托管 PE
+
+        await using var kernel = new DougongKernel();
+
+        // 不抛异常是核心断言。
+        var results = await kernel.LoadFromDirectoryAsync(dir.Path).AsTask().WaitAsync(Timeout);
+
+        Assert.Equal(2, results.Count);
+        Assert.Single(results, r => r.Status == PluginLoadStatus.Loaded);
+
+        var native = Assert.Single(results,
+            r => r.AssemblyPath.EndsWith("native-not-managed.dll", StringComparison.Ordinal));
+        // 落在 Failed 而不是 Skipped 是刻意的：这是**读不出来**，
+        // 不是**读出来了但没有 IPlugin**。前者可能是插件本身坏了，要用户知道。
+        Assert.Equal(PluginLoadStatus.Failed, native.Status);
+    }
+
+
     /// <summary>空目录返回空列表，不抛。</summary>
     [Fact]
     public async Task Empty_directory_returns_empty_list()

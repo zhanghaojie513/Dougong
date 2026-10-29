@@ -20,7 +20,7 @@
   <a href="https://github.com/zhanghaojie513/Dougong"><img src="https://img.shields.io/badge/repository-Dougong-2f6f5e?style=flat-square" alt="Repository"></a>
   <a href="https://github.com/zhanghaojie513/Dougong/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/zhanghaojie513/Dougong/build.yml?style=flat-square&label=build" alt="Build"></a>
   <a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-10.0-512bd4?style=flat-square" alt=".NET 10"></a>
-  <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.1.1--alpha.3-orange?style=flat-square" alt="Version 0.1.1-alpha.3"></a>
+  <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.1.1--alpha.4-orange?style=flat-square" alt="Version 0.1.1-alpha.4"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f883d?style=flat-square" alt="MIT License"></a>
 </p>
 
@@ -37,11 +37,11 @@ A *dougong* (斗拱) is the bracket set in traditional Chinese timber architectu
 
 ## Current Status
 
-Targeting `net10.0`, version `0.1.1-alpha.3`, **published to nuget.org** (2026-10-29).
+Targeting `net10.0`, version `0.1.1-alpha.4`, **published to nuget.org** (2026-10-29).
 All four design commitments — composability, lifecycle integrity, explainable failure,
 actually usable — are met; see [design commitments](docs/goal.md).
 
-**Scale**: 7 product projects, 1 kernel test project (**200 tests**), 9 sample/probe projects,
+**Scale**: 7 product projects, 1 kernel test project (**201 tests**), 9 sample/probe projects,
 **45 deterministic self-check suites** (no network, no API key required).
 
 **Verified capabilities**:
@@ -141,7 +141,7 @@ Dougong focuses on the **supporting layer** for agents — not on any particular
 **As a tool** (no need to clone the repo):
 
 ```bash
-dotnet tool install --global Dougong.Cli --version 0.1.1-alpha.3
+dotnet tool install --global Dougong.Cli --version 0.1.1-alpha.4
 dougong --doctor      # check the environment first; it reports each item and the next step
 dougong               # start a conversation (model config required)
 ```
@@ -149,7 +149,7 @@ dougong               # start a conversation (model config required)
 The package is `Dougong.Cli`; the command is `dougong`. The names differ on purpose:
 packages follow the `Dougong.*` convention, commands stay short.
 
-> In `0.1.1-alpha.3` the command surface is complete (`--doctor`, `--report`, `--help`,
+> In `0.1.1-alpha.4` the command surface is complete (`--doctor`, `--report`, `--help`,
 > REPL, `--acp` are all exercised, behavior pinned by 45 self-check suites), but the
 > **terminal presentation and wording are still being polished**.
 
