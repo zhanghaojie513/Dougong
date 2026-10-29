@@ -21,7 +21,15 @@ DOTNET="${DOTNET:-dotnet}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-0.1.0-alpha.1}"
+# 版本号从 Directory.Build.props 读，不在这里写死。
+# 写死过一次：改版本时只改了 props，脚本仍在推旧版本号。
+DEFAULT_VERSION="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)"
+VERSION="${VERSION:-$DEFAULT_VERSION}"
+
+if [ -z "$VERSION" ]; then
+  echo "无法从 Directory.Build.props 读出 <Version>" >&2
+  exit 1
+fi
 OUT="artifacts/final"
 SOURCE="https://api.nuget.org/v3/index.json"
 
