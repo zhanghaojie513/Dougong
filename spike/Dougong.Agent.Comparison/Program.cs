@@ -23,6 +23,7 @@ public static class Program
         "acp-plan",
         "apicompat",
         "terminal",
+        "brand",
         "approval",
         "approval-log",
         "bare-hold",
@@ -193,6 +194,10 @@ public static class Program
         // 终端能力探测与三档渲染（CLI 实施计划 S1）。
         if (args.FirstOrDefault() == "terminal")
             return await TerminalChecks.RunAsync();
+
+        // 品牌资产：尺寸、alpha、ICO 帧、README 引用一致性。
+        if (args.FirstOrDefault() == "brand")
+            return await BrandChecks.RunAsync();
 
         // 验证"我自己写的插件"：接受一个 dll 路径，走生产加载路径。
         if (args.FirstOrDefault() == "load-plugin")
