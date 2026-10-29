@@ -320,11 +320,19 @@ public static class Program
         using var liveRegion = LiveRegion.Create(
             Output.Capability, force: tuiRequested ? null : false);
 
+        // 上下文占用在一轮开始时算一次，泵线程只读这个缓存的整数。
+        //
+        // **不能让泵线程直接枚举 messages**：那个 List 由主线程在轮末追加，
+        // List<T> 在并发枚举下会抛 InvalidOperationException，
+        // 而它抛出在后台线程上——表现为整个进程莫名退出，栈里看不到业务代码。
+        // 一轮之内历史不会变（本轮输入在轮末才追加），所以缓存是准确的。
+        var contextTokens = -1;   // 主线程写、泵线程读；int 读写本身原子
+
         await using var activity = new ActivityReporter(
             liveRegion,
             config.Model,
             composition.ContextWindow,
-            () => TokensUsed(ledger, sessionId));
+            () => contextTokens >= 0 ? contextTokens : null);
 
         // 让所有正文输出自动与底部区域协作：写之前擦、写之后画。
         Output.LiveRegion = liveRegion;
@@ -370,6 +378,7 @@ public static class Program
             {
                 // 必须在拉取第一个事件之前启动：等待模型是整轮最长的静默段，
                 // 而这段时间一个事件都不会来。放在循环里就永远不会按时亮起。
+                contextTokens = ContextTokens(messages, composition.ContextWindow) ?? -1;
                 activity.StartTurn();
 
                 await foreach (var evt in runtime.RunAsync(request))
@@ -618,19 +627,25 @@ public static class Program
     }
 
     /// <summary>
-    /// 状态栏用的已用 token 数。**没有数据时返回 null，不用 0 冒充。**
+    /// 状态栏用的上下文占用估算。**这是"已提交历史占多少"，不是"花了多少 token"。**
     /// </summary>
     /// <remarks>
-    /// provider 不报 usage 时显示 0 会让人以为"没花钱"，那是假信息。
-    /// 返回 null 后状态栏直接不显示占用率那一段。
+    /// <b>这里曾经是错的</b>：初版读 <see cref="UsageLedger"/> 的会话累计值，
+    /// 而那是每次调用的输入+输出累加。三轮对话后累计值可能是实际上下文的三倍，
+    /// 进度条会一路顶到 100%——一个看起来精确的假数字。
+    /// 上下文占用只能用 <see cref="TokenBudget.Estimate(IEnumerable{AgentMessage})"/>
+    /// 按当前历史估，与压缩器用的是同一个函数。
+    /// <para>
+    /// 不含本轮用户输入（它在轮末才追加进历史），所以略偏低——
+    /// 宁可偏低也不要按累计计费量虚报。
+    /// </para>
     /// </remarks>
-    private static int? TokensUsed(UsageLedger ledger, string sessionId)
+    private static int? ContextTokens(IReadOnlyList<AgentMessage> history, int contextWindow)
     {
-        var summary = ledger.Summarize(sessionId);
-        if (summary.UnreportedCalls > 0) return null;
+        // 没开压缩就不显示占用率，别白算。
+        if (contextWindow <= 0 || history.Count == 0) return null;
 
-        var total = summary.InputTokens + summary.OutputTokens;
-        return total > 0 ? (int)Math.Min(int.MaxValue, total) : null;
+        return TokenBudget.Estimate(history);
     }
 
     /// <summary>

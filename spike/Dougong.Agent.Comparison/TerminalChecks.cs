@@ -8,7 +8,7 @@ namespace Dougong.Agent.Comparison;
 /// </summary>
 /// <remarks>
 /// **这一套的全部检查都围绕一条底线**：Plain 档必须与改造前逐字一致。
-/// 45 个自检套件全部跑在 Plain 档下，它们断言的是改造前的确切文本。
+/// 44 个自检套件全部跑在 Plain 档下，它们断言的是改造前的确切文本。
 /// <para>
 /// 为什么必须测"分档逻辑"而不只测"最终输出"：最终输出在测试环境里永远是 Plain 档
 /// （输出被重定向），Rich/Narrow 两个分支如果写错，测试一条都不会红。
@@ -54,6 +54,9 @@ public static class TerminalChecks
         failures += Check("vt-replay-shows-activity-then-clean", VtReplayActivity);
         failures += Check("vt-replay-body-not-overwritten", VtReplayBodyIntact);
         failures += Check("vt-replay-shrink-leaves-no-ghost", VtReplayShrink);
+        failures += Check("vt-replay-streaming-keeps-prompt-line", VtReplayPromptLine);
+        failures += Check("vt-replay-region-does-not-reset-column", VtReplayColumn);
+        failures += Check("live-region-skips-identical-repaint", RepaintSkipsIdentical);
 
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
@@ -523,7 +526,7 @@ public static class TerminalChecks
     /// </summary>
     /// <remarks>
     /// 这条是 S3 唯一能自动验证的安全底线：真终端里的观感测不了，
-    /// 但"绝不在管道里写 ANSI"必须钉死——否则 45 个套件的断言会被污染。
+    /// 但"绝不在管道里写 ANSI"必须钉死——否则 44 个套件的断言会被污染。
     /// </remarks>
     private static string? LiveDisabledWhenRedirected()
     {
@@ -649,7 +652,7 @@ public static class TerminalChecks
     /// 不活动的区域**不得向终端写任何字节**。
     /// </summary>
     /// <remarks>
-    /// 这是 S3 的安全底线：45 个套件都靠 stdout 与改造前逐字比对，
+    /// 这是 S3 的安全底线：44 个套件都靠 stdout 与改造前逐字比对，
     /// 只要有一个 ANSI 字节漏出去，全部会变红。所以这里断言的是"零字节"，
     /// 不是"没有可见变化"。
     /// </remarks>
@@ -693,47 +696,26 @@ public static class TerminalChecks
     }
 
     /// <summary>
-    /// 行数变少时必须擦掉多出来的行，否则会留下残行。
+    /// 清空之后屏幕上必须一点残留都没有。
     /// </summary>
     /// <remarks>
-    /// <b>这是 <c>Erase</c> 唯一不可替代的职责</b>：每行写之前本来就会清行，
-    /// 所以"内容被覆盖"不需要额外擦除。真正的坑是 2 行变 1 行时，
-    /// 第 2 行的旧内容没有任何新内容去覆盖它，它就留在屏幕上了。
-    /// <para>
-    /// 判据用结构而不是文本：擦两行区域必须先把光标上移（<c>ESC[1A</c>）。
-    /// 不擦直接画时不会出现任何上移序列。第一版检查只看"有没有 ESC[2K"，
-    /// 而 <c>Clear()</c> 自己也会产生它，于是反证没抓到——记在这里。
-    /// </para>
+    /// <b>这条原先查的是「输出里有没有上移序列」</b>——那是实现细节，
+    /// 重写擦除算法（改用 save/restore 光标）之后它立刻误报。
+    /// 改成 VT 回放断言屏幕内容：不管用什么序列，清完就该是空的。
+    /// 与 <c>vt-replay-shrink-leaves-no-ghost</c> 的区别是这里走 2 → 0
+    /// （整块清空），那条走 2 → 1（缩行）。
     /// </remarks>
     private static string? LiveRegionClears()
     {
-        var captured = new StringWriter();
-        var original = Console.Out;
-        Console.SetOut(captured);
-
-        try
+        var (live, _) = ReplayRegion(rich =>
         {
-            var rich = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false);
-            using var region = LiveRegion.Create(rich);
-            if (!region.IsActive) return "富终端应激活区域";
+            rich.SetLines(["  思考中…", "  模型 · 1s"]);
+            rich.SetLines([]);
+        });
 
-            region.SetLines(["  思考中…", "  模型 · 1s"]);
-            region.SetLines(["  思考中…"]);
-        }
-        finally
-        {
-            Console.SetOut(original);
-        }
-
-        var output = captured.ToString();
-        if (output.Length == 0) return "区域应写入控制序列";
-
-        // 擦掉两行区域需要上移一行。
-        if (!output.Contains("[1A", StringComparison.Ordinal))
-            return "行数从 2 减到 1 时未清除多余行（缺少上移序列）";
-
-        if (!output.Contains("思考中", StringComparison.Ordinal))
-            return "应写入活动行文本";
+        var text = live.Text();
+        if (text.Trim().Length != 0)
+            return "清空后仍有残留：\n" + live.Dump();
 
         return null;
     }
@@ -955,6 +937,8 @@ public static class TerminalChecks
 
         private int _row;
         private int _column;
+        private int _savedRow;
+        private int _savedColumn;
 
         public void Feed(string text)
         {
@@ -993,13 +977,42 @@ public static class TerminalChecks
             {
                 case 'A':
                     // 光标上移 N 行。
-                    _row = Math.Max(0, _row - (ParseOrOne(parameter)));
+                    _row = Math.Max(0, _row - ParseOrOne(parameter));
+                    break;
+
+                case 'B':
+                    // 光标下移 N 行。
+                    _row = Math.Min(rows - 1, _row + ParseOrOne(parameter));
+                    break;
+
+                case 'E':
+                    // CNL：下移 N 行并回到行首。
+                    _row = Math.Min(rows - 1, _row + ParseOrOne(parameter));
+                    _column = 0;
                     break;
 
                 case 'K':
                     // 清行：2 = 整行清空。
                     Array.Fill(_grid[_row], ' ');
                     break;
+
+                case 's':
+                    // 保存光标（SCO）。不支持的话被测代码的正确性完全看不出来——
+                    // 模拟器会静默丢弃序列，一切看起来都对。
+                    _savedRow = _row;
+                    _savedColumn = _column;
+                    break;
+
+                case 'u':
+                    // 恢复光标（SCO）。
+                    _row = _savedRow;
+                    _column = _savedColumn;
+                    break;
+
+                default:
+                    // 未识别的序列必须让检查失败，不能静默跳过。
+                    // 静默跳过会让"被测代码用了模拟器不支持的序列"伪装成 PASS。
+                    throw new InvalidOperationException($"VT 模拟器不支持序列：ESC[{parameter}{final}");
             }
 
             return end;
@@ -1019,4 +1032,108 @@ public static class TerminalChecks
             return string.Join("\n", lines);
         }
     }
+    /// <summary>
+    /// 流式输出的第一个 delta 不能覆盖提示符那一行。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是区域擦除最容易造成的副作用</b>：擦除后若把光标停在行首，
+    /// 后续的 <see cref="Output.Text"/>（不带换行）就从列 0 开始写，
+    /// 把用户刚输入的 "&gt; hello" 覆盖掉。
+    /// <para>
+    /// 真实的触发路径：区域在"思考中"可见 → 第一个 TextDelta 让状态切到流式 →
+    /// 区域被收起（擦除）→ 紧接着写正文。此时光标列必须回到原来的位置。
+    /// </para>
+    /// </remarks>
+    private static string? VtReplayPromptLine()
+    {
+        var (live, _) = ReplayRegion(rich =>
+        {
+            rich.RunExclusive(() => Output.Control("> hello"));
+            rich.SetActivity("  思考中…");
+
+            // 模拟第一个 delta：区域收起，正文接写。
+            rich.SetLines([]);
+            rich.RunExclusive(() => Output.Control("你好"));
+        });
+
+        var text = live.Text();
+
+        if (!text.Contains("> hello", StringComparison.Ordinal))
+            return "提示符行被覆盖了：\n" + live.Dump();
+
+        if (!text.Contains("你好", StringComparison.Ordinal))
+            return "正文没写出来：\n" + live.Dump();
+
+        return null;
+    }
+
+    /// <summary>
+    /// 区域画出又擦掉之后，光标列必须回到原处——否则下一段正文会错位。
+    /// </summary>
+    /// <remarks>
+    /// 比上一条更严格：不只看有没有覆盖，而是看两次写入是否**紧邻**。
+    /// 正文是逐字拼起来的，任何列偏移都会在视觉上断开一句话。
+    /// </remarks>
+    private static string? VtReplayColumn()
+    {
+        var (live, _) = ReplayRegion(rich =>
+        {
+            rich.RunExclusive(() => Output.Control("前"));
+            rich.SetActivity("  思考中…");
+            rich.SetLines([]);
+            rich.RunExclusive(() => Output.Control("后"));
+        });
+
+        if (!live.Text().StartsWith("前后", StringComparison.Ordinal))
+            return "两次写入不连续（光标列被重置）：\n" + live.Dump();
+
+        return null;
+    }
+
+    /// <summary>
+    /// 内容没变时不得重复写终端。
+    /// </summary>
+    /// <remarks>
+    /// 刷新循环每 100ms 调一次 <c>SetLines</c>，而实际内容（模型名、整数秒）
+    /// 往往几秒才变。每次都全量擦画的表现是**持续抖动**，在 SSH 上则是
+    /// 每秒几十次无意义写入。
+    /// <para>
+    /// 反证要做两次：只加"相同内容不写"会让"内容变了也不写"同样通过，
+    /// 所以下面同时断言"内容变了必须写"。
+    /// </para>
+    /// </remarks>
+    private static string? RepaintSkipsIdentical()
+    {
+        var captured = new StringWriter();
+        var original = Console.Out;
+        Console.SetOut(captured);
+
+        try
+        {
+            var rich = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false);
+            using var region = LiveRegion.Create(rich);
+
+            region.SetLines(["  思考中… 3s"]);
+            var afterFirst = captured.ToString().Length;
+            if (afterFirst == 0) return "首次绘制必须写终端";
+
+            region.SetLines(["  思考中… 3s"]);
+            region.SetLines(["  思考中… 3s"]);
+            region.SetLines(["  思考中… 3s"]);
+
+            if (captured.ToString().Length != afterFirst)
+                return $"相同内容重复写了 {captured.ToString().Length - afterFirst} 个字符";
+
+            region.SetLines(["  思考中… 4s"]);
+            if (captured.ToString().Length == afterFirst)
+                return "内容变化后没有重绘";
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        return null;
+    }
+
 }

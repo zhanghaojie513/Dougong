@@ -16,7 +16,7 @@ namespace Dougong.Cli.Terminal;
 /// </para>
 /// <para>
 /// <b>重定向时一律不启用</b>，即使调用方传了 <c>force: true</c>：那里写 ANSI
-/// 既没有意义，也会污染 45 个套件的断言。
+/// 既没有意义，也会污染 44 个套件的断言。
 /// </para>
 /// <para>
 /// <b>流式输出期间不重画</b>：每个 delta 都擦一次画一次会把终端刷爆，
@@ -26,6 +26,18 @@ namespace Dougong.Cli.Terminal;
 /// </remarks>
 public sealed class LiveRegion : IDisposable
 {
+    /// <summary>保存光标位置（SCO）。</summary>
+    private const string SaveCursor = "\u001b[s";
+
+    /// <summary>恢复光标位置（SCO）。</summary>
+    private const string RestoreCursor = "\u001b[u";
+
+    /// <summary>清整行。</summary>
+    private const string ClearLine = "\u001b[2K";
+
+    /// <summary>移到下一行行首（CNL）。用 <c>\n</c> 会继承当前列，必须用这个。</summary>
+    private const string NextLine = "\u001b[1E";
+
     private readonly bool _enabled;
     private readonly int _width;
     private readonly object _sync = new();
@@ -62,12 +74,20 @@ public sealed class LiveRegion : IDisposable
     }
 
     /// <summary>设置要显示的行。空集合表示隐藏。</summary>
+    /// <remarks>
+    /// <b>内容没变就一个字节都不写</b>：刷新循环每 100ms 调一次，
+    /// 而 spinner 之外的文字（模型名、耗时秒数）往往几秒才变一次。
+    /// 每次都全量擦画会让终端持续收到写指令——视觉上是抖动，
+    /// 远程终端（SSH）上则是实打实的带宽。
+    /// </remarks>
     public void SetLines(IReadOnlyList<string> lines)
     {
         ArgumentNullException.ThrowIfNull(lines);
 
         lock (_sync)
         {
+            if (SameLines(lines)) return;
+
             _lines.Clear();
             _lines.AddRange(lines);
             Repaint();
@@ -123,13 +143,18 @@ public sealed class LiveRegion : IDisposable
 
     /// <summary>把区域重画一遍。</summary>
     /// <remarks>
-    /// <b>必须先换行再画</b>：正文写完后光标停在正文末尾（流式输出不带换行），
-    /// 直接在原地画会把那一行当成自己的地盘，下一次重画就用 <c>ESC[2K</c>
-    /// 把正文整行抹了。实测踩到过——VT 回放里"正文第二行"直接消失。
-    /// 先 <c>\n</c> 换到下一行，区域就永远独占自己的行。
+    /// <b>区域永远画在光标所在行的下方，画完把光标放回原处。</b>
+    /// 这条不变量是整个重绘协议的基础：
+    /// <list type="bullet">
+    /// <item>区域不占正文的行，下一次正文写入不会撞上它</item>
+    /// <item>光标回到正文末尾的**原列**，流式续写才接得上</item>
+    /// </list>
     /// <para>
-    /// 每次全画，不做差量：差量要记住"终端里现在真的显示着什么"，
-    /// 而这个前提会被滚动和外部写入打破。
+    /// <b>两处实测踩到的坑，都是"光标位置"造成的</b>：
+    /// ① 直接在原地画，下一次 <c>ESC[2K</c> 会把正文整行抹掉；
+    /// ② 擦除后用 <c>\r</c> 回行首，后续不带换行的正文从列 0 开始写，
+    /// 把用户输入的 <c>&gt; hello</c> 覆盖成 <c>你好hello</c>。
+    /// 所以擦与画都必须 save/restore 光标，不能靠回行首。
     /// </para>
     /// </remarks>
     private void Repaint()
@@ -143,14 +168,16 @@ public sealed class LiveRegion : IDisposable
 
         try
         {
-            var builder = new System.Text.StringBuilder("\n");
+            var builder = new System.Text.StringBuilder();
+            builder.Append(SaveCursor);
 
             for (var i = 0; i < _lines.Count; i++)
             {
-                if (i > 0) builder.Append('\n');
-                builder.Append("\u001b[2K").Append(Truncate(_lines[i], _width));
+                builder.Append(NextLine);
+                builder.Append(ClearLine).Append(Truncate(_lines[i], _width));
             }
 
+            builder.Append(RestoreCursor);
             Output.Control(builder.ToString());
             _paintedRows = _lines.Count;
         }
@@ -163,11 +190,12 @@ public sealed class LiveRegion : IDisposable
     }
 
     /// <summary>
-    /// 擦掉已画的区域，把光标留在区域的上一行（也就是正文末尾那一行）。
+    /// 擦掉已画的区域，把光标恢复到擦除前的位置。
     /// </summary>
     /// <remarks>
-    /// 与 <see cref="Repaint"/> 的开头 <c>\n</c> 对应：擦完退回一行，
-    /// 下次正文写入接着写，下次重画再换行。两者成对，才不会累积空行。
+    /// 区域始终在光标行的下方，所以从当前位置往下 <see cref="_paintedRows"/> 行
+    /// 就是要清的范围。<b>必须 save/restore 光标</b>：擦完停在行首会让后续
+    /// 不带换行的正文从列 0 开始写，覆盖掉用户刚输入的那一行。
     /// </remarks>
     private void Erase()
     {
@@ -176,16 +204,15 @@ public sealed class LiveRegion : IDisposable
         try
         {
             var builder = new System.Text.StringBuilder();
+            builder.Append(SaveCursor);
 
-            // 光标此刻在区域末行。逐行上移清空，最后再退到区域上一行。
             for (var i = 0; i < _paintedRows; i++)
             {
-                builder.Append("\r\u001b[2K");
-                builder.Append("\u001b[1A");
+                builder.Append(NextLine);
+                builder.Append(ClearLine);
             }
 
-            builder.Append('\r');
-
+            builder.Append(RestoreCursor);
             Output.Control(builder.ToString());
         }
         catch (Exception)
@@ -196,9 +223,19 @@ public sealed class LiveRegion : IDisposable
         _paintedRows = 0;
     }
 
-    /// <summary>按显示宽度截断，避免折行破坏区域布局。</summary>
-    private static string Truncate(string text, int width)
+    /// <summary>当前内容与将要显示的是否完全相同。</summary>
+    private bool SameLines(IReadOnlyList<string> lines)
     {
+        if (_lines.Count != lines.Count) return false;
+
+        for (var i = 0; i < lines.Count; i++)
+            if (!string.Equals(_lines[i], lines[i], StringComparison.Ordinal)) return false;
+
+        return true;
+    }
+
+    /// <summary>按显示宽度截断，避免折行破坏区域布局。</summary>
+    private static string Truncate(string text, int width)    {
         if (width <= 0) return text;
 
         var used = 0;

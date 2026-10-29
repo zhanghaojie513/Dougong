@@ -29,6 +29,18 @@ public sealed class ActivityReporter : IAsyncDisposable
     private readonly Func<int?> _tokensUsed;
     private readonly TimeProvider _clock;
 
+    /// <summary>
+    /// 保护 <see cref="_state"/>。泵线程每 100ms 调 <c>Tick</c>，事件循环同时调
+    /// <c>OnEvent</c>——两者都会改写 <c>_phase</c> 与几个时间戳。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么锁在 Reporter 而不是 ActivityState</b>：状态机要保持"纯逻辑、
+    /// 无并发设施"，那样才能被确定性测试完整覆盖。并发是宿主的事，
+    /// 由调用方加锁。而且这里每次要连续做"推进 + 读快照 + 渲染"三件事，
+    /// 分散加锁仍会读到半更新的状态（例如 phase 已变、TurnElapsed 还是旧的）。
+    /// </remarks>
+    private readonly object _sync = new();
+
     private CancellationTokenSource? _turnCts;
     private Task? _pump;
 
@@ -64,7 +76,7 @@ public sealed class ActivityReporter : IAsyncDisposable
     {
         if (!_region.IsActive) return;
 
-        _state.OnRunStarted(_clock.GetUtcNow());
+        lock (_sync) _state.OnRunStarted(_clock.GetUtcNow());
 
         // 上一轮的循环若还活着（理论上不该发生），先掐掉。
         _turnCts?.Cancel();
@@ -81,35 +93,38 @@ public sealed class ActivityReporter : IAsyncDisposable
 
         var now = _clock.GetUtcNow();
 
-        switch (evt)
+        lock (_sync)
         {
-            case AgentEvent.RunStarted:
-                _state.OnRunStarted(now);
-                break;
+            switch (evt)
+            {
+                case AgentEvent.RunStarted:
+                    _state.OnRunStarted(now);
+                    break;
 
-            case AgentEvent.TextDelta:
-                _state.OnTextDelta(now);
-                break;
+                case AgentEvent.TextDelta:
+                    _state.OnTextDelta(now);
+                    break;
 
-            case AgentEvent.ToolCallRequested:
-                _state.OnToolStarted(now);
-                break;
+                case AgentEvent.ToolCallRequested:
+                    _state.OnToolStarted(now);
+                    break;
 
-            case AgentEvent.ToolCallCompleted:
-                _state.OnToolCompleted(now);
-                break;
+                case AgentEvent.ToolCallCompleted:
+                    _state.OnToolCompleted(now);
+                    break;
 
-            case AgentEvent.ContextCompacted:
-                _state.OnCompacting(now);
-                break;
+                case AgentEvent.ContextCompacted:
+                    _state.OnCompacting(now);
+                    break;
 
-            case AgentEvent.RunFinished finished:
-                _state.OnRunFinished(now, finished.Outcome != AgentRunOutcome.Completed);
-                break;
+                case AgentEvent.RunFinished finished:
+                    _state.OnRunFinished(now, finished.Outcome != AgentRunOutcome.Completed);
+                    break;
+            }
+
+            // 事件到来立刻刷一次，状态切换即时可见（定时器最多再补 100ms）。
+            Render();
         }
-
-        // 事件到来立刻刷一次，状态切换即时可见（定时器最多再补 100ms）。
-        Render();
     }
 
     /// <summary>
@@ -123,7 +138,10 @@ public sealed class ActivityReporter : IAsyncDisposable
     public async Task FinishTurnAsync()
     {
         // 失败提示要留够时间让人看见，这是唯一值得等的情况。
-        if (_state.Phase == ActivityPhase.Failed)
+        bool failed;
+        lock (_sync) failed = _state.Phase == ActivityPhase.Failed;
+
+        if (failed)
             await Task.Delay(ActivityState.FailureLinger, _clock).ConfigureAwait(false);
 
         _turnCts?.Cancel();
@@ -177,10 +195,15 @@ public sealed class ActivityReporter : IAsyncDisposable
 
         while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
         {
-            _state.Tick(_clock.GetUtcNow());
-            Render();
+            bool idle;
+            lock (_sync)
+            {
+                _state.Tick(_clock.GetUtcNow());
+                Render();
+                idle = _state.Phase == ActivityPhase.Idle;
+            }
 
-            if (_state.Phase == ActivityPhase.Idle) return;
+            if (idle) return;
         }
     }
 

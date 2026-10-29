@@ -154,8 +154,18 @@ public static class StatusLine
     };
 
     /// <summary>用空格把内容补到整行宽，抹掉上一帧的残留。</summary>
+    /// <remarks>
+    /// <b>这里不做截断，因为活动行结构上不会超宽</b>：内容固定是
+    /// <c>缩进 + spinner + 面孔 + 文案 + 耗时</c>，最长约 32 格
+    /// （<c>整理中…</c> 4 个汉字 + 最长面孔 7 格 + <c>99m59s</c>），
+    /// 而低于 40 格就走"只输出 spinner"的极窄分支。
+    /// 加一层截断是永远不会执行的代码——写进去反而是负担。
+    /// 状态栏内容长度由模型名决定，那里才需要截断（见 <see cref="RenderStatus"/>）。
+    /// </remarks>
     private static string PadToWidth(string content, int width)
     {
+        if (width <= 0) return content;
+
         var visible = DisplayWidth(content);
         return visible >= width ? content : content + new string(' ', width - visible);
     }
