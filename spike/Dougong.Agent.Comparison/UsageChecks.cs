@@ -26,6 +26,8 @@ public static class UsageChecks
         failures += await CheckAsync("failure-kind-does-not-guess", ClassifyUnknownAsync);
         failures += await CheckAsync("cancelled-is-not-counted-as-fault", CancelNotFaultAsync);
         failures += await CheckAsync("http-status-reaches-exception", HttpStatusReachesExceptionAsync);
+        failures += await CheckAsync("overflow-is-not-unknown", OverflowNotUnknownAsync);
+        failures += await CheckAsync("overflow-400-beats-status-code", OverflowBeatsStatusCodeAsync);
         failures += await CheckAsync("malformed-stream-is-not-silent-success", MalformedStreamAsync);
         failures += await CheckAsync("partial-consumption-still-records", PartialConsumptionAsync);
         failures += await CheckAsync("stream-failure-is-recorded-once", FailureRecordedOnceAsync);
@@ -734,4 +736,61 @@ public static class UsageChecks
         public void Dispose() { }
     }
 
+
+    /// <summary>
+    /// 上下文溢出必须分成 ContextOverflow，不能落到 Unknown。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条对应一个真实缺陷</b>：加了溢出恢复之后，
+    /// <c>UsageFailureKind</c> 里却没有对应分类——溢出的 400 落到
+    /// 状态码兜底分支的 <c>Unknown</c>。
+    /// <para>
+    /// 后果：宿主看不出"这个错误值得重试"，只会当成永久失败。
+    /// 而溢出恰恰是唯一能靠压缩自动恢复的一类。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> OverflowNotUnknownAsync()
+    {
+        var kind = await KindOfFailedCallAsync(new ContextOverflowException(
+            "上下文超限",
+            new HttpRequestException("prompt is too long: 200000 tokens", null,
+                System.Net.HttpStatusCode.BadRequest)));
+
+        return kind == UsageFailureKind.ContextOverflow
+            ? null
+            : $"溢出应归 ContextOverflow，实际 {kind}";
+    }
+
+    /// <summary>
+    /// 溢出判定必须优先于状态码判定。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是更容易漏的一半</b>：超限和参数不合法都返回 400，光看状态码
+    /// 分不开。若状态码先判，溢出会落到 400 的兜底分支（Unknown），
+    /// 前面加的识别和恢复全部白做。
+    /// <para>
+    /// 用第三方的 <c>HttpRequestException</c>（没有我们的专用异常类型）
+    /// 验证"仅靠文案也能认出来"——这是接入外部连接器时的真实形态。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> OverflowBeatsStatusCodeAsync()
+    {
+        // 只有 HttpRequestException + 400，没有 ContextOverflowException。
+        var kind = await KindOfFailedCallAsync(new HttpRequestException(
+            "provider 返回 400：This model's maximum context length is 128000 tokens",
+            null, System.Net.HttpStatusCode.BadRequest));
+
+        if (kind == UsageFailureKind.ContextOverflow) return null;
+
+        // 普通 400（不含溢出文案）仍应是 Unknown——不能因为放宽匹配
+        // 把参数错误也当成溢出。
+        var generic = await KindOfFailedCallAsync(new HttpRequestException(
+            "provider 返回 400：invalid parameter 'temperature'",
+            null, System.Net.HttpStatusCode.BadRequest));
+
+        if (generic == UsageFailureKind.ContextOverflow)
+            return "普通 400（参数错误）被误判成溢出——会导致白压一次历史";
+
+        return $"仅靠文案也应识别溢出，实际 {kind}";
+    }
 }

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using Dougong.Agent;
 using Microsoft.Extensions.AI;
 
 namespace Dougong.Ai;
@@ -30,7 +31,23 @@ public static class UsageFailureClassifier
     {
         ArgumentNullException.ThrowIfNull(error);
 
-        // 1. 状态码最可靠。HttpClientChatClient 会把 StatusCode 写进异常。
+        // 1. **溢出必须最先判**，且优先于状态码。
+        //
+        // 超限与参数不合法都返回 400，状态码分不开。而溢出的处理方式完全不同：
+        // 它能靠压缩历史自动恢复，其它 400 只能报错。若让状态码先判，
+        // 溢出会落到 400 的兜底分支（Unknown），宿主的"值得重试"判断就失效了。
+        //
+        // 判据用专用异常类型 + 响应体文案双保险：
+        //   - 我们自己抛的 ContextOverflowException 直接命中
+        //   - 第三方连接器只给 HttpRequestException 时，靠 ErrorText 匹配
+        if (error is ContextOverflowException
+            || (error is not OperationCanceledException
+                && ContextOverflowDetector.IsContextOverflow(ErrorText(error))))
+        {
+            return UsageFailureKind.ContextOverflow;
+        }
+
+        // 2. 状态码。HttpClientChatClient 会把 StatusCode 写进异常。
         if (FindStatusCode(error) is { } status)
             return FromStatusCode(status);
 
@@ -51,6 +68,30 @@ public static class UsageFailureClassifier
             return UsageFailureKind.NetworkError;
 
         return UsageFailureKind.Unknown;
+    }
+
+    /// <summary>
+    /// 把异常链上的消息拼成一段文本，供文案匹配。
+    /// </summary>
+    /// <remarks>
+    /// <b>必须沿内部链取</b>：provider 的原始报文通常在
+    /// <c>InnerException</c> 里（我们的包装层只写自己的说明），
+    /// 只看最外层会漏掉溢出的关键词。
+    /// </remarks>
+    private static string ErrorText(Exception? error)
+    {
+        var builder = new System.Text.StringBuilder();
+
+        for (var current = error; current is not null; current = current.InnerException)
+        {
+            if (current.Message.Length > 0)
+            {
+                if (builder.Length > 0) builder.Append(" | ");
+                builder.Append(current.Message);
+            }
+        }
+
+        return builder.ToString();
     }
 
     /// <summary>沿内部异常链找 HTTP 状态码。</summary>
