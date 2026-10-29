@@ -61,6 +61,10 @@ public static class TerminalChecks
         failures += Check("stderr-line-does-not-collide-with-region", StderrDoesNotCollide);
         failures += Check("binary-is-not-stale", BinaryNotStale);
         failures += Check("padded-activity-line-does-not-wrap", PaddedLineNoWrap);
+        failures += Check("reasoning-phase-shows-distinct-label", ReasoningPhaseDistinct);
+        failures += Check("reasoning-falls-back-to-thinking", ReasoningFallsBack);
+        failures += Check("reasoning-does-not-downgrade-streaming", ReasoningKeepsStreaming);
+        failures += Check("agent-phase-tracker-is-usable-standalone", TrackerStandalone);
 
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
@@ -1381,6 +1385,134 @@ public static class TerminalChecks
                 }
             }
         }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 推理阶段必须与思考阶段显示不同文案，且推理期间活动行可见。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是新能力的核心价值</b>：长时间没有任何输出时，"在等"和"在想"
+    /// 给人的感受完全不同。若两个阶段显示同样的字，这个阶段就白加了。
+    /// </remarks>
+    private static string? ReasoningPhaseDistinct()
+    {
+        var state = new ActivityState();
+        state.OnRunStarted(T0);
+
+        var thinking = StatusLine.RenderActivity(state, T0.AddSeconds(2), width: 80);
+        if (thinking is null) return "思考中应显示活动行";
+
+        state.OnReasoning(T0.AddSeconds(3));
+        if (state.Phase != ActivityPhase.Reasoning)
+            return $"推理后应进入 Reasoning，实际 {state.Phase}";
+
+        var reasoning = StatusLine.RenderActivity(state, T0.AddSeconds(4), width: 80);
+        if (reasoning is null) return "推理期间必须显示活动行（否则看起来像卡死）";
+
+        if (!reasoning.Contains("推理中", StringComparison.Ordinal))
+            return $"推理阶段缺少「推理中」文案：[{reasoning}]";
+
+        // 与思考中的文案必须不同：相同就等于阶段白加。
+        if (reasoning.Contains("思考中", StringComparison.Ordinal))
+            return $"推理阶段仍在显示「思考中」，与思考无法区分：[{reasoning}]";
+
+        if (reasoning == thinking)
+            return "推理阶段与思考阶段渲染完全相同";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 推理停止后必须回落到思考中，不能一直挂着"推理中"。
+    /// </summary>
+    /// <remarks>
+    /// 推理是逐段到达的，停了之后要么开始输出正文、要么开始调工具。
+    /// 中间的空档若不做去抖，界面会一直写着"推理中"，而模型其实已经转去做别的了。
+    /// </remarks>
+    private static string? ReasoningFallsBack()
+    {
+        var state = new ActivityState();
+        state.OnRunStarted(T0);
+        state.OnReasoning(T0.AddSeconds(1));
+
+        // 窗口内必须仍是推理。
+        state.Tick(T0.AddSeconds(1.2));
+        if (state.Phase != ActivityPhase.Reasoning)
+            return $"200ms 内不应回落，实际 {state.Phase}";
+
+        // 窗口外必须回落。
+        state.Tick(T0.AddSeconds(1.5));
+        if (state.Phase != ActivityPhase.Thinking)
+            return $"500ms 后应回落到 Thinking，实际 {state.Phase}";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 正文已经在流式输出时，推理不得把阶段拉回去。
+    /// </summary>
+    /// <remarks>
+    /// 真实 provider 可能交替给出推理和正文。若推理无条件覆盖状态，
+    /// 界面会在"推理中"和"输出中"之间反复跳。正文优先是刻意的选择。
+    /// </remarks>
+    private static string? ReasoningKeepsStreaming()
+    {
+        var state = new ActivityState();
+        state.OnRunStarted(T0);
+        state.OnTextDelta(T0.AddSeconds(1));
+        state.OnReasoning(T0.AddSeconds(2));
+
+        return state.Phase == ActivityPhase.Streaming
+            ? null
+            : $"正文流式中推理不得回退，实际 {state.Phase}";
+    }
+
+    /// <summary>
+    /// <see cref="Dougong.Agent.AgentPhaseTracker"/> 必须能被 SDK 用户单独使用。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条测的是"能力对外可见"</b>，不是 CLI 自己的行为。
+    /// 阶段语义属于 Agent 层公开契约：自己做宿主的用户（Desktop / Web / IDE）
+    /// 不该各写一套推导逻辑。所以这里完全不经过 CLI 的类型，
+    /// 只用 Agent 层 API 走一遍典型序列。
+    /// <para>
+    /// 若哪天有人把 <c>AgentPhaseTracker</c> 挪回 CLI 内部，这条会编译失败——
+    /// 那正是它要防的：能力退化成"只有我们的 CLI 有"。
+    /// </para>
+    /// </remarks>
+    private static string? TrackerStandalone()
+    {
+        var tracker = new Dougong.Agent.AgentPhaseTracker();
+        var t = T0;
+
+        tracker.StartTurn(t);
+        if (tracker.Phase != Dougong.Agent.AgentPhase.Thinking)
+            return $"StartTurn 后应为 Thinking，实际 {tracker.Phase}";
+
+        tracker.OnEvent(new Dougong.Agent.AgentEvent.ReasoningDelta("想一下"), t.AddSeconds(1));
+        if (tracker.Phase != Dougong.Agent.AgentPhase.Reasoning)
+            return $"推理事件后应为 Reasoning，实际 {tracker.Phase}";
+
+        tracker.OnEvent(new Dougong.Agent.AgentEvent.TextDelta("4"), t.AddSeconds(2));
+        if (tracker.Phase != Dougong.Agent.AgentPhase.Streaming)
+            return $"正文事件后应为 Streaming，实际 {tracker.Phase}";
+
+        tracker.OnEvent(new Dougong.Agent.AgentEvent.ToolCallRequested("i", "t", default),
+            t.AddSeconds(3));
+        if (tracker.Phase != Dougong.Agent.AgentPhase.Working)
+            return $"工具事件后应为 Working，实际 {tracker.Phase}";
+
+        tracker.OnEvent(
+            new Dougong.Agent.AgentEvent.RunFinished(Dougong.Agent.AgentRunOutcome.Completed),
+            t.AddSeconds(4));
+        if (tracker.Phase != Dougong.Agent.AgentPhase.Idle)
+            return $"完成后应为 Idle，实际 {tracker.Phase}";
+
+        // 计时也要可用：宿主靠它显示"已耗时"。
+        if (tracker.TurnElapsed(t.AddSeconds(4)) != TimeSpan.Zero)
+            return "结束后 TurnElapsed 应为零";
 
         return null;
     }

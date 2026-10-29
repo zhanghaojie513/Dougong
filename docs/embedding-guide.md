@@ -175,11 +175,12 @@ public sealed class MyTool : IAgentTool
 
 ## 五、事件流：怎么把进展显示出来
 
-`RunAsync` 是 `IAsyncEnumerable<AgentEvent>`，七种事件：
+`RunAsync` 是 `IAsyncEnumerable<AgentEvent>`，九种事件：
 
 | 事件 | 什么时候 | 宿主通常做什么 |
 |---|---|---|
 | `RunStarted` | 开跑 | — |
+| `ReasoningDelta` | 模型在推理 | **与正文分开显示**，见下文 |
 | `TextDelta` | 模型吐字 | 追加到界面 / 流式输出 |
 | `ToolCallRequested` | 要调用工具 | 显示"正在调用 X" |
 | `ToolCallCompleted` | 工具结束 | 显示结果或失败原因 |
@@ -187,6 +188,44 @@ public sealed class MyTool : IAgentTool
 | `ContextCompacted` | 历史被压缩 | 提示"上下文已压缩" |
 | `PlanUpdated` | 模型更新了计划 | 显示计划 |
 | `RunFinished` | 结束 | 看 `Outcome` 决定后续 |
+
+### 5.1 推理内容（`ReasoningDelta`）
+
+只有启用思考模式的模型才产生它；不支持时一个都不会有，**不能当作必然信号**。
+
+**必须与 `TextDelta` 分开显示。** 推理不是回答，而且常带未定稿的自我纠错
+（"等等，这里算错了"）——当正文显示会让用户以为模型已经答完，还会误导。
+
+推理内容同时也按 `AgentPropertyKeys.Reasoning` 存进了历史，所以恢复会话后仍是完整的。
+
+### 5.2 状态显示：别自己推导，用 `AgentPhaseTracker`
+
+想知道"现在该显示什么"（等待中？推理中？输出中？），
+**不要自己从事件推断**——有两件事纯事件驱动做不到：
+
+1. `RunStarted` 之后、第一个片段之前是**完全静默**的，而这段等待占整轮耗时的大头
+2. 推理和正文都会停下来，停了之后要回落到"思考中"，这个只能靠计时
+
+用现成的：
+
+```csharp
+var tracker = new AgentPhaseTracker();
+
+tracker.StartTurn(DateTimeOffset.UtcNow);   // 在拉取事件流之前调
+
+await foreach (var evt in runtime.RunAsync(request))
+{
+    tracker.OnEvent(evt, DateTimeOffset.UtcNow);
+    Render(tracker.Phase, tracker.TurnElapsed(DateTimeOffset.UtcNow));
+}
+```
+
+同时在宿主侧起一个 100ms 的定时器调 `tracker.Tick(now)`——**不调 `Tick` 的话阶段会永远停在最后一个事件上**，
+例如推理结束后界面一直写着"推理中"。
+
+`AgentPhase` 有七个值：`Idle` / `Thinking` / `Reasoning` / `Working` /
+`Compacting` / `Streaming` / `Failed`。`Thinking` 与 `Reasoning` 的区别是
+"什么都还没来"与"模型确实在动"——长时间没输出时，这两者给用户的感受完全不同。
 
 `RunFinished.Outcome` 有五种，**必须处理，不能只认 `Completed`**：
 

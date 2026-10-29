@@ -26,15 +26,23 @@ public static class StatusLine
     private static readonly Dictionary<ActivityPhase, string[]> Faces = new()
     {
         [ActivityPhase.Thinking] = ["(¬‿¬)", "(⊙_⊙)", "◉_◉", "(´･_･`)"],
+        // 推理阶段用"认真琢磨"的面孔，与"干等着"区分开。
+        [ActivityPhase.Reasoning] = ["(⌐■_■)", "( ͡° ͜ʖ ͡°)", "(¬_¬)"],
         [ActivityPhase.Working] = ["( •_•)", "(¬_¬)", "(◔_◔)"],
         [ActivityPhase.Compacting] = ["(´･_･`)", "(◔_◔)"],
         [ActivityPhase.Failed] = ["(°ロ°)"],
     };
 
     /// <summary>各阶段的文案。**不暴露内部机制**（不写"调用 read_file"）。</summary>
+    /// <remarks>
+    /// <see cref="ActivityPhase.Thinking"/> 与 <see cref="ActivityPhase.Reasoning"/>
+    /// 的文案必须不同：前者是"什么都还没来"，后者是"模型确实在动"。
+    /// 长时间没有输出时，这两种状态给人的感受完全不一样。
+    /// </remarks>
     private static readonly Dictionary<ActivityPhase, string> Labels = new()
     {
         [ActivityPhase.Thinking] = "思考中…",
+        [ActivityPhase.Reasoning] = "推理中…",
         [ActivityPhase.Working] = "处理中…",
         [ActivityPhase.Compacting] = "整理中…",
         [ActivityPhase.Failed] = "出错了",

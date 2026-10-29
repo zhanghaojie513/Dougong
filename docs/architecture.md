@@ -347,6 +347,8 @@ public sealed record AgentToolResult(JsonElement Content, JsonElement? Details =
 - **是否出现取决于 provider**：只有启用思考模式的模型才给推理内容。不支持时一个事件都不会有，宿主不能当作必然信号；有专门的对偶检查钉住这一点（没有推理时不得凭空产出空事件）。
 - **ACP 侧对应 `agent_thought_chunk`**，与 `agent_message_chunk` 分开投递，客户端可折叠显示。
 - **CLI 默认不显示**：Plain 档必须与改造前逐字一致，且推理内容不适合当正文展示。`DOUGONG_SHOW_REASONING=1` 可打开。
+- **`AgentPhase` / `AgentPhaseTracker` 是公开契约**（2026-10-29 从 CLI 提升到 Agent 层）：阶段推导（去抖、失败停留、事件映射）属于"运行器对外的状态语义"，不是某个终端的显示细节。自己做宿主的用户（Desktop / Web / IDE 插件）需要同一套词汇，各写一套必然漂移。`Reasoning` 与 `Thinking` 是两个阶段——"什么都还没来"与"模型确实在动"，长时间无输出时感受完全不同。
+- **CLI 的 `ActivityPhase` 只是 `AgentPhase` 的别名**，`ActivityState` 内部委托给 `AgentPhaseTracker`。不复制实现：复制会让两份各自演化，症状是"CLI 显示正常、SDK 用户拿到的状态不对"。
 
 ## 5. 协议与集成层
 

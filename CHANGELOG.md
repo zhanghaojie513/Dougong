@@ -34,6 +34,16 @@
   - ACP 侧投递为 `agent_thought_chunk`（协议标准消息类型，此前一直是空的）
   - CLI 默认不显示（Plain 档须逐字一致），`DOUGONG_SHOW_REASONING=1` 打开
 
+- **新增公开类型 `AgentPhase` 与 `AgentPhaseTracker`（Agent 层）**。
+  阶段推导从 CLI 提升为 SDK 契约：自己做宿主的用户不该各写一套。
+  - `AgentPhase` 七个值，其中 `Reasoning` 与 `Thinking` 分开——
+    "什么都还没来"与"模型确实在动"，长时间无输出时感受完全不同
+  - `AgentPhaseTracker` 提供事件 + 计时的状态推导（含去抖与失败停留），
+    纯逻辑、无 UI 依赖、不加锁（并发策略交给调用方）
+  - **不调 `Tick` 的后果不是"不刷新"，而是阶段永远停在最后一个事件上**
+  - CLI 的 `ActivityPhase` 改为它的别名，`ActivityState` 内部委托，
+    不再保留第二份实现
+
 ## [0.1.0-alpha.2] — 2026-10-29
 
 ### Added
