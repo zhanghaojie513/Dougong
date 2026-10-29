@@ -38,6 +38,7 @@ public static class ToolPackageChecks
         failures += Check("docs-pin-tool-version-on-install", DocsPinVersion);
         failures += Check("docs-install-version-matches-build", DocsVersionMatchesBuild);
         failures += Check("version-not-already-published", VersionNotAlreadyPublished);
+        failures += Check("changelog-heading-matches-version", ChangelogMatchesVersion);
         failures += Check("readme-test-count-matches-reality", ReadmeTestCount);
         failures += Check("docs-have-no-broken-relative-links", NoBrokenDocLinks);
         failures += Check("no-hardcoded-version-in-sources", NoHardcodedVersion);
@@ -757,6 +758,39 @@ public static class ToolPackageChecks
             // 离线或网络故障：不阻断构建。把网络问题判成版本冲突会让离线开发不可用。
             return null;
         }
+    }
+
+    /// <summary>
+    /// CHANGELOG 里最新一个已定版的小节必须与当前版本号一致。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条的由来</b>：一次发版后又在同一版本号下改了代码，包是从最终代码打的，
+    /// 而 CHANGELOG 写成时那些改动还没进——结果"已发布的内容"与"文档记录的内容"
+    /// 对不上。复核时只能靠下载 nuget 上的包反射验证才发现。
+    /// <para>
+    /// 判据：<c>Directory.Build.props</c> 的版本必须出现在 CHANGELOG 的
+    /// 某个 <c>## [x.y.z-...]</c> 标题里。这不能保证内容完全正确，
+    /// 但能保证"版本号改了而 CHANGELOG 没跟上"立刻被发现。
+    /// </para>
+    /// </remarks>
+    private static string? ChangelogMatchesVersion()
+    {
+        var root = FindRepoRoot();
+
+        var props = Path.Combine(root, "Directory.Build.props");
+        var changelog = Path.Combine(root, "CHANGELOG.md");
+        if (!File.Exists(props) || !File.Exists(changelog)) return null;
+
+        var versionMatch = System.Text.RegularExpressions.Regex.Match(
+            File.ReadAllText(props), @"<Version>([^<]+)</Version>");
+        if (!versionMatch.Success) return null;
+
+        var version = versionMatch.Groups[1].Value.Trim();
+        var text = File.ReadAllText(changelog);
+
+        return text.Contains($"## [{version}]", StringComparison.Ordinal)
+            ? null
+            : $"CHANGELOG 里没有 [ {version} ] 小节——改版本号时忘了同步文档？";
     }
 
 }
