@@ -38,3 +38,4 @@ samples/_load-plugin-probe/
 
 # dotnet tool 打包输出
 artifacts/tool/
+assets/brand/_*.zip

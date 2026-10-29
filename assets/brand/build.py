@@ -1,16 +1,54 @@
+"""重新生成 assets/brand/ 下的全部 SVG、PNG 与 ICO。
+
+**这个脚本是给维护者用的，不是给使用者用的。** 生成出来的文件已经在仓库里，
+用品牌素材的人不需要跑它。
+
+它有两个外部依赖，都不在仓库内：
+
+  SOURCE   母版 SVG（`app-icon.svg`、`app-icon-{16,24,32}.svg` 等）
+           旧位置是 `artifacts/brand/dougong-monochrome/`，
+           而 `artifacts/` 整体被 .gitignore 忽略——它只是设计期的工作区。
+           如果想长期能重跑，把那份母版拷到 `assets/brand/source/` 并改这里。
+  SCRIPTS  用于 PNG→ICO 与像素校正的外部工具目录。
+           旧位置是本机某个 skill 的脚本目录，别人机器上不存在。
+
+**依赖缺失时会明确报错并说明缺什么**，不会静默产出半套文件。
+"""
+
 from pathlib import Path
 from xml.etree import ElementTree as ET
-from PIL import Image, ImageChops
+
 import base64
 import subprocess
 import sys
 import zipfile
 
-ROOT=Path(__file__).parent
-SOURCE=ROOT.parent/'dougong-monochrome'
-SCRIPTS=Path('C:/Users/haiha/.agents/skills/logo-design/scripts')
-for d in ['svg','icons','png']:
-    (ROOT/d).mkdir(exist_ok=True)
+try:
+    from PIL import Image, ImageChops
+except ImportError:
+    sys.exit(
+        "缺少 Pillow。装一下：python -m pip install pillow\n"
+        "（只有重新生成 PNG/ICO 才需要它；仓库里已有的文件不受影响。）"
+    )
+
+ROOT = Path(__file__).parent
+
+# 可以用环境变量覆盖，方便在别的机器上重跑。
+SOURCE = Path(
+    __import__("os").environ.get("DOUGONG_BRAND_SOURCE", ROOT / "source")
+)
+SCRIPTS = Path(__import__("os").environ.get("DOUGONG_BRAND_SCRIPTS", ROOT / "scripts"))
+
+if not SOURCE.is_dir():
+    sys.exit(
+        f"找不到母版 SVG 目录：{SOURCE}\n"
+        "这个目录不在仓库里（母版曾放在被 .gitignore 忽略的 artifacts/ 下）。\n"
+        f"把母版拷进去，或用 DOUGONG_BRAND_SOURCE=<路径> 指定。\n"
+        "只想用品牌素材的话不需要跑这个脚本——生成好的文件已经提交在仓库里。"
+    )
+
+for d in ['svg', 'icons', 'png']:
+    (ROOT / d).mkdir(exist_ok=True)
 
 def paths(name):
     root=ET.parse(SOURCE/'svg'/f'{name}.svg').getroot()
@@ -85,9 +123,11 @@ for p in [*(ROOT/'icons').glob('*.png'),*(ROOT/'png').glob('*.png')]:
     assert ImageChops.difference(g,b).getbbox() is None
     assert im.getpixel((0,0))[3]==0
 
-out=ROOT.parent/'dougong-monochrome-refined-logo-kit.zip'
+# 打包产物放在本目录下并加 .gitignore 前缀，避免每次重跑都往 assets/ 丢文件。
+out = ROOT / '_logo-kit.zip'
 with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
     for p in ROOT.rglob('*'):
-        if p.is_file() and p.name!='build.py':
+        # 跳过自身、跳过上一次的打包产物，否则 zip 会把自己套进去。
+        if p.is_file() and p.name not in ('build.py', out.name):
             z.write(p,Path('dougong-monochrome-refined')/p.relative_to(ROOT))
 print('Verified neutral grayscale, transparent corners and ICO native frames;',out)

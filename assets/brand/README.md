@@ -135,6 +135,10 @@ svg/symbol.svg            主标志（纯黑，1024 视口）
 svg/symbol-white.svg      主标志（纯白）
 svg/app-icon.svg          应用图标（石墨质感）
 svg/app-icon-light.svg    应用图标（反色）
+svg/app-icon-16.svg       ┐
+svg/app-icon-24.svg       │ 小尺寸专用：像素校正、纯色底、无渐变
+svg/app-icon-32.svg       │ （与 icons/dougong-{16,24,32,48}.png 一一对应）
+svg/app-icon-48.svg       ┘
 svg/horizontal.svg        ｜图标 + 字标（横向，浅底）
 svg/horizontal-white.svg  ｜图标 + 字标（横向，深底）
 svg/stacked.svg           图标 + 字标（纵向）
