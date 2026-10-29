@@ -21,6 +21,28 @@
 
 ## [Unreleased]
 
+（暂无）
+
+## [0.1.1-alpha.1] — 2026-10-29
+
+> **版本号为什么从 `0.1.0-alpha.2` 跳到 `0.1.1-alpha.1`**：本版包含**新增公开 API**
+> （`AgentEvent.ReasoningDelta`、`AgentPhase`、`AgentPhaseTracker`）。
+> 按 [compat-policy.md](docs/compat-policy.md) 的规则，新增功能属 minor 变更，
+> 不留在 `0.1.0` 的 alpha 序列里。
+
+### Fixed
+
+- **CLI 终端渲染两处真机缺陷**（`0.1.0-alpha.2` 存在，需升级修复）：
+  - **`ESC[s`/`ESC[u` 存不住光标位置**。底部活动区靠"保存光标 → 往下画 →
+    恢复光标"避免覆盖正文，而这两个序列是 SCO 的私有扩展，真实终端与
+    pyte 都不保证生效。用 pyte 实测：`ESC[s … ESC[u` 之后光标停在错误位置，
+    `ESC 7 … ESC 8`（DECSC/DECRC）才正确。光标没回去就是屏幕上两行字叠在一起。
+  - **补白写满最后一列触发自动折行**。活动行被补白到正好等于终端宽度，
+    写满最右列时终端自动换行、光标跳到下一行，之后所有定位偏移——
+    表现为活动行只剩一个 spinner、文字跑到别处。现在宽度上限改为 `width - 1`。
+  - 另修 `Clear()` 只擦屏幕不清内容（导致陈旧状态栏在回合结束后被重画）、
+    `stderr` 绕过底部区域保护（`[结束：Failed]` 直接打在活动行上）。
+
 ### Added
 
 - **新增 `AgentEvent.ReasoningDelta`：推理内容现在有实时事件**。
