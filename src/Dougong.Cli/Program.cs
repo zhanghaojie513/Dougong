@@ -997,28 +997,6 @@ public static class Program
         }
     }
 
-    /// <summary>
-    /// ACP 模式下的兜底审批器：真正的权限请求由 AcpApprover 发出。
-    /// </summary>
-    /// <remarks>
-    /// 这里的实现是为了让 dispatcher 在没有协议审批通道时**默认拒绝**，
-    /// 而不是默认放行。ACP 首版尚未把 AcpApprover 接到 dispatcher 上
-    /// （它需要 host 实例，装配顺序见 plan.md），因此当前行为是拒绝所有需审批的调用，
-    /// 并在 stderr 说明原因——这比静默放行安全。
-    /// </remarks>
-    private sealed class StdinApprover : IToolApprover
-    {
-        public ValueTask<ToolApprovalDecision> RequestApprovalAsync(
-            ToolApprovalRequest request, CancellationToken cancellationToken = default)
-        {
-            Console.Error.WriteLine(
-                $"[acp] 拒绝工具调用 '{request.Tool.Name}'："
-                + "ACP 首版尚未把权限请求接到客户端（见 plan.md M2.4 剩余项）。");
-            return ValueTask.FromResult(
-                ToolApprovalDecision.Deny("ACP 首版尚未实现客户端权限请求，按拒绝处理。"));
-        }
-    }
-
     private static string Truncate(string text) =>
         text.Length <= 120 ? text : text[..120] + "…";
 

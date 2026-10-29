@@ -38,11 +38,11 @@ A *dougong* (斗拱) is the bracket set in traditional Chinese timber architectu
 ## Current Status
 
 Targeting `net10.0`, version `0.1.0-alpha.2`, **published to nuget.org** (2026-10-29).
-**M0–M3 are complete**; all four M3 completion criteria are met (see [status](docs/status.md)
-and [M3 plan](docs/m3-plan.md) §9). The I0 stabilization exit conditions are met as well.
+All four design commitments — composability, lifecycle integrity, explainable failure,
+actually usable — are met; see [design commitments](docs/goal.md).
 
-**Scale**: 7 product projects, 1 kernel test project (**187 tests**), 9 sample/probe projects,
-**44 deterministic self-check suites** (no network, no API key required).
+**Scale**: 7 product projects, 1 kernel test project (**188 tests**), 9 sample/probe projects,
+**45 deterministic self-check suites** (no network, no API key required).
 
 **Verified capabilities**:
 
@@ -67,13 +67,13 @@ and [M3 plan](docs/m3-plan.md) §9). The I0 stabilization exit conditions are me
 **L1 preference memory** is implemented and verified: hard-coded whitelist, approval bound to
 a content hash, revocable, no cross-workspace propagation. Effect measured across 6 providers
 × 2 protocols (14 combinations): **preference adherence improved 60%–90% (median 80%)**.
-See [acceptance 1](docs/skill-l1-acceptance-1.md) — that result applies only to the tested
-models and task set.
+That result applies only to the tested models and task set; the full experiment
+record is internal material.
 
 **Not yet done**: `Dougong.Telemetry` (OTel export), power-loss durability verification,
 ACP Registry listing (the repo is public; the remaining blocker is auth — the Registry only
 accepts OAuth or terminal-interactive auth, while this project has environment-variable auth
-only; see [plan](docs/plan.md) §6). See [status](docs/status.md) for the full classified list.
+only).
 
 ## Why Dougong
 
@@ -226,13 +226,13 @@ API key (taken only from the `NUGET_API_KEY` environment variable).
 
 | Document | Contents |
 |---|---|
-| [Status board](docs/status.md) | How far along, measured evidence only |
-| [Development plan](docs/plan.md) | What is next, classified backlog |
 | [Performance baseline](docs/performance-baseline.md) | Measured numbers and environment; recorded, not promised |
+| [Troubleshooting](docs/troubleshooting.md) | Real cases for build, provider and plugin loading |
 
-> The remaining documents are development logs, retrospectives and decision records
-> (milestone plans, acceptance reports, comparisons with similar projects). They matter
-> to maintainers, not to users — enter them through the full index in
+> Internal working records (status board, schedule, milestone plans, development logs) are
+> not in this repository — they are by-products of maintenance and change as findings come in.
+> The remaining documents are decision records and comparisons with similar projects.
+> See the full index in
 > [docs/README.md](docs/README.md).
 
 ## Roadmap
@@ -255,16 +255,14 @@ I0  stabilization and release                                 ✅ closed 2026-10
 
 The four M3 completion criteria — an outside author can write a plugin from docs alone,
 API changes are caught automatically, repeated load/unload does not leak, and failures are
-locatable — are all met; evidence in [M3 plan](docs/m3-plan.md) §9.
+locatable — are all met.
 
 I0's exit condition — a person not involved in development completes install → configure →
 real task → write a plugin, on clean Windows and Linux — has evidence on both platforms.
 
-**What comes next is undecided.** Candidates are in the
-[iteration roadmap](docs/vision/iteration-roadmap.md) (I1 embeddable runtime, I2 execution
-boundaries, I3 knowledge assets, …) and in [plan](docs/plan.md) §6. Which one to take depends
-on real demand rather than the roadmap — I1, for instance, is only worth doing once an actual
-embedding need appears.
+**What comes next is driven by real demand, not the roadmap.** The criterion for I1
+"embeddable runtime" is already satisfied: a desktop host runs as a separate process on top of
+this SDK, and the first gap it hit became part of the API.
 
 ## Design Boundaries
 
@@ -281,7 +279,7 @@ The companion desktop client will be developed as a separate Dougong Desktop hos
 
 ## Contributing
 
-The project is in a period of rapid API evolution. Before opening an issue or pull request, please read the [status board](docs/status.md) and the [architecture doc](docs/architecture.md), and add deterministic failure-path tests for any behavior change.
+The project is in a period of rapid API evolution. Before opening an issue or pull request, please read the [architecture doc](docs/architecture.md) and the [design commitments](docs/goal.md), and add deterministic failure-path tests for any behavior change.
 
 ### Naming convention
 

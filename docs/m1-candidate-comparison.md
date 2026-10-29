@@ -271,7 +271,7 @@ message_delta  stop_reason: tool_use
 ## 7. 尚未验证的部分（必须如实记录）
 
 > 本节写于候选对比当时。后续切片已补齐审批、资源锁、提交屏障、文件版本复核、
-> 上下文压缩与三种线协议；当前状态以 [status.md](status.md) 为准。
+> 上下文压缩与三种线协议。
 
 - ~~审批与资源锁未实现~~ → 已实现（`-- approval` 9 项、`-- failure` 6 项，含反证）。
 - **JSON schema 校验仍是最小子集**（顶层 `type` 与 `required`），不是完整校验器。

@@ -8,7 +8,7 @@ namespace Dougong.Kernel;
 /// <param name="Message">异常消息原文。</param>
 /// <param name="Stage">
 /// 失败发生的阶段。宿主据此决定补救方式——这是"能定位到组件"的关键
-/// （`goal.md` P3、`m3-plan.md` 判据 4）。
+/// （`goal.md` P3：故障必须可解释）。
 /// </param>
 /// <param name="Hint">
 /// 下一步该做什么。**面向使用者而非开发者**：写"检查 EnableDynamicLoading 与共享契约登记"，

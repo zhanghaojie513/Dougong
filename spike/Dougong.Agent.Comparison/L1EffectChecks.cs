@@ -56,7 +56,7 @@ public static class L1EffectChecks
             Console.WriteLine(
                 "L1-EFFECT: 未运行（缺少 DOUGONG_PROVIDER_BASE / KEY / MODEL）。");
             Console.WriteLine(
-                "  这不是通过。验收 1 必须用真实模型跑，见 docs/skill-l1-acceptance-1.md。");
+                "  这不是通过。效果验证必须用真实模型跑。");
             return 2;
         }
 

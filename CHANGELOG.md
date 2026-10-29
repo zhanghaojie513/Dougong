@@ -168,7 +168,7 @@
   缺凭证时 `-- l1-effect` 明确报"未运行"并返回非零，绝不算通过。
   **实测：6 家 provider × 2 种协议共 14 个组合，提升 60%–90%（中位数 80%），
   14/14 超过 50% 阈值。** 适用范围仅限被测模型与这 10 个任务。
-  见 [skill-l1-acceptance-1.md](docs/skill-l1-acceptance-1.md)。
+  实验记录属于内部材料，不在本仓库。
 - `Dougong.Agent`：`ToolDescriptor.MayHaveIrreversibleEffects`（默认 false）
   与 `UnknownOutcome.MayHaveIrreversibleEffects`（默认 true）+ `RecoveredSession.Retryable`。
   恢复时据此区分「只读工具崩溃，可安全重试」与「可能已产生副作用，必须人工核实」。

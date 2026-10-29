@@ -1,6 +1,6 @@
 # Dougong 架构
 
-> 本文回答"系统长什么样、怎么运转"。**最终目的与达成判定见 [goal.md](goal.md)，完成定义见 [quality-gates.md](quality-gates.md)**；为什么这样设计见 [philosophy.md](vision/philosophy.md)；里程碑、命名与待定决策见 [design.md](design.md)。
+> 本文回答"系统长什么样、怎么运转"。**四条不可让渡的性质见 [goal.md](goal.md)**；为什么这样设计见 [design.md](design.md)；分层取舍见 [host-layering-decision.md](host-layering-decision.md)。
 > 对应 design v1（2026-10-22）。全部包名 `Dougong.*`，目标框架 `net10.0`。
 
 ---
@@ -238,14 +238,14 @@ module 重求值。M0 已为"卸载后引用未释放导致程序集回收失败
 2026-10-25 清掉了 `Dougong.Agent.csproj` 里一行从 M0 起就存在、但源码从未使用的
 Kernel 工程引用——它让独立性"看起来不成立"。
 
-**已知未收口（G15）**：审批器与 dispatcher 仍被编排者存成字段。AI 见 `plan.md` G15。
+**已知未收口（G15）**：审批器与 dispatcher 仍被编排者存成字段。
 `-- bare-hold` 用反射列出所有持有点并要求逐条说明，新增未说明的持有会失败。
 
 **当前状态（2026-10-25）**：接线已实现，见 `Dougong.Cli/KernelAgentHost.cs`。
 `DOUGONG_KERNEL=1` 时存储、审批器、dispatcher、运行时都作为插件注册进内核，
 宿主经 `IServiceReference.InvokeAsync` 使用；**租约粒度是一回合一次**
 （一次 `RunAsync` = 一个回合），理由与实现约束见
-[g14-kernel-wiring-plan.md](g14-kernel-wiring-plan.md) §一。
+本文 §5 的租约粒度一节。
 **已是默认路径**（2026-10-25）：`DOUGONG_KERNEL=0` 可退回直连作为对照。
 P1 判定第 1 条已勾选。
 
@@ -525,7 +525,7 @@ UI 断线后引擎停止接收新输入；当前模型请求可完成当前响�
 | 显式停止引擎、取消、审批超时、重复释放 | 终态明确，进程/句柄按策略释放；不能清理的状态有诊断 |
 | 外部 ACP + 日志/遥测同时启用 | stdout 保持逐行纯协议；桌面内部入口不影响标准 ACP 出口 |
 
-双轨协同计划见 [design.md §12](design.md#12-桌面端协同开发计划dougong-desktop-双轨)，执行状态见 [status.md](status.md)。
+双轨协同计划见 [design.md §12](design.md#12-桌面端协同开发计划dougong-desktop-双轨)。
 
 ## 7. 数据与配置布局
 
@@ -599,7 +599,7 @@ DeactivateAsync(P) → 串行协调变更 → 计算需求闭包
 | 新工具（Git、浏览器、数据库…） | `IAgentTool` 插件 |
 | 新模型接入 | M.E.AI 连接器 + `ChatClientFactory` 配置（不改代码） |
 | 新 MCP server | 配置声明连接，自动成为插件 |
-| 新技能（SKILL.md 知识包） | 技能加载器插件：技能目录本身作为工具、按需加载（见 [skills-evolution.md](vision/skills-evolution.md)） |
+| 新技能（SKILL.md 知识包） | 技能加载器插件：技能目录本身作为工具、按需加载（Skill 自动进化的设想属于内部材料，不在本仓库） |
 | 审批交互（控制台/桌面/自动白名单） | 审批器插件 |
 | 会话存储后端（SQLite…） | 存储插件（默认 JSONL 插件） |
 | 宿主 UI | 实现 ACP Client（Dougong Desktop 是第一例） |

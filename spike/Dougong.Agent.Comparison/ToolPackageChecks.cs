@@ -38,6 +38,7 @@ public static class ToolPackageChecks
         failures += Check("docs-pin-tool-version-on-install", DocsPinVersion);
         failures += Check("docs-install-version-matches-build", DocsVersionMatchesBuild);
         failures += Check("readme-test-count-matches-reality", ReadmeTestCount);
+        failures += Check("docs-have-no-broken-relative-links", NoBrokenDocLinks);
         failures += Check("no-hardcoded-version-in-sources", NoHardcodedVersion);
         failures += await CheckAsync("version-is-consistent-across-outputs", VersionConsistentAsync);
 
@@ -302,7 +303,6 @@ public static class ToolPackageChecks
             Path.Combine(root, "README.md"),
             Path.Combine(root, "README.en.md"),
             Path.Combine(root, "docs", "getting-started.md"),
-            Path.Combine(root, "docs", "walkthrough-checklist.md"),
         ];
 
         foreach (var path in docs)
@@ -616,7 +616,6 @@ public static class ToolPackageChecks
             Path.Combine(root, "README.md"),
             Path.Combine(root, "README.en.md"),
             Path.Combine(root, "docs", "getting-started.md"),
-            Path.Combine(root, "docs", "walkthrough-checklist.md"),
         ];
 
         foreach (var path in docs)
@@ -645,4 +644,61 @@ public static class ToolPackageChecks
 
         return null;
     }
+    /// <summary>
+    /// 所有 Markdown 里的相对链接都必须指向真实存在的文件。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是 2026-10-29 文档重组时补的</b>：那次把 11 份内部文档移出仓库，
+    /// 全仓库有 70 多处引用要改。人工核对容易漏——而漏掉的表现是
+    /// GitHub 上一个点了就 404 的链接，读者只会觉得文档烂。
+    /// <para>
+    /// 只检查相对路径链接（`[x](foo.md)`、`<img src="...">`），
+    /// http(s) 链接与锚点不查（前者需要联网，后者靠 GitHub 自己渲染）。
+    /// </para>
+    /// </remarks>
+    private static string? NoBrokenDocLinks()
+    {
+        var root = FindRepoRoot();
+        var broken = new List<string>();
+
+        foreach (var file in Directory.EnumerateFiles(root, "*.md", SearchOption.AllDirectories))
+        {
+            // 跳过构建产物与第三方目录。
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                    StringComparison.Ordinal)) continue;
+            if (file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}",
+                    StringComparison.Ordinal)) continue;
+            if (file.Contains($"{Path.DirectorySeparatorChar}artifacts{Path.DirectorySeparatorChar}",
+                    StringComparison.Ordinal)) continue;
+
+            var directory = Path.GetDirectoryName(file)!;
+            var text = File.ReadAllText(file);
+
+            foreach (System.Text.RegularExpressions.Match match in
+                System.Text.RegularExpressions.Regex.Matches(text, @"\]\(([^)#\s]+)"))
+            {
+                var target = match.Groups[1].Value;
+
+                if (target.StartsWith("http", StringComparison.OrdinalIgnoreCase)) continue;
+                if (target.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase)) continue;
+                if (target.StartsWith("#", StringComparison.Ordinal)) continue;
+
+                // 去掉锚点部分再判存在性。
+                var hash = target.IndexOf('#');
+                var pathPart = hash >= 0 ? target[..hash] : target;
+                if (pathPart.Length == 0) continue;
+
+                var resolved = Path.GetFullPath(Path.Combine(directory, pathPart));
+                if (!File.Exists(resolved) && !Directory.Exists(resolved))
+                {
+                    broken.Add($"{Path.GetRelativePath(root, file)} -> {target}");
+                }
+            }
+        }
+
+        return broken.Count == 0
+            ? null
+            : $"有 {broken.Count} 个链接指向不存在的路径：{string.Join("; ", broken.Take(5))}";
+    }
+
 }

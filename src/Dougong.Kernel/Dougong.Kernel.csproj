@@ -6,7 +6,7 @@
     <Description>Dougong 插件内核——一切皆插件的承托层（生命周期 / 服务注册表 / 事件总线 / ALC 动态加载）</Description>
     <!-- API 兼容检查（M3 切片 3.2）：与上一个发布版本比对公开 API，
          任何增删改都会在 pack 时报出来。不补 [Experimental] 标记，
-         改用这个机制让变更可见（见 docs/m3-plan.md §五）。 -->
+         改用这个机制让变更可见（见 docs/compat-policy.md）。 -->
     <EnablePackageValidation>true</EnablePackageValidation>
     <!-- 基线用本地 nupkg 而不是 PackageValidationBaselineVersion：
          后者会去 NuGet 找同 ID 的已发布包，而本项目还没发布，还原会失败

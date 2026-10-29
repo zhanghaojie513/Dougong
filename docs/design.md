@@ -1,7 +1,7 @@
 # Dougong（斗拱）设计方案 v1 — 给 .NET 生态一个插件化 Agent Harness（路线 B）
 
 > **状态**：设计稿 v1，2026-10-22（同日定名 **Dougong／斗拱**，见 §11）
-> **文档体系**：**最终目的与达成判定见 [goal.md](goal.md)，完成定义见 [quality-gates.md](quality-gates.md)**；本文是总体方案（生态位 / 里程碑 / 决策 / 双轨计划）；"为什么这样设计"见 [philosophy.md](vision/philosophy.md)，"系统长什么样、怎么运转"见 [architecture.md](architecture.md)，"下一步做什么"见 [plan.md](plan.md)，"做到哪了"见 [status.md](status.md)，旗舰特性 Skill 自动进化见 [skills-evolution.md](vision/skills-evolution.md)，外部前沿事实见 [frontier-roadmap.md](vision/frontier-roadmap.md)，M3 之后的内部迭代排序见 [iteration-roadmap.md](vision/iteration-roadmap.md)。
+> **文档体系**：**四条不可让渡的性质与反目标见 [goal.md](goal.md)**；本文是总体方案（生态位 / 里程碑 / 决策）；"系统长什么样、怎么运转"见 [architecture.md](architecture.md)；"兼容承诺"见 [compat-policy.md](compat-policy.md)。
 > **定位**：以 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的 "Everything is a Plugin" 为架构参照，在 .NET 上**原生实现**一个插件化 Agent Harness SDK——借思想，不移植代码。
 > **名字**：斗拱 = 标准化构件逐层装配、承托整体屋檐的千年木构系统——"一切皆插件"的建筑版。内核是承托层，插件是斗拱件。
 > **上游决策**：底座决定（M.E.AI + MCP 官方 SDK、不自研 provider、不移植 Cordis）见 Obsidian《Dougong-Desktop-桌面端开发方案.md》§3.2（2026-10-22 修订，2026-10-23 该文档定案为桌面端正式方案）。
@@ -150,7 +150,7 @@ MCP 官方 SDK 保持拟采用底座；Tasks 等可选扩展按实际版本能�
 
 加载前检查所有共享契约的支持范围，不只检查 Kernel 主版本；M3 使用 ApiCompat 和行为兼容测试。M0 验收覆盖 architecture.md §3.7 的全部反例后，才进入 Agent 实现。
 
-**公共 API 的稳定性声明（2026-10-25 修订）**：先前写的是"公共 API 在 M3 前保持 experimental"，但**从未执行**——代码里 `[Experimental]` 是 0 处。核实后决定不补，理由见 `m3-plan.md` §五：该标记产生的是**编译错误而非警告**，第三方插件项目不自行 `NoWarn` 就装不上，与 M3 判据"外部作者照文档能写出插件"直接冲突；且它的受众（外部作者）在 M3 才出现，为一个还没有受众的时期补临时标记不划算。
+**公共 API 的稳定性声明（2026-10-25 修订）**：先前写的是"公共 API 在 M3 前保持 experimental"，但**从未执行**——代码里 `[Experimental]` 是 0 处。核实后决定不补，理由是：该标记产生的是**编译错误而非警告**，第三方插件项目不自行 `NoWarn` 就装不上，与 M3 判据"外部作者照文档能写出插件"直接冲突；且它的受众（外部作者）在 M3 才出现，为一个还没有受众的时期补临时标记不划算。
 替代机制：ApiCompat 基线 + CHANGELOG + `[Obsolete]` 弃用窗口 + `0.x` 语义化版本约定。**结论：不做兼容承诺，但任何 API 变更都可被自动发现。**
 
 ## 5. Agent 运行时
@@ -253,7 +253,7 @@ DougongDesktop.PtyHost（按需启动，持有 PTY/shell 句柄）
 > 组合实跑，提升 60%–90%（中位数 80%），14/14 超过预先登记的 50% 阈值。
 > **但结论适用范围仅限这 6 家模型、这 10 个任务、这两种偏好（concise / PascalCase）**，
 > 不外推到其它模型、其它偏好或"长期使用会越来越好"。
-> 详见 [skill-l1-acceptance-1.md](skill-l1-acceptance-1.md)。
+> 效果对照的完整实验记录属于内部材料，不在本仓库。
 
 ## 9. 风险与规避
 
