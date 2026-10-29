@@ -339,6 +339,15 @@ public sealed record AgentToolResult(JsonElement Content, JsonElement? Details =
 - 压缩是有损的，宿主必须如实展示：新增 `AgentEvent.ContextCompacted(RemovedMessages, EstimatedTokensBefore, EstimatedTokensAfter, Applied, Diagnostic)`。用户需要知道"模型看到的不再是完整历史"。
 - prompt cache 支持、前缀命中、有效期和计费依赖 provider，必须用实际 usage 验证；不能承诺“只为新增消息付费”。
 
+### 4.6 推理内容（reasoning / thinking）
+
+- **与正文分离**：`AgentEvent.ReasoningDelta(Text)` 单独成流，不并进 `TextDelta`。理由是推理不是回答——它常带未定稿的自我纠错（"等等，这里算错了"），当结论显示就是误导。
+- **两条通道并存**：既作为事件实时产出，也按 `AgentPropertyKeys.Reasoning` 存入历史。事件给 UI 做实时显示，历史保证会话恢复后推理仍完整（思考模式的 provider 在下一轮会要求它）。
+- **此前只有后者**（2026-10-29 补齐）：初版只把内容追加进 `StringBuilder` 再写历史，**从不构造事件**，宿主拿不到实时流，UI 只能在恢复时补显示。这是一处如实记录过的能力缺口——**插件补不了**，因为它只能订阅已是 `AgentEvent` 的流，而这份数据在运行时就已被吞掉。
+- **是否出现取决于 provider**：只有启用思考模式的模型才给推理内容。不支持时一个事件都不会有，宿主不能当作必然信号；有专门的对偶检查钉住这一点（没有推理时不得凭空产出空事件）。
+- **ACP 侧对应 `agent_thought_chunk`**，与 `agent_message_chunk` 分开投递，客户端可折叠显示。
+- **CLI 默认不显示**：Plain 档必须与改造前逐字一致，且推理内容不适合当正文展示。`DOUGONG_SHOW_REASONING=1` 可打开。
+
 ## 5. 协议与集成层
 
 ### 5.1 Ai 层（Dougong.Ai）

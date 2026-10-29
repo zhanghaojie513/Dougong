@@ -336,6 +336,11 @@ public static class Program
         // 富终端、没被 DOUGONG_TUI=0 关掉、输出没被重定向。
         // 重定向那一层由 LiveRegion.Create 内部兜住，这里只表达用户意图。
         var tuiRequested = Environment.GetEnvironmentVariable("DOUGONG_TUI") is not ("0" or "false");
+
+        // 推理内容默认不显示：Plain 档必须与改造前逐字一致，
+        // 而推理里常带未定稿的自我纠错，当正文显示会误导。
+        var showReasoning = Environment.GetEnvironmentVariable("DOUGONG_SHOW_REASONING") is "1" or "true";
+
         using var liveRegion = LiveRegion.Create(
             Output.Capability, force: tuiRequested ? null : false);
 
@@ -382,6 +387,7 @@ public static class Program
             Log.Debug($"turn-{turn} 开始，历史 {messages.Count} 条，输入 {input.Length} 字符");
             var request = new AgentRunRequest(sessionId, $"turn-{turn}", messages, input);
             var assistantText = new StringBuilder();
+            var reasoningText = new StringBuilder();
             var turnStartedAt = System.Diagnostics.Stopwatch.StartNew();
 
             // 工具行是否延后到本轮流结束再输出。
@@ -409,6 +415,17 @@ public static class Program
                         case AgentEvent.TextDelta delta:
                             assistantText.Append(delta.Text);
                             Output.Text(delta.Text);
+                            break;
+
+                        case AgentEvent.ReasoningDelta reasoningDelta:
+                            // **默认不显示**，两个理由：
+                            //   1. Plain 档必须与改造前逐字一致（45 个套件钉着），
+                            //      多写一段推理内容就破了这条底线
+                            //   2. 推理里常带未定稿的自我纠错，当正文显示会误导
+                            // 想看的人用 DOUGONG_SHOW_REASONING=1 打开。
+                            reasoningText.Append(reasoningDelta.Text);
+                            if (showReasoning)
+                                Output.Muted(reasoningDelta.Text);
                             break;
 
                         case AgentEvent.ToolCallRequested call:

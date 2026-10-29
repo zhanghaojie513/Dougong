@@ -105,6 +105,14 @@ public sealed class ActivityReporter : IAsyncDisposable
                     _state.OnTextDelta(now);
                     break;
 
+                case AgentEvent.ReasoningDelta:
+                    // 推理阶段维持"思考中"，不切到 Streaming：
+                    //   - 推理不是回答，用"输出中"的状态是错的
+                    //   - 但它确实是"活着"的证据，所以要刷新计时基准，
+                    //     否则长时间推理会被 Tick 判成停滞
+                    _state.OnReasoning(now);
+                    break;
+
                 case AgentEvent.ToolCallRequested:
                     _state.OnToolStarted(now);
                     break;

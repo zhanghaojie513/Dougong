@@ -21,7 +21,18 @@
 
 ## [Unreleased]
 
-（暂无）
+### Added
+
+- **新增 `AgentEvent.ReasoningDelta`：推理内容现在有实时事件**。
+  此前 `LoopAgentRuntime` 只把 `AgentPropertyKeys.Reasoning` 追加进历史，
+  **从不构造事件**——宿主拿不到实时推理流，UI 只能在会话恢复时补显示。
+  这是一处如实记录过的能力缺口，且**插件补不了**：插件只能订阅已是
+  `AgentEvent` 的东西，而这份数据在运行时就已被吞掉。
+  - 与 `TextDelta` 分离：推理不是回答，且常带未定稿的自我纠错
+  - 两条通道并存：事件给 UI，历史保证会话恢复后推理仍完整
+  - 是否出现取决于 provider；有对偶检查钉住"没有推理时不得产出空事件"
+  - ACP 侧投递为 `agent_thought_chunk`（协议标准消息类型，此前一直是空的）
+  - CLI 默认不显示（Plain 档须逐字一致），`DOUGONG_SHOW_REASONING=1` 打开
 
 ## [0.1.0-alpha.2] — 2026-10-29
 

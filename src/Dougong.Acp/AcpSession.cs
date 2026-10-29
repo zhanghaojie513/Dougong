@@ -242,6 +242,22 @@ internal sealed class AcpSession
                         }, linked.Token).ConfigureAwait(false);
                         break;
 
+                    case AgentEvent.ReasoningDelta reasoningDelta:
+                        // ACP 协议里推理内容对应 agent_thought_chunk，
+                        // 与正文分开投递——客户端可以折叠显示，不会误当成回答。
+                        //
+                        // 此前这个通道一直是空的：LoopAgentRuntime 只把 reasoning
+                        // 存进历史、不产出事件，连数据源都没有。
+                        await NotifyAsync("agent_thought_chunk", new JsonObject
+                        {
+                            ["content"] = new JsonObject
+                            {
+                                ["type"] = "text",
+                                ["text"] = reasoningDelta.Text,
+                            },
+                        }, linked.Token).ConfigureAwait(false);
+                        break;
+
                     case AgentEvent.ToolCallRequested requested:
                         await NotifyAsync("tool_call", new JsonObject
                         {

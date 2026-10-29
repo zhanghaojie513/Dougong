@@ -87,6 +87,26 @@ public sealed class ActivityState
             Enter(ActivityPhase.Streaming, now);
     }
 
+    /// <summary>
+    /// 收到推理片段。**维持"思考中"，不切到流式。**
+    /// </summary>
+    /// <remarks>
+    /// 推理不是回答，用"输出中"的状态描述它是错的。但它确实是"还在干活"的
+    /// 证据，所以要刷新阶段起点——否则长时间推理会让耗时一直涨、
+    /// 看起来像卡在同一个阶段。
+    /// <para>
+    /// 只有 provider 启用思考模式时才会收到这个事件，未启用时行为与之前完全一致。
+    /// </para>
+    /// </remarks>
+    public void OnReasoning(DateTimeOffset now)
+    {
+        // 已经在流式输出正文时不回退到思考中：正文优先。
+        if (_phase is ActivityPhase.Streaming) return;
+
+        _lastDeltaAt = now;
+        Enter(ActivityPhase.Thinking, now);
+    }
+
     /// <summary>某次工具开始执行。</summary>
     public void OnToolStarted(DateTimeOffset now) => Enter(ActivityPhase.Working, now);
 

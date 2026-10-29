@@ -24,9 +24,9 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           # 与 global.json 一致；那里固定了 SDK 版本并启用 Microsoft.Testing.Platform 运行器。
           dotnet-version: '10.0.402'
@@ -71,7 +71,7 @@ jobs:
 
       - name: Upload packages
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           # 两个平台都会产出包，名字必须区分，否则 CI 报 artifact 冲突。
           name: packages-${{ matrix.os }}

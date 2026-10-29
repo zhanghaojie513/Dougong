@@ -185,7 +185,17 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 if (enumerator.Current.AdditionalProperties is { } updateProps
                     && updateProps.TryGetValue(AgentPropertyKeys.Reasoning, out var reasoningValue)
                     && reasoningValue?.ToString() is { Length: > 0 } reasoningText)
+                {
                     reasoning.Append(reasoningText);
+
+                    // 同时作为事件产出：否则推理内容只进历史、宿主拿不到实时流，
+                    // UI 只能在会话恢复时补显示（这是此前如实记录的能力缺口）。
+                    //
+                    // **每段是增量而非累计**：Dougong.Ai 的格式层挂上 reasoning 后
+                    // 立刻清空缓冲区（见 WithReasoning），所以这里直接转发即可，
+                    // 不需要与 reasoning.ToString() 做差。
+                    yield return new AgentEvent.ReasoningDelta(reasoningText);
+                }
 
                 foreach (var content in enumerator.Current.Contents)
                 {

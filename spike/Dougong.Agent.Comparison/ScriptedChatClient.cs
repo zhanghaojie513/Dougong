@@ -62,6 +62,8 @@ public sealed record ScriptedTurn(params ScriptedUpdate[] Updates);
 /// <summary>
 /// 一个流式片段。<see cref="FunctionName"/> 非空时生成函数调用内容，否则生成文本。
 /// <see cref="ArgumentsJson"/> 按原文累积，用于模拟被拆分的流式参数。
+/// <see cref="Reasoning"/> 非空时把该文本挂到
+/// <see cref="Dougong.Agent.AgentPropertyKeys.Reasoning"/> 上（模拟思考模式的 provider）。
 /// </summary>
 public sealed record ScriptedUpdate(
     string? Text = null,
@@ -72,7 +74,8 @@ public sealed record ScriptedUpdate(
     TimeSpan? Delay = null,
     long? UsageInput = null,
     long? UsageOutput = null,
-    long? UsageTotal = null)
+    long? UsageTotal = null,
+    string? Reasoning = null)
 {
     public ChatResponseUpdate ToUpdate()
     {
@@ -91,7 +94,10 @@ public sealed record ScriptedUpdate(
         }
 
         if (FunctionName is null)
-            return new ChatResponseUpdate(ChatRole.Assistant, Text ?? string.Empty);
+        {
+            var textUpdate = new ChatResponseUpdate(ChatRole.Assistant, Text ?? string.Empty);
+            return WithReasoning(textUpdate);
+        }
 
         var contents = new List<AIContent>
         {
@@ -101,7 +107,26 @@ public sealed record ScriptedUpdate(
                 ParseArguments(ArgumentsJson)),
         };
 
-        return new ChatResponseUpdate(ChatRole.Assistant, contents);
+        return WithReasoning(new ChatResponseUpdate(ChatRole.Assistant, contents));
+    }
+
+    /// <summary>
+    /// 把推理文本挂到中性键上，模拟思考模式的 provider。
+    /// </summary>
+    /// <remarks>
+    /// <b>每帧只带本帧的增量</b>：真实的格式层（<c>OpenAiChatCompletionsFormat</c>）
+    /// 挂上 reasoning 后立刻清空缓冲区，所以下游拿到的也是增量。
+    /// 这里必须还原同样的语义，否则测出来的行为与生产不一致。
+    /// </remarks>
+    private ChatResponseUpdate WithReasoning(ChatResponseUpdate update)
+    {
+        if (Reasoning is null) return update;
+
+        update.AdditionalProperties = new AdditionalPropertiesDictionary
+        {
+            [Dougong.Agent.AgentPropertyKeys.Reasoning] = Reasoning,
+        };
+        return update;
     }
 
     /// <summary>

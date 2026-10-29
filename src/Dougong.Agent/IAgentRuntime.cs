@@ -69,6 +69,26 @@ public abstract record AgentEvent
     /// <summary>模型产出的文本片段；只是暂存投影，不构成执行依据。</summary>
     public sealed record TextDelta(string Text) : AgentEvent;
 
+    /// <summary>
+    /// 模型的推理片段（reasoning / thinking），**与正文分开**。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么不并进 <see cref="TextDelta"/></b>：推理不是回答。把它当正文显示
+    /// 会让用户以为模型已经答完；而且推理里常带着未定稿的自我纠错
+    /// （"等等，这里算错了"），当结论呈现就是误导。
+    /// <para>
+    /// <b>它只是投影，不构成执行依据</b>，与 <see cref="TextDelta"/> 同一性质。
+    /// 完整推理仍按 <see cref="AgentPropertyKeys.Reasoning"/> 存入历史，
+    /// 会话恢复时才拿到全量。
+    /// </para>
+    /// <para>
+    /// <b>是否出现取决于 provider</b>：只有启用思考模式的模型才给推理内容。
+    /// 不支持时一个都不会出现，宿主不能把它当作必然信号。
+    /// </para>
+    /// </remarks>
+    /// <param name="Text">本片段的增量文本，不是累计值。</param>
+    public sealed record ReasoningDelta(string Text) : AgentEvent;
+
     /// <summary>聚合完成、即将派发的工具调用。</summary>
     public sealed record ToolCallRequested(string InvocationId, string ToolId, JsonElement Arguments)
         : AgentEvent;

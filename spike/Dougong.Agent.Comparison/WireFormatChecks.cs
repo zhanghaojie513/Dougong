@@ -39,6 +39,8 @@ public static class WireFormatChecks
         failures += Check("dialect-switch-round-trips-to-wire", DialectRoundTrip);
         failures += Check("max-output-tokens-is-configurable", MaxTokensConfigurable);
         failures += await CheckAsync("runtime-history-carries-tool-result-text", RuntimeToolResultTextAsync);
+        failures += await CheckAsync("reasoning-produces-live-event", ReasoningProducesEventAsync);
+        failures += await CheckAsync("no-reasoning-yields-no-event", NoReasoningNoEventAsync);
 
         Console.WriteLine(failures == 0
             ? "WIRE: ALL PASS"
@@ -489,6 +491,87 @@ public static class WireFormatChecks
         return text.Contains("payload-42", StringComparison.Ordinal)
             ? null
             : $"tool 消息内容不符：{text}";
+    }
+
+    /// <summary>
+    /// 推理内容必须作为事件实时产出，而不只是存进历史。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条检查针对的是一个如实记录过的能力缺口</b>：<c>LoopAgentRuntime</c>
+    /// 原先只把 <c>AgentPropertyKeys.Reasoning</c> 追加进 StringBuilder、写进历史，
+    /// 从不构造事件。于是宿主拿不到实时推理流，UI 只能在会话恢复时补显示。
+    /// <para>
+    /// 插件补不了这个缺口：它只能订阅已是 <c>AgentEvent</c> 的东西，
+    /// 而这份数据在运行时就已被吞掉，进程内根本没有可订阅的流。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> ReasoningProducesEventAsync()
+    {
+        var client = new ScriptedChatClient(
+            new ScriptedTurn(
+                new ScriptedUpdate(Reasoning: "先想一下。" + "\n"),
+                new ScriptedUpdate(Reasoning: "答案是 4。"),
+                new ScriptedUpdate(Text: "4")));
+
+        var runtime = new LoopAgentRuntime(client, new ToolDispatcher());
+
+        var reasoning = new System.Text.StringBuilder();
+        var texts = new System.Text.StringBuilder();
+        var reasoningEvents = 0;
+
+        await foreach (var evt in runtime.RunAsync(
+            new AgentRunRequest("s", "t", [], "2+2?")))
+        {
+            switch (evt)
+            {
+                case AgentEvent.ReasoningDelta delta:
+                    reasoning.Append(delta.Text);
+                    reasoningEvents++;
+                    break;
+
+                case AgentEvent.TextDelta delta:
+                    texts.Append(delta.Text);
+                    break;
+            }
+        }
+
+        if (reasoningEvents == 0)
+            return "推理内容没有作为事件产出（只进了历史）——这正是要修的缺口";
+
+        if (reasoning.ToString() != "先想一下。" + "\n" + "答案是 4。")
+            return $"推理内容不符：[{reasoning}]";
+
+        // 推理绝不能混进正文：否则 UI 会把"未定稿的自我纠错"当回答显示。
+        if (texts.ToString() != "4")
+            return $"正文被推理污染：[{texts}]";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 没有推理内容时不得凭空产出 <c>ReasoningDelta</c>。
+    /// </summary>
+    /// <remarks>
+    /// 与上一条互为对偶：只测"有推理时要产出"，会让"无条件产出空事件"同样通过，
+    /// 而那会让宿主把每个普通模型都当成支持思考模式。
+    /// </remarks>
+    private static async Task<string?> NoReasoningNoEventAsync()
+    {
+        var client = new ScriptedChatClient(
+            new ScriptedTurn(new ScriptedUpdate(Text: "4")));
+
+        var runtime = new LoopAgentRuntime(client, new ToolDispatcher());
+
+        var reasoningEvents = 0;
+        await foreach (var evt in runtime.RunAsync(
+            new AgentRunRequest("s", "t", [], "2+2?")))
+        {
+            if (evt is AgentEvent.ReasoningDelta) reasoningEvents++;
+        }
+
+        return reasoningEvents == 0
+            ? null
+            : $"模型没有推理内容，却产出了 {reasoningEvents} 个 ReasoningDelta";
     }
 
     private sealed class EchoTool : IAgentTool
