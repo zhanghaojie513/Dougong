@@ -149,8 +149,42 @@ public void OldThing() { ... }
 但本项目额外要求：**minor 里出现破坏性变更时，CHANGELOG 必须在最上面显式警告**。
 
 版本号唯一来源是 `Directory.Build.props` 的 `<Version>`。
-（`Program.cs` 里还有两处硬编码的版本字符串，那是显示用的，改版本时要一起改——
-这是已知的重复，见 §七。）
+代码里通过 `ProductInfo`（CLI）与 `AcpVersion`（Acp）从
+`AssemblyInformationalVersion` 读取，没有第二处硬编码；
+`publish-nuget.sh` 与 `update-api-baseline.sh` 也从 props 读。
+`-- no-hardcoded-version-in-sources` 与 `-- version-is-consistent-across-outputs`
+两条检查钉住这一点。
+
+### 6.1 有真实消费者时，破坏性变更的门槛反而更低
+
+**这是 2026-10-29 定的判断，理由不是"反正没人用"。**
+
+真实宿主（桌面端）在实现功能时会撞出内核缺的能力。这些缺口有个共同特征：
+**它不是"我们觉得该有"，而是"不补就做不出来"**。此时坚持兼容的代价是：
+
+- 缺口留在内核外面，由每个宿主各自绕过去 → 重复实现，且各自绕法不一致
+- 或者干脆不补 → 产品功能做不成
+
+两种都比"改一次签名"代价更大。所以规则是：
+
+> **当破坏性变更来自真实消费者的具体阻塞时，直接改；**
+> **当它来自"我觉得这样更干净"时，先按 §三 走弃用流程。**
+
+判据是**能不能指出是谁被挡住了、挡住了什么功能**。指不出来就该走弃用。
+
+配套要求（不因为门槛降低而免除）：
+
+1. **CHANGELOG 顶部显式警告**，写清断在哪、怎么迁移
+2. **基线同步更新**，否则 ApiCompat 之后的比对全是噪音
+3. **一次发版集中处理**，不把同一个破坏摊到三个版本里
+4. **写明"这是破例"**。若因"刚发布、实际无使用者"而缩短弃用窗口，
+   要如实写出来，不能假装没破例
+
+`0.1.1-alpha.2` 一版里集中处理了 4 个破坏性变更：
+`PluginStateChange.Elapsed`、`ToolDispatchResult` 两段耗时、
+`PluginManifest.display`、`UsageRecord.FailureKind`。
+四个都直接来自桌面端的具体阻塞（插件管理 UI 与失败诊断），
+不是"觉得应该更干净"。集中在一版处理，符合上面第 3 条要求。
 
 ---
 
@@ -158,8 +192,9 @@ public void OldThing() { ... }
 
 如实列出，不假装这套机制是完整的：
 
-1. **`Program.cs` 里版本号硬编码了两处**，与 `Directory.Build.props` 重复。
-   改版本时容易漏。`--report` 用的是程序集版本（真实值），不受影响。
+1. ~~`Program.cs` 里版本号硬编码了两处~~ —— **已修（2026-10-29）**：
+   改为从 `AssemblyInformationalVersion` 读取（`ProductInfo` / `AcpVersion`），
+   并有两条检查钉住"源码无硬编码"与"三处输出一致"。
 2. **行为破坏靠人工判断**。ApiCompat 只看签名，语义变化只能靠写 CHANGELOG 的人自觉。
    没有自动化手段能检出"默认值变了"。
 3. **`0.x` 阶段实际没有外部用户**，所以这套流程还没有被真实升级场景检验过。
