@@ -37,6 +37,7 @@ public static class ToolPackageChecks
         failures += Check("gitignore-covers-pack-output", PackOutputIgnored);
         failures += Check("docs-pin-tool-version-on-install", DocsPinVersion);
         failures += Check("docs-install-version-matches-build", DocsVersionMatchesBuild);
+        failures += Check("version-not-already-published", VersionNotAlreadyPublished);
         failures += Check("readme-test-count-matches-reality", ReadmeTestCount);
         failures += Check("docs-have-no-broken-relative-links", NoBrokenDocLinks);
         failures += Check("no-hardcoded-version-in-sources", NoHardcodedVersion);
@@ -699,6 +700,63 @@ public static class ToolPackageChecks
         return broken.Count == 0
             ? null
             : $"有 {broken.Count} 个链接指向不存在的路径：{string.Join("; ", broken.Take(5))}";
+    }
+
+    /// <summary>
+    /// 当前构建版本不能已经在 nuget.org 上。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是 2026-10-29 补的，起因是一次真实失误</b>：
+    /// NuGet 的版本号一旦发布就不能重推，而我当时在已经发布过的
+    /// <c>0.1.1-alpha.2</c> 下继续加了 5 项改动，本地包永远推不上去。
+    /// 发现时已经白改了一轮，只能升版本号重来。
+    /// <para>
+    /// 代价：这条检查需要联网查 nuget.org。**查不到时放行**（不阻断离线构建），
+    /// 因为"网络不通"与"版本已存在"必须区分——把网络故障判成版本冲突
+    /// 会让离线开发寸步难行。
+    /// </para>
+    /// </remarks>
+    private static string? VersionNotAlreadyPublished()
+    {
+        var root = FindRepoRoot();
+        var props = Path.Combine(root, "Directory.Build.props");
+        if (!File.Exists(props)) return null;
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            File.ReadAllText(props), @"<Version>([^<]+)</Version>");
+        if (!match.Success) return null;
+
+        var version = match.Groups[1].Value.Trim();
+
+        // 只查 Kernel：七个包同版本发布，一个能查到就说明整体已发布。
+        var url = $"https://api.nuget.org/v3-flatcontainer/dougong.kernel/{version}/"
+            + $"dougong.kernel.{version}.nupkg";
+
+        try
+        {
+            using var http = new System.Net.Http.HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(8),
+            };
+
+            using var request = new System.Net.Http.HttpRequestMessage(
+                System.Net.Http.HttpMethod.Head, url);
+            using var response = http.Send(request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                return $"版本 {version} 已经发布在 nuget.org 上——"
+                    + "版本号不能重用，继续在它下面改会导致包永远推不上去。先升版本号。";
+            }
+
+            // 404 = 还没发布，正常。其它状态码不判定（可能是服务端临时问题）。
+            return null;
+        }
+        catch (Exception)
+        {
+            // 离线或网络故障：不阻断构建。把网络问题判成版本冲突会让离线开发不可用。
+            return null;
+        }
     }
 
 }

@@ -60,7 +60,7 @@ Visual Studio Code：<https://code.visualstudio.com/>
 如果你不想克隆仓库，只想装上命令行工具用起来——两条命令：
 
 ```bash
-dotnet tool install --global Dougong.Cli --version 0.1.1-alpha.2
+dotnet tool install --global Dougong.Cli --version 0.1.1-alpha.3
 dougong --help
 ```
 
@@ -73,7 +73,7 @@ dougong --help
 > **装的是包 `Dougong.Cli`，命令是 `dougong`。** 两个名字不一样是刻意的：
 > 包名跟项目命名约定（`Dougong.*`），命令名短，方便敲。
 
-**已经发布到 NuGet**（`0.1.1-alpha.2`，2026-10-29）。上面的命令可以直接用。
+**已经发布到 NuGet**（`0.1.1-alpha.3`，2026-10-29）。上面的命令可以直接用。
 
 > **关于 `alpha` 的预期**：命令行功能是完整的——`--doctor`、`--report`、
 > `--help`、REPL、`--acp` 都实测过，行为由 45 个自检套件钉住。
@@ -405,7 +405,7 @@ dotnet run --project src/Dougong.Cli -c Release --
 启动后会显示一行信息，然后是 `>` 提示符：
 
 ```
-dougong 0.1.1-alpha.2  模型=deepseek-flash  协议=OpenAiChatCompletions
+dougong 0.1.1-alpha.3  模型=deepseek-flash  协议=OpenAiChatCompletions
 工作区=...\dougong
 会话=...\20261026-183627.jsonl
 ...

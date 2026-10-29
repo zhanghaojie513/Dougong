@@ -23,9 +23,9 @@
 
 （暂无）
 
-## [0.1.1-alpha.2] — 2026-10-29
+## [0.1.1-alpha.3] — 2026-10-29
 
-> ⚠️ **本版含破坏性 API 变更**（相对 `0.1.1-alpha.1`）。
+> ⚠️ **本版含破坏性 API 变更**（相对 `0.1.1-alpha.2`）。
 > 完善阶段尚未有外部使用者，改动成本为零，因此直接改而不走弃用窗口
 > （见 [compat-policy.md](docs/compat-policy.md) §6.1）。
 > **基于旧版编译过的程序集需要重新编译**，源码级调用不用改。
@@ -34,7 +34,6 @@
 
 - **`UsageRecord` 新增 `FailureKind` 参数**（末尾可选）。
   同样是"record 加参数 = 构造签名变化"，已编译的调用方需要重新编译。
-  本版已是破坏性版本（见上一条），一并处理。
 
 - **`PluginManifest` 的手写构造函数新增 `display` 参数**（末尾可选）。
   这里要更正一个容易想错的地方：**手写构造函数 + 可选参数 ≠ 二进制兼容**。
@@ -42,15 +41,6 @@
   已编译的调用方同样会 `MissingMethodException`。ApiCompat 报 `CP0002`。
   源码级调用不用改，重新编译即可。
   （`PluginSummary` 改用 `init` 属性，就是为了避开这个问题。）
-
-- **`PluginStateChange` 与 `ToolDispatchResult` 的构造函数新增参数**：
-  - `PluginStateChange(..., PluginDiagnostic? Diagnostic = null, TimeSpan? Elapsed = null)`
-  - `ToolDispatchResult(..., ToolPermission? Permission = null,
-    TimeSpan? ApprovalElapsed = null, TimeSpan? ExecutionElapsed = null)`
-  **源码级调用不用改**（新参数有默认值），但**已编译的程序集会 `MissingMethodException`**
-  ——record 加参数会替换原构造函数与 `Deconstruct` 签名。
-  这是 ApiCompat 报 `CP0002` 抓到的，不是我预判到的：我原以为"可选参数=兼容"。
-  重新编译即可，无需改代码。
 
 ### Added
 
@@ -110,6 +100,24 @@
   `sess-xxx` 风格的 Id。只带字符串值、不带 `PluginManifest`——
   manifest 里的 `ServiceRequirement.Type` 对动态插件而言是插件 ALC 的类型，
   长期保留会阻止程序集回收。
+
+## [0.1.1-alpha.2] — 2026-10-29
+
+> **这是 nuget.org 上的已发布版本，内容冻结。**
+> 之后的改动进入 `0.1.1-alpha.3`——版本号不能重用，已发布的内容不可修改。
+
+### Breaking
+
+- **`PluginStateChange` 与 `ToolDispatchResult` 的构造函数新增参数**：
+  - `PluginStateChange(..., PluginDiagnostic? Diagnostic = null, TimeSpan? Elapsed = null)`
+  - `ToolDispatchResult(..., ToolPermission? Permission = null,
+    TimeSpan? ApprovalElapsed = null, TimeSpan? ExecutionElapsed = null)`
+  **源码级调用不用改**（新参数有默认值），但**已编译的程序集会 `MissingMethodException`**
+  ——record 加参数会替换原构造函数与 `Deconstruct` 签名。
+  这是 ApiCompat 报 `CP0002` 抓到的，不是我预判到的：我原以为"可选参数=兼容"。
+  重新编译即可，无需改代码。
+
+### Added
 
 - **工具派发耗时分成两段**：`ToolDispatchResult.ApprovalElapsed`（等审批）与
   `ExecutionElapsed`（工具执行）。合成一个总耗时无法归因——前者取决于人多快确认，
