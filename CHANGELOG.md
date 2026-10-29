@@ -35,9 +35,15 @@
   `HttpRequestException`，整轮失败——而这是最该自动恢复的一类失败。
 
   **识别**（`ContextOverflowDetector`，三层判据）：
-  - 错误文案：25 条正则，覆盖 Anthropic / OpenAI / Bedrock / Groq /
-    llama.cpp / MiniMax / Kimi / Mistral / Ollama / 通义 / 中文厂商等，
+  - 错误文案：覆盖 Anthropic / OpenAI / Bedrock / Groq / llama.cpp /
+    MiniMax / Kimi / Mistral / Ollama / 通义 / 中文厂商等，
     来源是 pi.net 的 `Overflow.cs` 实际文案表，不是猜的
+  - **裸措辞一律不匹配**（照 dsh 的原则）：`too many tokens`、
+    `token limit exceeded`、`exceeds the limit of N` 这类宾语不明的写法
+    被删掉或收紧为"必须提到 context"。dsh 的注释原话：
+    *"'Exceeds' wording is safe only when its object is explicitly the model context."*
+    代价是可能漏判某些简写报错；收益是**不会被无关错误触发压缩**——
+    压缩有损且不可撤销。
   - **排除清单**：Bedrock 的 `ThrottlingException` 含 "too many tokens"，
     会被正向模式命中——不排除就会因一次限流**白压一次历史**（有损且不可撤销）
   - **静默溢出**：调用"成功"但 `usage.input` 已超过配置窗口，

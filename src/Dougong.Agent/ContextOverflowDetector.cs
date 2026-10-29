@@ -59,8 +59,10 @@ public static class ContextOverflowDetector
         // Together AI
         new(@"input \(\d+ tokens\) is longer than the model'?s context length",
             RegexOptions.IgnoreCase, MatchTimeout),
-        // GitHub Copilot
-        new(@"exceeds the limit of \d+", RegexOptions.IgnoreCase, MatchTimeout),
+        // GitHub Copilot。
+        // 原文是 "exceeds the limit of N"，宾语不明（可能是输出上限）。
+        // 收紧为必须提到 context——照 dsh 的"宾语必须是 model context"原则。
+        new(@"exceeds the limit of \d+[^.]{0,40}context", RegexOptions.IgnoreCase, MatchTimeout),
         // llama.cpp
         new(@"exceeds the available context size", RegexOptions.IgnoreCase, MatchTimeout),
         // LM Studio
@@ -76,10 +78,29 @@ public static class ContextOverflowDetector
         new(@"prompt too long; exceeded (?:max )?context length", RegexOptions.IgnoreCase, MatchTimeout),
         // DashScope / Qwen
         new(@"range of input length should be", RegexOptions.IgnoreCase, MatchTimeout),
-        // 通用兜底：结构化 code 与常见措辞
-        new(@"context[_ ]length[_ ]exceeded", RegexOptions.IgnoreCase, MatchTimeout),
-        new(@"too many tokens", RegexOptions.IgnoreCase, MatchTimeout),
-        new(@"token limit exceeded", RegexOptions.IgnoreCase, MatchTimeout),
+        // 通用兜底：结构化 code。
+        //
+        // **宾语必须是 context**。这条照 dsh 的 STRUCTURED_CONTEXT_OVERFLOW：
+        // 要求 context + length/window + 紧跟 exceed/overflow/limit exceeded，
+        // 且前后不能粘字母数字（避免 "contextual length exceeded" 这类误命中）。
+        //
+        // **刻意删掉两条宽松模式**（pi.net 有，dsh 没有）：
+        //   - `too many tokens`：无宾语的裸措辞，Bedrock 的限流错误含这个词，
+        //     只能靠排除清单挡；而排除清单只挡已知的。
+        //   - `token limit exceeded`：同样是裸措辞，可能指输出上限而非上下文窗口。
+        // 删掉它们后，Bedrock 限流问题从根上消失，排除清单降级为纯保险。
+        // dsh 的注释原话："'Exceeds' wording is safe only when its object
+        // is explicitly the model context."
+        new(@"(?:^|[^a-z0-9])context[\s_-](?:length|window)[\s_-]"
+            + @"(?:exceed(?:ed|s)?|overflow(?:ed)?|limit[\s_-]exceeded)(?:$|[^a-z0-9])",
+            RegexOptions.IgnoreCase, MatchTimeout),
+
+        // "X is too long for the model context" —— 要求宾语显式是 model context。
+        new(@"(?:request|prompt|input|messages?)\s+(?:is\s+|are\s+)?too\s+(?:large|long)"
+            + @"\s+for\s+(?:(?:this|the)\s+)?(?:model(?:'s)?\s+)?context",
+            RegexOptions.IgnoreCase, MatchTimeout),
+        new(@"(?:maximum|max)(?:\s+(?:allowed|supported))?\s+context\s+(?:length|window)",
+            RegexOptions.IgnoreCase, MatchTimeout),
         // 中文 provider（部分国内厂商直接返回中文）
         new(@"超过最大长度", RegexOptions.None, MatchTimeout),
         new(@"上下文长度", RegexOptions.None, MatchTimeout),

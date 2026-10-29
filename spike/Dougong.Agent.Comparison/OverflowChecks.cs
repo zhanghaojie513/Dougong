@@ -22,6 +22,7 @@ public static class OverflowChecks
 
         failures += Check("overflow-detects-provider-wording", DetectsWording);
         failures += Check("overflow-does-not-match-rate-limit", DoesNotMatchRateLimit);
+        failures += Check("overflow-requires-context-object", RequiresContextObject);
         failures += Check("silent-overflow-detected", DetectsSilentOverflow);
         failures += Check("truncated-overflow-detected", DetectsTruncatedOverflow);
         failures += Check("truncated-overflow-ignores-idle-model", IgnoresIdleModel);
@@ -51,8 +52,12 @@ public static class OverflowChecks
             "context window exceeds limit",                               // MiniMax
             "exceeded model token limit",                                 // Kimi
             "input token count 5000 exceeds the maximum",                 // Google
-            "too many tokens",                                            // 通用
-            "context_length_exceeded",                                    // 结构化 code
+            // 结构化 code：宾语必须是 context（照 dsh 的收紧写法）
+            "context_length_exceeded",
+            "context window exceeded",
+            "maximum context length is 128000 tokens",
+            // "too long for the model context"：宾语必须是 model context
+            "This request is too long for the model's context window",
             "超过最大长度",                                                // 中文
             "上下文长度超限",
         ];
@@ -87,6 +92,43 @@ public static class OverflowChecks
         {
             if (ContextOverflowDetector.IsContextOverflow(sample))
                 return $"限流被误判成溢出：[{sample}]——会白压一次历史";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 没有上下文的裸措辞不得判为溢出。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是照 dsh 收紧后的结果</b>。pi.net 的模式表里有
+    /// <c>too many tokens</c> 和 <c>token limit exceeded</c> 两条裸措辞，
+    /// 宾语不明——可能是输出上限、可能是限流、可能是配额。
+    /// <para>
+    /// dsh 的原则（<c>error.ts</c> 注释原文）："'Exceeds' wording is safe
+    /// only when its object is explicitly the model context."
+    /// 按这条原则，裸措辞不匹配。
+    /// </para>
+    /// <para>
+    /// <b>代价是可能漏掉某些 provider 的简写报错</b>。这个代价是刻意的：
+    /// 漏判的后果是"这次没自动恢复"，误判的后果是"白压一次历史"——
+    /// 后者有损且不可撤销。
+    /// </para>
+    /// </remarks>
+    private static string? RequiresContextObject()
+    {
+        string[] bareWording =
+        [
+            "too many tokens",                  // 无宾语
+            "token limit exceeded",             // 无宾语
+            "exceeds the limit of 100",         // 无宾语
+            "contextual length exceeded",       // 不是 context 这个词
+        ];
+
+        foreach (var sample in bareWording)
+        {
+            if (ContextOverflowDetector.IsContextOverflow(sample))
+                return $"裸措辞被误判成溢出：[{sample}]——宾语不明确，可能是输出上限或限流";
         }
 
         return null;
