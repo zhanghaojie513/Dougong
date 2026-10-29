@@ -35,6 +35,43 @@ public sealed class KernelDirectoryLoadingTests
         "samples", "Dougong.Sample.TwoPlugins", "bin", Flavor, "net10.0",
         "Dougong.Sample.TwoPlugins.dll"));
 
+    /// <summary>
+    /// 重复加载同一插件必须报"已存在"，不能混进 Failed。
+    /// </summary>
+    /// <remarks>
+    /// 两种情况的用户动作相反：**已存在不用做任何事**（也许只是想刷新列表），
+    /// 而真失败要用户去排查。混在 Failed 里，UI 只能靠字符串匹配 reason
+    /// 来区分——SDK 一改措辞就失效。
+    /// </remarks>
+    [Fact]
+    public async Task Duplicate_load_reports_already_loaded()
+    {
+        using var dir = new PluginDirectory();
+        dir.CopyIn(SamplePluginPath, "Dougong.Sample.Plugin.dll");
+
+        await using var kernel = new DougongKernel();
+
+        var first = await kernel.LoadFromDirectoryAsync(dir.Path).AsTask().WaitAsync(Timeout);
+        Assert.Equal(PluginLoadStatus.Loaded, Assert.Single(first).Status);
+
+        // 再扫一次：同一个插件已在内核里。
+        var second = await kernel.LoadFromDirectoryAsync(dir.Path).AsTask().WaitAsync(Timeout);
+
+        var entry = Assert.Single(second);
+        Assert.Equal(PluginLoadStatus.AlreadyLoaded, entry.Status);
+
+        // 已存在时也要给出 PluginId：UI 需要它来关联到列表里已有的那一行。
+        Assert.NotNull(entry.PluginId);
+        Assert.Equal("dougong.sample.plugin", entry.PluginId!.Value.Value);
+
+        // 不该被当成用户要处理的失败。
+        Assert.False(entry.IsUserVisible);
+
+        // 内核里仍然只有一个。
+        var summaries = await kernel.GetPluginsAsync().AsTask().WaitAsync(Timeout);
+        Assert.Single(summaries);
+    }
+
     /// <summary>扫到的插件全部被装上。</summary>
     [Fact]
     public async Task Loads_every_plugin_in_directory()

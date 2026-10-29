@@ -182,6 +182,13 @@ public sealed partial class DougongKernel
             return new PluginLoadResult(
                 assemblyPath, PluginLoadStatus.Loaded, handle.Id);
         }
+        catch (PluginAlreadyRegisteredException already)
+        {
+            // **已存在不是失败**：用户不需要做任何事，也许只是想刷新列表。
+            // 靠专用异常类型判断，不匹配消息文本——消息一改就会静默失效。
+            return new PluginLoadResult(
+                assemblyPath, PluginLoadStatus.AlreadyLoaded, already.PluginId);
+        }
         catch (Exception ex)
         {
             // 单个插件失败不影响同目录其它插件：宿主需要知道"9 个成了、1 个没成"，
@@ -293,7 +300,7 @@ public sealed partial class DougongKernel
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_entries.ContainsKey(manifest.Id))
-                throw new InvalidOperationException($"插件 '{manifest.Id}' 已登记。");
+                throw new PluginAlreadyRegisteredException(manifest.Id);
             if (FindDependencyCycle(manifest.Id, manifest) is { } cycle)
                 throw new InvalidOperationException(
                     $"插件依赖成环：{string.Join(" -> ", cycle)}。");

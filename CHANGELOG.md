@@ -54,6 +54,18 @@
 
 ### Added
 
+- **`PluginLoadStatus.AlreadyLoaded`：已存在的插件不再混进 `Failed`**。
+  重复加载同一插件时，原来只在 `Reason` 里写"插件 'x' 已登记"，
+  UI 要靠字符串匹配才能区分——SDK 改一下措辞就失效。
+  - 两种情况的用户动作相反：已存在不用做任何事（也许只是想刷新列表），
+    真失败要用户排查。混在一个状态里只能靠猜。
+  - 这与 `Ambiguous` 是同一条思路：状态按"用户该做什么"分，
+    不按"内部发生了什么"分。
+  - `AlreadyLoaded` 带上 `PluginId`，UI 用它关联列表里已有的那一行；
+    `IsUserVisible` 返回 false。
+  - **新增公开异常 `PluginAlreadyRegisteredException`**：判断依据是异常类型
+    而不是消息文本，消息改了也不会静默失效。
+
 - **LLM 调用失败现在有分类**：`UsageRecord.FailureKind`（`UsageFailureKind` 枚举）。
   此前只有 `Succeeded: true/false`，"今天失败率 30%"无法回答是 key 过期、
   还是 provider 挂了、还是我们代码出错——三种处理方式完全不同。

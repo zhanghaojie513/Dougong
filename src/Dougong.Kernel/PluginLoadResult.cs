@@ -28,6 +28,25 @@ public enum PluginLoadStatus
     /// </remarks>
     Skipped,
 
+    /// <summary>
+    /// 该插件此前已经加载过，本次**没有做任何事**，不是错误。
+    /// </summary>
+    /// <remarks>
+    /// <b>与 <see cref="Failed"/> 分开是必须的</b>：两者的用户动作相反——
+    /// 已存在不用做任何事（也许只是想刷新一下列表），真失败要用户去排查。
+    /// 合成一个状态，UI 只能靠字符串匹配 <see cref="PluginLoadResult.Reason"/>
+    /// 来区分，而 SDK 改一下措辞就失效。
+    /// <para>
+    /// 这与 <see cref="Ambiguous"/> 同一条思路：状态要按"用户该做什么"来分，
+    /// 而不是按"内部发生了什么"来分。
+    /// </para>
+    /// <para>
+    /// 本状态会带上 <see cref="PluginLoadResult.PluginId"/>——
+    /// UI 需要它把这一条关联到列表里已有的那一行。
+    /// </para>
+    /// </remarks>
+    AlreadyLoaded,
+
     /// <summary>是插件但加载失败（缺依赖、契约不兼容、构造抛异常等）。</summary>
     Failed,
 
@@ -61,10 +80,17 @@ public sealed record PluginLoadResult(
     string? Reason = null,
     IReadOnlyList<string>? AmbiguousTypeNames = null)
 {
-    /// <summary>该条目是否值得让用户看到。</summary>
+    /// <summary>该条目是否需要用户处理。</summary>
     /// <remarks>
-    /// <see cref="PluginLoadStatus.Skipped"/> 返回 false：依赖库被扫到是正常的，
-    /// 显示出来只会让用户以为出了问题。
+    /// <see cref="PluginLoadStatus.Skipped"/> 与 <see cref="PluginLoadStatus.AlreadyLoaded"/>
+    /// 都返回 false：
+    /// <list type="bullet">
+    /// <item>依赖库被扫到是正常的，显示出来会让用户以为出了问题</item>
+    /// <item>已存在的插件不需要任何动作——它不是本次加载的结果</item>
+    /// </list>
+    /// 真正的失败（<see cref="PluginLoadStatus.Failed"/>）与需要选择的
+    /// （<see cref="PluginLoadStatus.Ambiguous"/>）才要呈现给用户。
     /// </remarks>
-    public bool IsUserVisible => Status is not PluginLoadStatus.Skipped;
+    public bool IsUserVisible => Status is not (PluginLoadStatus.Skipped
+        or PluginLoadStatus.AlreadyLoaded);
 }

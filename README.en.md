@@ -41,7 +41,7 @@ Targeting `net10.0`, version `0.1.1-alpha.2`, **published to nuget.org** (2026-1
 All four design commitments — composability, lifecycle integrity, explainable failure,
 actually usable — are met; see [design commitments](docs/goal.md).
 
-**Scale**: 7 product projects, 1 kernel test project (**199 tests**), 9 sample/probe projects,
+**Scale**: 7 product projects, 1 kernel test project (**200 tests**), 9 sample/probe projects,
 **45 deterministic self-check suites** (no network, no API key required).
 
 **Verified capabilities**:

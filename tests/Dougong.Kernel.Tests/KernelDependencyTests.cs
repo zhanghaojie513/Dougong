@@ -226,8 +226,13 @@ public sealed class KernelDependencyTests
         await using var kernel = new DougongKernel();
         await kernel.RegisterAsync(() => new StoragePlugin("A"));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        // 用 ThrowsAnyAsync + 断言专用类型：新异常继承自 InvalidOperationException，
+        // 精确匹配会失败。这里顺便收紧——不仅要求抛，还要求带上被挡住的 Id。
+        var error = await Assert.ThrowsAnyAsync<InvalidOperationException>(
             async () => await kernel.RegisterAsync(() => new StoragePlugin("B")));
+
+        var already = Assert.IsType<PluginAlreadyRegisteredException>(error);
+        Assert.Equal("test.storage", already.PluginId.Value);
     }
 
     [Fact]
