@@ -486,6 +486,9 @@ public sealed partial class DougongKernel : IAsyncDisposable
         Exception? activationTimeout = null;
         var callerCancelled = false;
         Task? activationTask = null;
+        // 激活耗时从这一行起算到状态提交为止：包含插件回调本身，
+        // 不包含此前的登记与依赖解析（那些在 ActivateAsync 之前就完成了）。
+        var activationStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
             // 必须把回调放到线程池上执行，否则超时预算对"同步阻塞"的回调完全无效：
@@ -541,7 +544,8 @@ public sealed partial class DougongKernel : IAsyncDisposable
             {
                 _services.Publish(entry.Id, generation, entry.PendingServices);
                 entry.PendingServices.Clear();
-                SetState(entry, changes, PluginState.Active, "激活完成，服务已提交。");
+                SetState(entry, changes, PluginState.Active, "激活完成，服务已提交。",
+                    elapsed: System.Diagnostics.Stopwatch.GetElapsedTime(activationStarted));
             }
             else
             {
@@ -863,9 +867,14 @@ public sealed partial class DougongKernel : IAsyncDisposable
     /// 状态提交：修订号、历史与 live 入队在同一临界区完成，保证订阅端看到单调顺序。
     /// 调用方须持有 <c>_sync</c>；用户观察者在锁外通知。
     /// </summary>
+    /// <remarks>
+    /// <c>elapsed</c> 只在"激活完成"这类有意义的迁移上给值；其余保持 null，
+    /// 避免把"没计时"说成"瞬间完成"。
+    /// </remarks>
     private void SetState(PluginEntry entry, List<PluginStateChange> changes,
         PluginState to, string? reason, Exception? error = null,
-        PluginFailureStage stage = PluginFailureStage.Unknown)
+        PluginFailureStage stage = PluginFailureStage.Unknown,
+        TimeSpan? elapsed = null)
     {
         var from = entry.State;
         entry.State = to;
@@ -874,7 +883,8 @@ public sealed partial class DougongKernel : IAsyncDisposable
             error is null
                 ? null
                 : new PluginDiagnostic(
-                    error.GetType().Name, error.Message, stage, PluginFailureHints.For(stage)));
+                    error.GetType().Name, error.Message, stage, PluginFailureHints.For(stage)),
+            elapsed);
         changes.Add(change);
         CommitDelta(new StateDelta(++_revision, change, Partition: entry.Id));
     }

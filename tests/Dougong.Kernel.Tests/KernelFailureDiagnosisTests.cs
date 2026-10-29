@@ -184,6 +184,60 @@ public sealed class KernelFailureDiagnosisTests
     }
 
     /// <summary>
+    /// 激活完成的状态迁移必须带上真实耗时。
+    /// </summary>
+    /// <remarks>
+    /// <b>断言的是"耗时与真实延迟相符"，不是"耗时不为空"。</b>
+    /// 只断言非空会让"填了个 0"或"填了个常数"的实现照样通过，
+    /// 而那正是加法最容易犯的错——填 0 比正确计时容易得多。
+    /// <para>
+    /// 插件在 ActivateAsync 里阻塞 120ms，记录的耗时至少要有 100ms。
+    /// 下限放宽到 100ms 是为了容纳计时精度与调度抖动，同时仍能抓住"填 0"。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Activation_reports_elapsed_time()
+    {
+        await using var kernel = new DougongKernel();
+        using var recorder = new ChangeRecorder(kernel);
+
+        var handle = await kernel.RegisterAsync(() => new SlowActivatingPlugin(120))
+            .AsTask().WaitAsync(Timeout);
+
+        Assert.Equal(PluginState.Active, handle.State);
+
+        var change = recorder.Latest(handle.Id, PluginState.Active);
+        Assert.NotNull(change);
+        Assert.NotNull(change!.Elapsed);
+
+        Assert.True(
+            change.Elapsed!.Value >= TimeSpan.FromMilliseconds(100),
+            $"激活耗时 {change.Elapsed.Value.TotalMilliseconds:0}ms 小于注入的 120ms 延迟"
+            + "——很可能没有真的计时");
+    }
+
+    /// <summary>
+    /// 非激活迁移的耗时必须是 null，不能是 0。
+    /// </summary>
+    /// <remarks>
+    /// "这段没计时"与"这段瞬间完成"是两件事。给所有迁移都填 0 会让
+    /// 订阅方无法区分，进而把"注册很快"当成真实测量结果。
+    /// </remarks>
+    [Fact]
+    public async Task Non_activation_changes_have_no_elapsed()
+    {
+        await using var kernel = new DougongKernel();
+        using var recorder = new ChangeRecorder(kernel);
+
+        var handle = await kernel.RegisterAsync(() => new SlowActivatingPlugin(10))
+            .AsTask().WaitAsync(Timeout);
+
+        var activating = recorder.Latest(handle.Id, PluginState.Activating);
+        Assert.NotNull(activating);
+        Assert.Null(activating!.Elapsed);
+    }
+
+    /// <summary>
     /// 用同步订阅收集状态变化，而不是从增量流里读。
     /// </summary>
     /// <remarks>
@@ -191,6 +245,19 @@ public sealed class KernelFailureDiagnosisTests
     /// 在异步枚举上这不可靠，取不到已提交的增量，导致断言拿到 null。
     /// 同步订阅由内核在提交时直接回调，没有这个时序问题。
     /// </remarks>
+    /// <summary>激活时阻塞指定毫秒的插件，用于验证激活耗时被真实测量。</summary>
+    private sealed class SlowActivatingPlugin(int delayMs) : IPlugin
+    {
+        public PluginId Id { get; } = PluginId.Parse("probe.slow-" + delayMs);
+        public PluginManifest Manifest => PluginManifest.Create(Id.Value, "1.0.0");
+
+        public async ValueTask ActivateAsync(PluginContext context, CancellationToken cancellationToken)
+        {
+            _ = context;
+            await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private sealed class ChangeRecorder : IDisposable
     {
         private readonly List<PluginStateChange> _changes = [];

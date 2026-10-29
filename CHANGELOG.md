@@ -23,6 +23,51 @@
 
 （暂无）
 
+## [0.1.1-alpha.2] — 2026-10-29
+
+> ⚠️ **本版含破坏性 API 变更**（相对 `0.1.1-alpha.1`）。
+> 按 [compat-policy.md](docs/compat-policy.md) §七，`0.x` 阶段的破坏性变更
+> 可以放 patch/minor，但必须在此显式说明。
+>
+> **为什么只隔了一小时就发破坏版**：`0.1.1-alpha.1` 发布后约 1 小时即被本版取代，
+> 理论上无外部使用者。**这是如实记录的破例，不是"没人用所以不算破坏"。**
+> 如果有程序集基于 alpha.1 编译过，需要重新编译。
+
+### Breaking
+
+- **`PluginStateChange` 与 `ToolDispatchResult` 的构造函数新增参数**：
+  - `PluginStateChange(..., PluginDiagnostic? Diagnostic = null, TimeSpan? Elapsed = null)`
+  - `ToolDispatchResult(..., ToolPermission? Permission = null,
+    TimeSpan? ApprovalElapsed = null, TimeSpan? ExecutionElapsed = null)`
+  **源码级调用不用改**（新参数有默认值），但**已编译的程序集会 `MissingMethodException`**
+  ——record 加参数会替换原构造函数与 `Deconstruct` 签名。
+  这是 ApiCompat 报 `CP0002` 抓到的，不是我预判到的：我原以为"可选参数=兼容"。
+  重新编译即可，无需改代码。
+
+### Added
+
+- **工具派发耗时分成两段**：`ToolDispatchResult.ApprovalElapsed`（等审批）与
+  `ExecutionElapsed`（工具执行）。合成一个总耗时无法归因——前者取决于人多快确认，
+  后者取决于工具本身多慢，优化方向相反。
+  各段在"没有发生"时为 `null` 而不是 `0`：没配审批器与"审批瞬间通过"是两件事，
+  用 0 冒充会让统计里混进假的"审批很快"。
+
+- **插件激活耗时**：`PluginStateChange.Elapsed`，只填在 `Activating → Active` 上，
+  其余迁移为 `null`。挂在状态迁移上而不是单独发事件，因为耗时天然属于某一次迁移；
+  拆成两条消息会要求订阅方自己配对，并发下容易配错且没有迹象。
+
+- CLI 工具行显示两段耗时（`审批 1.2s / 执行 45ms`）。毫秒级单独格式化，
+  不复用秒级的 `FormatDuration`——那会把 45ms 显示成 `0s`。
+
+### Fixed
+
+- **`scripts/update-api-baseline.sh` 一直在复制最老的包**。它用
+  `ls *.nupkg | head -1` 选文件，拿到的是字典序第一个（`0.1.0-alpha.1`），
+  于是"更新基线"每次都在复制旧包，基线永远停在最早版本——
+  ApiCompat 一直在拿最老的包比对，真实变更淹没在累积的旧差异里。
+  改成从 `Directory.Build.props` 读当前版本，找不到就报错退出。
+  实测：修复前六个基线包版本都是 `0.1.0-alpha.1`，修复后同步到当前版本。
+
 ## [0.1.1-alpha.1] — 2026-10-29
 
 > **版本号为什么从 `0.1.0-alpha.2` 跳到 `0.1.1-alpha.1`**：本版包含**新增公开 API**

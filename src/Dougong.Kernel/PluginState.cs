@@ -29,9 +29,20 @@ public enum PluginState
 }
 
 /// <summary>一次状态迁移的记录。诊断只保留共享字符串数据，不持有插件异常对象。</summary>
+/// <remarks>
+/// <see cref="Elapsed"/> 只在**有意义的迁移**上非空：目前是
+/// <c>Activating → Active</c>（激活耗时）。其它迁移保持 null——
+/// 给它们填 0 会让"这段没计时"与"这段瞬间完成"混为一谈。
+/// <para>
+/// <b>为什么挂在状态迁移上而不是单独一条事件</b>：耗时天然属于某一次迁移
+/// （"激活花了多久"）。拆成两条消息会要求订阅方自己配对，而配对在并发
+/// 场景下容易错，且配错时没有任何迹象。
+/// </para>
+/// </remarks>
 public sealed record PluginStateChange(
     PluginId PluginId,
     PluginState From,
     PluginState To,
     string? Reason = null,
-    PluginDiagnostic? Diagnostic = null);
+    PluginDiagnostic? Diagnostic = null,
+    TimeSpan? Elapsed = null);

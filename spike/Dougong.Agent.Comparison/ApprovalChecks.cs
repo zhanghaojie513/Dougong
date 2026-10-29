@@ -21,6 +21,9 @@ public static class ApprovalChecks
         failures += await CheckAsync("digest-is-order-independent", DigestOrderIndependent);
         failures += await CheckAsync("approval-waits-without-holding-lock", ApprovalDoesNotHoldLockAsync);
         failures += await CheckAsync("workspace-exclusive-serialises", WorkspaceExclusiveAsync);
+        failures += await CheckAsync("approval-and-execution-timed-separately", TimedSeparatelyAsync);
+        failures += await CheckAsync("no-approver-means-no-approval-timing", NoApproverNoApprovalTimingAsync);
+        failures += await CheckAsync("timing-matches-actual-delay", TimingMatchesDelayAsync);
 
         Console.WriteLine(failures == 0
             ? "APPROVAL: ALL PASS"
@@ -245,6 +248,15 @@ public static class ApprovalChecks
             await decide(request).ConfigureAwait(false);
     }
 
+    /// <summary>异步审批器：用于验证等待时间被真实测量。</summary>
+    private sealed class AsyncApprover(
+        Func<ToolApprovalRequest, Task<ToolApprovalDecision>> decide) : IToolApprover
+    {
+        public async ValueTask<ToolApprovalDecision> RequestApprovalAsync(
+            ToolApprovalRequest request, CancellationToken cancellationToken = default) =>
+            await decide(request).ConfigureAwait(false);
+    }
+
     private sealed class SyncApprover(
         Func<ToolApprovalRequest, ToolApprovalDecision> decide) : IToolApprover
     {
@@ -303,4 +315,116 @@ public static class ApprovalChecks
             return ValueTask.FromResult(new AgentToolResult(document.RootElement.Clone()));
         }
     }
+    /// <summary>
+    /// 审批等待与执行耗时必须分别记录，且各自只包含自己的那一段。
+    /// </summary>
+    /// <remarks>
+    /// <b>断言的是"两段各归各的"，不是"都大于零"。</b>只断言大于零会让
+    /// "两段都填总耗时"这种实现照样通过——而那正是最可能犯的错，
+    /// 因为从总数拆开比分两次采样容易。
+    /// </remarks>
+    private static async Task<string?> TimedSeparatelyAsync()
+    {
+        // 审批慢（150ms）、执行快（10ms）。如果实现把总耗时填进两段，
+        // 执行耗时会明显偏大，这条就会红。
+        var slowApprover = new AsyncApprover(async _ =>
+        {
+            await Task.Delay(150);
+            return ToolApprovalDecision.Allow();
+        });
+
+        var tool = new FakeTool("timed", ["path"], async (_, ct) =>
+        {
+            await Task.Delay(10, ct);
+            using var doc = JsonDocument.Parse("""{"ok":true}""");
+            return new AgentToolResult(doc.RootElement.Clone());
+        });
+
+        var dispatcher = new ToolDispatcher(slowApprover);
+        dispatcher.Register(tool);
+        var result = await dispatcher.DispatchAsync(Invocation("t1", tool, """{"path":"/tmp/a"}"""));
+
+        if (result.Outcome != ToolCallOutcome.Succeeded) return $"结果 {result.Outcome}";
+
+        if (result.ApprovalElapsed is not { } approval)
+            return "审批耗时为 null（配了审批器就必须有）";
+        if (result.ExecutionElapsed is not { } execution)
+            return "执行耗时为 null（执行了就必须有）";
+
+        // 审批至少 150ms；执行远小于审批（约 10ms）。
+        if (approval < TimeSpan.FromMilliseconds(120))
+            return $"审批耗时 {approval.TotalMilliseconds:0}ms 小于注入的 150ms 延迟";
+
+        if (execution > TimeSpan.FromMilliseconds(100))
+        {
+            return $"执行耗时 {execution.TotalMilliseconds:0}ms 明显偏大——"
+                + "很可能把审批那一段也算进去了";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 没有配置审批器时，审批耗时必须是 null 而不是 0。
+    /// </summary>
+    /// <remarks>
+    /// "没等审批"与"审批瞬间通过"是两件事。用 0 冒充会让统计里混进
+    /// 一批假的"审批很快"，把真实的审批延迟稀释掉。
+    /// </remarks>
+    private static async Task<string?> NoApproverNoApprovalTimingAsync()
+    {
+        var tool = new FakeTool("noapprover", ["path"]);
+        var dispatcher = new ToolDispatcher();   // 无审批器
+        dispatcher.Register(tool);
+
+        var result = await dispatcher.DispatchAsync(Invocation("n1", tool, """{"path":"/tmp/a"}"""));
+
+        if (result.ApprovalElapsed is not null)
+        {
+            return $"没配审批器却给出了审批耗时 {result.ApprovalElapsed.Value.TotalMilliseconds:0}ms"
+                + "——应为 null，否则会把\"没等\"记成\"很快就批了\"";
+        }
+
+        return result.ExecutionElapsed is null ? "执行耗时缺失" : null;
+    }
+
+    /// <summary>
+    /// 记录的耗时必须与真实发生的延迟相符，不能是固定值或常数。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条防的是"填了个看起来合理的常数"</b>。前面两条能通过
+    /// "审批 150ms / 执行 10ms"的实现，但如果它把两段写成固定值
+    /// （比如都填 Stopwatch 的分辨率），在延迟变化时不会跟着变。
+    /// 这里用两种延迟各跑一次，断言差值也变了。
+    /// </remarks>
+    private static async Task<string?> TimingMatchesDelayAsync()
+    {
+        static async Task<TimeSpan> RunWithDelayAsync(int delayMs)
+        {
+            var approver = new AsyncApprover(async _ =>
+            {
+                await Task.Delay(delayMs);
+                return ToolApprovalDecision.Allow();
+            });
+
+            var tool = new FakeTool($"d{delayMs}", ["path"]);
+            var dispatcher = new ToolDispatcher(approver);
+            dispatcher.Register(tool);
+            var result = await dispatcher.DispatchAsync(
+                Invocation($"i{delayMs}", tool, """{"path":"/tmp/a"}"""));
+            return result.ApprovalElapsed ?? TimeSpan.Zero;
+        }
+
+        var shortRun = await RunWithDelayAsync(20);
+        var longRun = await RunWithDelayAsync(160);
+
+        if (longRun <= shortRun)
+        {
+            return $"160ms 的审批记录的耗时（{longRun.TotalMilliseconds:0}ms）"
+                + $"不大于 20ms 的（{shortRun.TotalMilliseconds:0}ms）——耗时没有跟随真实延迟";
+        }
+
+        return null;
+    }
+
 }

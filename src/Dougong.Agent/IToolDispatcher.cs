@@ -67,13 +67,26 @@ public enum ToolCallOutcome
 /// 派发结果。<see cref="Result"/> 仅在有内容时非空（成功或工具返回了错误内容）。
 /// <see cref="Diagnostic"/> 用于宿主记录失败原因，不进入模型历史。
 /// </summary>
+/// <remarks>
+/// <b>耗时分成两段，不是一段。</b>审批等待与工具执行是两种完全不同的时间：
+/// 前者取决于人多快点确认，后者取决于工具本身多慢。合成一个总耗时会让
+/// "这次调用很慢"无法归因——而这两段的优化方向恰恰相反
+/// （前者要改交互，后者要改实现）。
+/// <para>
+/// 各段在"该段没有发生"时为 <c>null</c>，不是 <see cref="TimeSpan.Zero"/>：
+/// 没配审批器与"审批瞬间通过"是两件事，用 0 冒充会让统计里混进一批
+/// 假的"审批很快"。
+/// </para>
+/// </remarks>
 public sealed record ToolDispatchResult(
     string InvocationId,
     string ToolId,
     ToolCallOutcome Outcome,
     AgentToolResult? Result = null,
     string? Diagnostic = null,
-    ToolPermission? Permission = null)
+    ToolPermission? Permission = null,
+    TimeSpan? ApprovalElapsed = null,
+    TimeSpan? ExecutionElapsed = null)
 {
     public bool Executed => Outcome is ToolCallOutcome.Succeeded
         or ToolCallOutcome.Failed

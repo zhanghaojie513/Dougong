@@ -164,6 +164,17 @@ public static class Output
             };
 
             var line = $"  {marker} {toolId} · {result.Outcome}";
+
+            // 耗时分成两段显示：审批等待与工具执行是两种完全不同的时间，
+            // 合成一个总数无法归因。只显示实际发生过的段。
+            var timings = new List<string>(2);
+            if (result.ApprovalElapsed is { } approval)
+                timings.Add($"审批 {FormatSeconds(approval)}");
+            if (result.ExecutionElapsed is { } execution)
+                timings.Add($"执行 {FormatSeconds(execution)}");
+            if (timings.Count > 0)
+                line += $" · {string.Join(" / ", timings)}";
+
             if (result.Diagnostic is { Length: > 0 } diagnostic)
                 line += $"（{diagnostic}）";
 
@@ -182,6 +193,19 @@ public static class Output
             : $"  ─ {seconds:F1}s";
         Muted(summary + $" {new string('─', Math.Max(0, Math.Min(20, _capability.Width - summary.Length - 4)))}");
     }
+
+    /// <summary>
+    /// 工具耗时的短格式：秒级以上给一位小数，毫秒级给整数毫秒。
+    /// </summary>
+    /// <remarks>
+    /// <b>不能用 <see cref="StatusLine.FormatDuration"/></b>：那个只到整秒，
+    /// 而工具执行常常是几十到几百毫秒，全部会显示成 <c>0s</c>——
+    /// 看起来像"没有耗时"，比不显示更糟。
+    /// </remarks>
+    private static string FormatSeconds(TimeSpan elapsed) =>
+        elapsed.TotalSeconds >= 1
+            ? $"{elapsed.TotalSeconds:F1}s"
+            : $"{elapsed.TotalMilliseconds:F0}ms";
 
     // ── 实现 ─────────────────────────────────────────────────
 

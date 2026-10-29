@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace Dougong.Agent;
@@ -187,15 +188,25 @@ public sealed class ToolDispatcher : IToolDispatcher
             FileVersions = files.ToBindingValue(),
         };
 
+        // 审批段的耗时。没配审批器时保持 null——"没等审批"与"审批瞬间通过"
+        // 是两件事，用 0 冒充会让统计里混进一批假的"审批很快"。
+        TimeSpan? approvalElapsed = null;
+
         if (_approverAccessor is { IsConfigured: true })
         {
             // 等待审批期间不持任何锁：慢审批不应阻塞整个工作区。
+            //
+            // 计时只包住审批调用本身，不含前面的权限描述与绑定计算：
+            // 那部分是我们的开销，混进"审批等待"会让用户看到的时间不真实
+            // （用户关心的是"我等了多久"，不是"我们的准备花了多久"）。
+            var approvalStarted = Stopwatch.GetTimestamp();
             var decision = await _approverAccessor.RequestApprovalAsync(
                 new ToolApprovalRequest(
                     _sessionId, _turnId, invocation.InvocationId,
                     registration.Descriptor, invocation.Arguments, permission,
                     execution, _workspace, binding),
                 cancellationToken).ConfigureAwait(false);
+            approvalElapsed = Stopwatch.GetElapsedTime(approvalStarted);
 
             // 审批决定必须落盘后再继续：否则"已批准"这件事没有被持久化，
             // 而副作用却发生了，恢复时无法对账。
@@ -206,14 +217,14 @@ public sealed class ToolDispatcher : IToolDispatcher
                 return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
                     ToolCallOutcome.Failed,
                     Diagnostic: $"审批记录提交失败，未执行：{approvalFailure}",
-                    Permission: permission);
+                    Permission: permission, ApprovalElapsed: approvalElapsed);
             }
 
             if (!decision.Approved)
                 return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
                     ToolCallOutcome.RejectedNotApproved,
                     Diagnostic: decision.Reason ?? "审批未通过。",
-                    Permission: permission);
+                    Permission: permission, ApprovalElapsed: approvalElapsed);
         }
 
         // 阶段二：进锁后复核（防"批准 A、执行 B"）。
@@ -229,14 +240,16 @@ public sealed class ToolDispatcher : IToolDispatcher
         {
             return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
                 ToolCallOutcome.CancelledBeforeExecution,
-                Diagnostic: "等待执行权时被取消，未执行。", Permission: permission);
+                Diagnostic: "等待执行权时被取消，未执行。", Permission: permission,
+                ApprovalElapsed: approvalElapsed);
         }
         catch (ObjectDisposedException ex)
         {
             // 闸门已被宿主释放：不执行，但不能把异常抛给调用方而丢掉这条调用的终态。
             return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
                 ToolCallOutcome.Failed,
-                Diagnostic: $"资源闸门已释放，未执行：{ex.ObjectName}", Permission: permission);
+                Diagnostic: $"资源闸门已释放，未执行：{ex.ObjectName}", Permission: permission,
+                ApprovalElapsed: approvalElapsed);
         }
 
         using (lease)
@@ -248,17 +261,22 @@ public sealed class ToolDispatcher : IToolDispatcher
                 return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
                     ToolCallOutcome.RejectedNotApproved,
                     Diagnostic: "执行前复核不通过：该工具在审批期间已被注销或替换，请重新审批。",
-                    Permission: permission);
+                    Permission: permission, ApprovalElapsed: approvalElapsed);
 
             if (!approvalIsStillValid(registration, invocation, permission, execution, binding, out var staleReason))
                 return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
                     ToolCallOutcome.RejectedNotApproved,
-                    Diagnostic: staleReason, Permission: permission);
+                    Diagnostic: staleReason, Permission: permission,
+                    ApprovalElapsed: approvalElapsed);
 
+            // 执行段的耗时。只包住工具自己的 ExecuteAsync：
+            // 前面的复核与闸门获取是我们的开销。
+            var executionStarted = Stopwatch.GetTimestamp();
             try
             {
                 var result = await registration.Tool.ExecuteAsync(invocation, cancellationToken)
                     .ConfigureAwait(false);
+                var executionElapsed = Stopwatch.GetElapsedTime(executionStarted);
 
                 // 取消是协作式的：工具若忽略取消并完成，就必须如实报成功。
                 // 伪装成"已撤销"会让上层误判副作用没发生。
@@ -266,21 +284,25 @@ public sealed class ToolDispatcher : IToolDispatcher
                     ? new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
                         ToolCallOutcome.Succeeded, result,
                         Diagnostic: "取消已请求，但工具未响应取消并完成了执行；副作用可能已发生。",
-                        Permission: permission)
+                        Permission: permission, ApprovalElapsed: approvalElapsed,
+                        ExecutionElapsed: executionElapsed)
                     : new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
-                        ToolCallOutcome.Succeeded, result, Permission: permission);
+                        ToolCallOutcome.Succeeded, result, Permission: permission,
+                        ApprovalElapsed: approvalElapsed, ExecutionElapsed: executionElapsed);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
                     ToolCallOutcome.CancelledDuringExecution, Diagnostic: "执行中被取消。",
-                    Permission: permission);
+                    Permission: permission, ApprovalElapsed: approvalElapsed,
+                    ExecutionElapsed: Stopwatch.GetElapsedTime(executionStarted));
             }
             catch (Exception ex)
             {
                 return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
                     ToolCallOutcome.Failed, Diagnostic: $"{ex.GetType().Name}: {ex.Message}",
-                    Permission: permission);
+                    Permission: permission, ApprovalElapsed: approvalElapsed,
+                    ExecutionElapsed: Stopwatch.GetElapsedTime(executionStarted));
             }
         }
     }
