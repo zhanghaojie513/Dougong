@@ -45,6 +45,25 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        // 输出一律用 UTF-8，不跟随控制台代码页。
+        //
+        // **这不是可选项**：中文 Windows 的默认代码页是 936（GBK），
+        // 输出里每个汉字都变成 GBK 字节；任何按 UTF-8 读取的调用方
+        // （CI、检查脚本、把输出接进日志的父进程）都会得到一堆 `?`。
+        // 实测过一次：`--help` 直接调用 .exe 时中文全乱，经 `dotnet run`
+        // 启动却正常——后者会设控制台编码，前者不会。这种"换个启动方式就变"
+        // 的缺陷最难查，所以不能指望调用方去设。
+        //
+        // 必须在任何输出之前执行。
+        try
+        {
+            Console.OutputEncoding = Encoding.UTF8;
+        }
+        catch (Exception)
+        {
+            // 有的宿主拒绝设编码。保持原样：乱码好过因为设不了而崩掉。
+        }
+
         // ACP 模式：作为 Agent 端被外部客户端驱动，stdout 归协议所有。
         if (args.Contains("--acp"))
             return await RunAcpAgentAsync();

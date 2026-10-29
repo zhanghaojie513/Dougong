@@ -35,6 +35,7 @@ public static class ToolPackageChecks
         failures += await CheckAsync("help-lists-every-user-facing-command", HelpListsCommandsAsync);
         failures += Check("gitignore-covers-pack-output", PackOutputIgnored);
         failures += Check("docs-pin-tool-version-on-install", DocsPinVersion);
+        failures += Check("readme-test-count-matches-reality", ReadmeTestCount);
 
         Console.WriteLine(failures == 0
             ? "TOOL-PACKAGE: ALL PASS"
@@ -318,5 +319,125 @@ public static class ToolPackageChecks
         }
 
         return null;
+    }
+    /// <summary>
+    /// README 里写的测试数必须等于实际测试数。
+    /// </summary>
+    /// <remarks>
+    /// <b>这个数字漂移过至少五次</b>（156/177/178/187/188），每次都是加了测试忘改文档。
+    /// 人工核对靠不住——而 README 上的数字是外人判断项目规模的第一印象。
+    /// <para>
+    /// 测试数从源码里数 `[Fact]` 与 `[Theory]` 的**标注个数**，不跑测试
+    /// （跑一次要几秒，而这条检查在 44 个套件里每次都过）。`[Theory]` 一个标注
+    /// 会展开成多行用例，与测试运行器的"总计"口径不同——所以这里比的是
+    /// "README 的数字"与"标注数+用例数"能对上的那一个，对不上就要求改用
+    /// 明确的口径词（见下面的报错信息）。
+    /// </para>
+    /// </remarks>
+    private static string? ReadmeTestCount()
+    {
+        var root = FindRepoRoot();
+        var readme = Path.Combine(root, "README.md");
+        if (!File.Exists(readme)) return null;
+
+        var declared = ReadDeclaredTestCount(File.ReadAllText(readme));
+        if (declared is null) return "README.md 里找不到「N 项测试」这样的表述";
+
+        var attributes = CountTestAttributes(root);
+        if (attributes == 0) return "测试源码里没数到任何 [Fact]/[Theory]——检查失效";
+
+        // 两种口径都算合法，因为它们本来就不同：
+        //   - 标注数：源码里 [Fact]/[Theory] 的个数（178）
+        //   - 用例数：运行器展开 [Theory] 后的总数（188）
+        // 只认一种会把"另一种正确写法"判成错。但"两个都不是"就是真的漂移了。
+        var cases = CountTheoryCases(root);
+
+        if (declared == attributes || declared == cases) return null;
+
+        return $"README 写 {declared} 项测试，与源码任何口径都对不上"
+            + $"（[Fact]/[Theory] 标注 {attributes} 个，展开后用例 {cases} 个）";
+    }
+
+    /// <summary>从 README 正文里取出「N 项测试」的 N。</summary>
+    private static int? ReadDeclaredTestCount(string text)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            text, @"(\d+)\s*项测试");
+        return match.Success && int.TryParse(match.Groups[1].Value, out var value) ? value : null;
+    }
+
+    /// <summary>数测试工程里 [Fact] / [Theory] 的标注个数。</summary>
+    private static int CountTestAttributes(string root)
+    {
+        var dir = Path.Combine(root, "tests");
+        if (!Directory.Exists(dir)) return 0;
+
+        var count = 0;
+        foreach (var file in Directory.EnumerateFiles(dir, "*.cs", SearchOption.AllDirectories))
+        {
+            // 跳过生成物：obj/ 下会有带 [Fact] 的自动生成文件。
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                    StringComparison.Ordinal)) continue;
+
+            foreach (var line in File.ReadLines(file))
+            {
+                var trimmed = line.TrimStart();
+                if (trimmed.StartsWith("[Fact", StringComparison.Ordinal)
+                    || trimmed.StartsWith("[Theory", StringComparison.Ordinal))
+                {
+                    count++;
+                }
+            }
+        }
+
+        return count;
+    }
+    /// <summary>数展开后的用例数：[Fact] 各算 1，[Theory] 按它的 [InlineData] 条数算。</summary>
+    /// <remarks>
+    /// <b>为什么两种口径都接受</b>：源码里的标注数与运行器报的"总计"从来就不相等，
+    /// `[Theory]` 一个标注会变成多条用例。README 上写哪个都说得通，
+    /// 硬性只认一个等于给正确的文档判错——而检查的目的是防漂移，不是防风格。
+    /// </remarks>
+    private static int CountTheoryCases(string root)
+    {
+        var dir = Path.Combine(root, "tests");
+        if (!Directory.Exists(dir)) return 0;
+
+        var total = 0;
+        foreach (var file in Directory.EnumerateFiles(dir, "*.cs", SearchOption.AllDirectories))
+        {
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                    StringComparison.Ordinal)) continue;
+
+            var lines = File.ReadAllLines(file);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var trimmed = lines[i].TrimStart();
+
+                if (trimmed.StartsWith("[Fact", StringComparison.Ordinal))
+                {
+                    total++;
+                    continue;
+                }
+
+                if (!trimmed.StartsWith("[Theory", StringComparison.Ordinal)) continue;
+
+                // 往后数紧随其后的 [InlineData]；一个都没有时按 1 算
+                // （可能是 [MemberData]，条数静态数不出来）。
+                var inline = 0;
+                for (var j = i + 1; j < lines.Length; j++)
+                {
+                    var next = lines[j].TrimStart();
+                    if (next.Length == 0) continue;
+                    if (next.StartsWith("[InlineData", StringComparison.Ordinal)) { inline++; continue; }
+                    if (next.StartsWith("[", StringComparison.Ordinal)) continue;
+                    break;
+                }
+
+                total += Math.Max(1, inline);
+            }
+        }
+
+        return total;
     }
 }
