@@ -177,6 +177,13 @@ public sealed class OpenAiResponsesFormat : IChatWireFormat
                 case "response.incomplete":
                     Usage = ReadUsage(evt["response"]?["usage"]);
                     IsTerminal = true;
+
+                    // responses 协议的结束原因在 response 对象里，
+                    // incomplete 通常意味着被 max_output_tokens 或上下文长度截断。
+                    StopReason = evt["response"]?["status"]?.GetValue<string>() is { } status
+                        && status is "incomplete"
+                            ? "length"
+                            : "stop";
                     break;
 
                 case "response.failed":

@@ -21,7 +21,7 @@ public sealed class SlidingWindowCompactor(
     int preservedTail = 6,
     double triggerRatio = 0.75) : IContextCompactor
 {
-    public CompactionPlan? Plan(CompactionInput input)
+    public CompactionPlan? Plan(CompactionInput input, bool force = false)
     {
         ArgumentNullException.ThrowIfNull(input);
         var effective = TokenBudget.EffectiveInput(
@@ -29,7 +29,13 @@ public sealed class SlidingWindowCompactor(
 
         var before = TokenBudget.Estimate(input.CommittedHistory);
         var trigger = (int)(effective * triggerRatio);
-        if (before <= trigger) return null;
+
+        // force：跳过阈值检查。用于 provider 已判定溢出的情形——
+        // 那时按窗口算出的阈值本身就是错的（窗口配置不可信），
+        // 再拿它当门槛会让恢复逻辑永远压不了东西。实测踩到过：
+        // 窗口配 200 万、历史 2 万，provider 报溢出，恢复时 Plan 返回 null。
+        // 结构约束（头尾保留、工具配对）仍然遵守，压不了就返回 null。
+        if (!force && before <= trigger) return null;
 
         // 必须同时保留头尾，否则没有可压缩空间。
         var head = Math.Min(preservedHead, input.CommittedHistory.Count);

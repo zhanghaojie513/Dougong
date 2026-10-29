@@ -234,7 +234,10 @@ public sealed class AnthropicMessagesFormat : IChatWireFormat
                 {
                     if (evt["delta"]?["stop_reason"]?.GetValue<string>() is { } reason
                         && WireFormatHelpers.IsTerminalReason(reason))
+                    {
                         IsTerminal = true;
+                        StopReason = reason;
+                    }
                     if (ReadUsage(evt["usage"]) is { } usage) Usage = usage;
                     break;
                 }

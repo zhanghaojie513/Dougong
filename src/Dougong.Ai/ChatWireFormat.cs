@@ -49,6 +49,20 @@ public abstract class ChatStreamDecoder
     /// <summary>本轮用量（若协议提供）。</summary>
     public UsageDetails? Usage { get; protected set; }
 
+    /// <summary>
+    /// 协议层的结束原因（<c>finish_reason</c> / <c>stop_reason</c>），原样保留。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么需要它</b>：有些 provider 在"输入吃满窗口"时不报错，而是正常返回
+    /// 并把结束原因标成 <c>length</c>、输出为 0。没有这个字段就区分不出
+    /// "模型主动不回答"与"没有空间输出"——前者正常，后者是溢出。
+    /// <para>
+    /// 值保持 provider 的原文（<c>stop</c> / <c>length</c> / <c>tool_calls</c> …），
+    /// 不做归一化：各协议的可选值集合不同，归一化会丢掉"我们没预料到的值"。
+    /// </para>
+    /// </remarks>
+    public string? StopReason { get; protected set; }
+
     /// <summary>解码一条负载，把产生的结果追加到 <paramref name="updates"/>。</summary>
     public abstract void Decode(string payload, List<ChatResponseUpdate> updates);
 

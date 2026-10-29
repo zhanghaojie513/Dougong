@@ -26,7 +26,24 @@ public interface IContextCompactor
     /// 判断是否需要压缩，并给出计划。返回 <c>null</c> 表示当前预算足够。
     /// 本方法不应产生任何副作用。
     /// </summary>
-    CompactionPlan? Plan(CompactionInput input);
+    /// <param name="input">历史切面与预算参数。</param>
+    /// <param name="force">
+    /// <b>忽略触发阈值，只要有可压缩区间就给出计划。</b>
+    /// </param>
+    /// <remarks>
+    /// <b>为什么需要 <paramref name="force"/></b>：正常路径按窗口比例判断"要不要压"，
+    /// 但 provider 判定溢出时，说明**我们对窗口的认知是错的**（配置填大、或实际上限更小）。
+    /// 那时再按那个错误的窗口算阈值，就会得出"不需要压"——于是溢出恢复变成空转。
+    /// <para>
+    /// 这不是理论问题：实测时窗口配成 200 万、历史 2 万，provider 报溢出，
+    /// 而按 200 万算阈值永远达不到，恢复逻辑压不了任何东西。
+    /// </para>
+    /// <para>
+    /// <paramref name="force"/> 为 true 时仍要遵守"头尾必须保留"等结构约束——
+    /// 没东西可压时返回 null，调用方据此如实报告无法恢复。
+    /// </para>
+    /// </remarks>
+    CompactionPlan? Plan(CompactionInput input, bool force = false);
 }
 
 /// <summary>压缩输入：已提交的历史切面与预算参数。</summary>

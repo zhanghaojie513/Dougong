@@ -110,6 +110,10 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         // 循环内追加的交互从这一下标开始；压缩时只替换它之前的前缀。
         var tailStart = history.Count;
 
+        // 溢出恢复只用一次：provider 判定超限 → 强制压一次 → 重发同一请求。
+        // 不做多次重试：真溢出压一次基本就够，压不动时再试只是白等。
+        var overflowRecoveryUsed = false;
+
         for (var round = 0; round < request.MaxToolRounds; round++)
         {
             // 每轮调用模型前检查预算。压缩失败不中断运行——见类型注释。
@@ -150,16 +154,30 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 .GetStreamingResponseAsync(requestHistory, chatOptions, cancellationToken)
                 .GetAsyncEnumerator(cancellationToken);
 
+            // 溢出恢复后要**跳过本轮的剩余处理**、直接进下一轮。
+            // 用标志而不是 continue：continue 只跳内层 while，
+            // 而 break 出 while 后会继续执行本轮的"纯文本完成"分支——
+            // 两者都会让"重试"变成"结束"。实测踩到过。
+            var restartRound = false;
+
             while (true)
             {
                 bool moved;
                 string? streamFailure = null;
+                ContextOverflowException? overflowFailure = null;
                 var cancelled = false;
                 try { moved = await enumerator.MoveNextAsync(); }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     moved = false;
                     cancelled = true;
+                }
+                catch (ContextOverflowException overflow)
+                {
+                    // 溢出单独处理：它是最有希望自动恢复的一类失败。
+                    // 不走 streamFailure——那条路会以 Failed 结束整轮。
+                    moved = false;
+                    overflowFailure = overflow;
                 }
                 catch (Exception ex)
                 {
@@ -171,6 +189,47 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 if (cancelled)
                 {
                     yield return await FinishAsync(AgentRunOutcome.Cancelled, "模型调用被取消。", cancellationToken).ConfigureAwait(false);
+                    yield break;
+                }
+
+                // 溢出恢复：强制压一次 → 重发同一请求。
+                if (overflowFailure is not null)
+                {
+                    var recovered = await TryOverflowRecoveryAsync(
+                        overflowFailure, baseline, cancellationToken, overflowRecoveryUsed)
+                        .ConfigureAwait(false);
+
+                    if (recovered.Event is not null) yield return recovered.Event;
+
+                    if (recovered.Replaced is { } shrunk)
+                    {
+                        // 压缩有进展：重建历史后**重新进入同一个 round**。
+                        // 不消耗轮次预算：这次模型调用根本没成功。
+                        //
+                        // **必须 break 出内层 while，不能 continue。**
+                        // continue 会重新进 while(true) 取同一个已耗尽的枚举器，
+                        // 下一次 MoveNext 返回 false（不是抛），于是循环正常结束、
+                        // 整轮报 Completed——看起来像"只调一次就成功"。
+                        // 这个坑实测踩到过，日志里表现为"重试只发生了一次"。
+                        overflowRecoveryUsed = true;
+                        baseline = shrunk;
+                        var rebuilt = BuildHistory(baseline, request.UserInput);
+                        rebuilt.AddRange(history.Skip(tailStart));
+                        history = rebuilt;
+                        tailStart = baseline.Count + 1;
+                        round--;
+                        restartRound = true;
+                        break;
+                    }
+
+                    // 压不动（没东西可压 / 压缩失败 / 已经试过）→ 报**原始 provider 错误**。
+                    //
+                    // 不报"压缩失败"：真实原因是上下文超限，压缩只是我们尝试的手段。
+                    // 隐瞒原始错误会让用户从"改配置/清理会话"退化成"猜发生了什么"。
+                    yield return await FinishAsync(
+                        AgentRunOutcome.Failed,
+                        recovered.FailureMessage,
+                        cancellationToken).ConfigureAwait(false);
                     yield break;
                 }
 
@@ -261,6 +320,11 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                     }
                 }
             }
+
+            // 溢出恢复：本轮没产生任何模型输出，直接进下一轮（同一 round）。
+            // 必须在这里检查，不能让控制流落到下面的"纯文本完成"分支——
+            // 那会把一次重试变成一次正常结束。实测踩到过。
+            if (restartRound) continue;
 
             if (calls.Count == 0)
             {
@@ -707,12 +771,88 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// 只负责选区，真正的摘要需要一次模型调用。宁可如实不压，也不假装压过。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 溢出恢复：强制压缩一次，并验证**真的有进展**。
+    /// </summary>
+    /// <remarks>
+    /// <b>与 <see cref="TryCompactAsync"/> 的区别不是"更宽松"，而是判据不同</b>：
+    /// 主动压缩只看"要不要压"，溢出恢复必须看"压完是否变小"。压完一样大
+    /// 就重发，只会得到同一个溢出错误——那是我在制造死循环。
+    /// <para>
+    /// <b>用完一次就不再试</b>（<paramref name="alreadyUsed"/>）：压一次还溢出，
+    /// 说明这次会话确实装不下，再试只是让用户多等。
+    /// </para>
+    /// <para>
+    /// <b>耗尽时报原始 provider 错误</b>，不报"压缩失败"。压缩是我们尝试的手段，
+    /// 超限才是原因；把手段的失败当成原因上报，会让排查方向从"清理会话"
+    /// 变成"猜 SDK 出了什么问题"。
+    /// </para>
+    /// </remarks>
+    private async ValueTask<(IReadOnlyList<AgentMessage>? Replaced, AgentEvent? Event, string FailureMessage)>
+        TryOverflowRecoveryAsync(
+            ContextOverflowException overflow,
+            IReadOnlyList<AgentMessage> baseline,
+            CancellationToken cancellationToken,
+            bool alreadyUsed)
+    {
+        // 原始错误文本：默认就用它，任何一步失败都以它为最终说明。
+        var providerText = overflow.ProviderError is { } original
+            ? $"{original.GetType().Name}: {original.Message}"
+            : overflow.Message;
+
+        var failureMessage =
+            $"上下文超出模型窗口，且压缩未能腾出空间。provider 原始错误：{providerText}";
+
+        // 已经试过一次：不再压，直接把原始错误报上去。
+        if (alreadyUsed) return (null, null, failureMessage);
+
+        // 没有压缩能力（未配置 compactor/limits/摘要器）：压不了，只能如实报告。
+        if (_compactor is null || _limits is null || _summarize is null)
+        {
+            return (null, null,
+                $"上下文超出模型窗口，且未配置压缩器，无法自动恢复。provider 原始错误：{providerText}");
+        }
+
+        var before = TokenBudget.Estimate(baseline);
+        // **force: true**——provider 已判定溢出，说明窗口配置不可信。
+        // 按那个窗口算阈值会得出"不需要压"，恢复就成了空转。
+        var compaction = await TryCompactAsync(baseline, cancellationToken, force: true)
+            .ConfigureAwait(false);
+
+        // 压缩没成功：报原始错误，并带上压缩为何没成功（作为附加信息，不是主因）。
+        if (compaction.Replaced is not { } replaced)
+        {
+            var why = compaction.Event is AgentEvent.ContextCompacted { Diagnostic: { } diagnostic }
+                ? $"（压缩未生效：{diagnostic}）"
+                : string.Empty;
+
+            return (null, compaction.Event,
+                $"上下文超出模型窗口，压缩未生效{why}。provider 原始错误：{providerText}");
+        }
+
+        var after = TokenBudget.Estimate(replaced);
+
+        // **必须有可观测的缩减才重试。** 判据用严格小于而不是"小于等于"：
+        // 压缩后大小不变说明摘要占掉了被删掉的部分，重发必然同样溢出。
+        if (after >= before)
+        {
+            return (null, compaction.Event,
+                $"上下文超出模型窗口，压缩后历史未缩小（{before} → {after} tokens），"
+                + $"重试无意义。provider 原始错误：{providerText}");
+        }
+
+        return (replaced, compaction.Event, failureMessage);
+    }
+
     private async ValueTask<(IReadOnlyList<AgentMessage>? Replaced, AgentEvent? Event)>
-        TryCompactAsync(IReadOnlyList<AgentMessage> baseline, CancellationToken cancellationToken)
+        TryCompactAsync(
+            IReadOnlyList<AgentMessage> baseline,
+            CancellationToken cancellationToken,
+            bool force = false)
     {
         try
         {
-            var plan = _compactor!.Plan(_limits!.ToInput(baseline));
+            var plan = _compactor!.Plan(_limits!.ToInput(baseline), force);
             if (plan is null) return (null, null);
 
             if (_summarize is null)

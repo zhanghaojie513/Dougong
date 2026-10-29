@@ -14,6 +14,28 @@ public sealed class ScriptedChatClient(params ScriptedTurn[] turns) : IChatClien
     public int CallCount { get; private set; }
     public List<IReadOnlyList<ChatMessage>> ObservedHistory { get; } = [];
 
+    /// <summary>
+    /// 第几次调用抛异常（1 起算）；null 表示不抛。
+    /// </summary>
+    /// <remarks>
+    /// 用于验证"异常路径"的行为，例如上下文溢出后的恢复。
+    /// 与 <see cref="ScriptedUpdate.AbortAfter"/> 的区别：那个是流中途断开，
+    /// 这个是调用一开始就失败——溢出通常属于后者。
+    /// </remarks>
+    public int? ThrowOnTurn { get; set; }
+
+    /// <summary>配合 <see cref="ThrowOnTurn"/> 使用的异常实例。</summary>
+    public Exception? ThrowException { get; set; }
+
+    /// <summary>
+    /// 每次调用都抛这个异常。
+    /// </summary>
+    /// <remarks>
+    /// 用于验证"不该重试"的场景：若实现错误地重试了，调用次数会暴露它。
+    /// 与 <see cref="ThrowOnTurn"/> 的区别是那个只抛一次，用来验证恢复后的成功路径。
+    /// </remarks>
+    public Exception? ThrowOnEveryTurn { get; set; }
+
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
@@ -27,6 +49,12 @@ public sealed class ScriptedChatClient(params ScriptedTurn[] turns) : IChatClien
     {
         CallCount++;
         ObservedHistory.Add([.. messages]);
+
+        // 溢出等"调用一开始就失败"的场景：在出队之前抛出，
+        // 不消耗脚本轮次——重试时应当还能拿到同一轮脚本。
+        if (ThrowOnEveryTurn is { } always) throw always;
+        if (ThrowOnTurn == CallCount && ThrowException is { } toThrow) throw toThrow;
+
         if (!_turns.TryDequeue(out var turn))
             throw new InvalidOperationException("脚本已耗尽：模型被调用了超出预期的次数。");
 

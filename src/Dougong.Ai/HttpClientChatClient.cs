@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Dougong.Agent;
 using Microsoft.Extensions.AI;
 
 namespace Dougong.Ai;
@@ -90,12 +91,31 @@ public sealed class HttpClientChatClient : IChatClient
             var error = await response.Content.ReadAsStringAsync(cancellationToken)
                 .ConfigureAwait(false);
 
+            var snippet = error[..Math.Min(400, error.Length)];
+
+            // **必须先判溢出，再抛通用 HTTP 错误。**
+            //
+            // 溢出是最有希望自动恢复的一类失败：压缩一次就能继续。
+            // 若在这里统一抛 HttpRequestException，上层只能看到"400"，
+            // 不知道该压还是该报错——而压错一次是有损的（历史被摘要替换）。
+            //
+            // 识别依据是响应体文本而不是状态码：400 也可能是 schema 错误。
+            if (ContextOverflowDetector.IsContextOverflow(error))
+            {
+                throw new ContextOverflowException(
+                    $"provider 判定上下文超限（HTTP {(int)response.StatusCode}）：{snippet}",
+                    providerError: new HttpRequestException(
+                        $"provider 返回 {(int)response.StatusCode}：{snippet}",
+                        inner: null,
+                        response.StatusCode));
+            }
+
             // **必须把 StatusCode 传进构造**，不能只写进消息文本。
             // 消息文本要靠正则解析才能取状态码，而解析会失败——
             // 上游任何一处改措辞，失败分类就静默退化成 Unknown。
             // .NET 的 HttpRequestException 有专门的 StatusCode 属性，用它。
             throw new HttpRequestException(
-                $"provider 返回 {(int)response.StatusCode}：{error[..Math.Min(400, error.Length)]}",
+                $"provider 返回 {(int)response.StatusCode}：{snippet}",
                 inner: null,
                 response.StatusCode);
         }

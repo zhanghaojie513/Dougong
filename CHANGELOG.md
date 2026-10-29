@@ -23,6 +23,51 @@
 
 （暂无）
 
+## [0.1.3-alpha.1] — 2026-10-30
+
+> ⚠️ **本版含破坏性 API 变更**（`IContextCompactor.Plan` 增加参数）。
+> 完善阶段尚未有外部使用者，直接改而不走弃用窗口
+> （见 [compat-policy.md](docs/compat-policy.md) §6.1）。
+
+### Added
+
+- **上下文溢出恢复**。此前 provider 判定"上下文太长"时抛一个通用
+  `HttpRequestException`，整轮失败——而这是最该自动恢复的一类失败。
+
+  **识别**（`ContextOverflowDetector`，三层判据）：
+  - 错误文案：25 条正则，覆盖 Anthropic / OpenAI / Bedrock / Groq /
+    llama.cpp / MiniMax / Kimi / Mistral / Ollama / 通义 / 中文厂商等，
+    来源是 pi.net 的 `Overflow.cs` 实际文案表，不是猜的
+  - **排除清单**：Bedrock 的 `ThrottlingException` 含 "too many tokens"，
+    会被正向模式命中——不排除就会因一次限流**白压一次历史**（有损且不可撤销）
+  - **静默溢出**：调用"成功"但 `usage.input` 已超过配置窗口，
+    说明我们对窗口的认知是错的；不处理则下一轮必然失败
+  - **截断溢出**：`stop_reason=length` + 输出 0 + 输入 ≥99% 窗口
+    （小米 MiMo 一类）。判据里的 99% 是必要的，否则"模型主动不回答"
+    也会被当成溢出
+
+  **恢复**（`LoopAgentRuntime`）：
+  - 强制压缩一次（`Plan(force: true)`）→ 验证历史**真的变小** → 重发同一请求
+  - **必须验证有缩减**才重试：压完一样大就重发，只会得到同一个错误
+  - **只试一次**：再溢出就失败，不无限循环
+  - 耗尽时报**原始 provider 错误**，不报"压缩失败"——
+    压缩是我们尝试的手段，超限才是原因
+
+### Breaking
+
+- **`IContextCompactor.Plan` 增加 `bool force = false` 参数**。
+  接口加参数会让**现有实现全部编译失败**（这是 ApiCompat 的 CP0006 抓到的）。
+  自定义压缩器需要补这个参数；不需要强制压缩时忽略即可。
+  - 为什么必须加：provider 判定溢出时，说明**窗口配置不可信**
+    （填大了或实际上限更小）。沿用那个窗口算触发阈值会得出"不需要压"，
+    恢复逻辑就永远压不了东西——实测踩到过：窗口配 200 万、历史 2 万，
+    provider 报溢出，`Plan` 返回 null，恢复空转。
+
+### Fixed
+
+- `HttpClientChatClient` 的流式路径现在把 `StopReason` 带出来
+  （`ChatStreamDecoder.StopReason`），供截断溢出判定使用。
+
 ## [0.1.2-alpha.1] — 2026-10-30
 
 ### Fixed

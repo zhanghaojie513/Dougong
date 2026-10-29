@@ -161,6 +161,10 @@ public sealed class OpenAiChatCompletionsFormat : IChatWireFormat
                     && WireFormatHelpers.IsTerminalReason(finish.GetString()))
                 {
                     IsTerminal = true;
+
+                    // 原样保留结束原因：溢出识别要靠它区分 "length + output=0"
+                    // 与"模型主动不回答"。归一化会丢掉我们不认识的值。
+                    StopReason = finish.GetString();
                 }
 
                 // 终结帧的 delta 可能是 {}、null 或整个缺失，不能因此丢掉终结信号。

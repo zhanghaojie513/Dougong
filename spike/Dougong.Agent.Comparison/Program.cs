@@ -23,6 +23,7 @@ public static class Program
         "acp-plan",
         "apicompat",
         "terminal",
+        "overflow",
         "brand",
         "approval",
         "approval-log",
@@ -194,6 +195,10 @@ public static class Program
         // 终端能力探测与三档渲染（CLI 实施计划 S1）。
         if (args.FirstOrDefault() == "terminal")
             return await TerminalChecks.RunAsync();
+
+        // 上下文溢出：识别（含限流排除、静默溢出）+ 压缩后重试 + 耗尽报原始错误。
+        if (args.FirstOrDefault() == "overflow")
+            return await OverflowChecks.RunAsync();
 
         // 品牌资产：尺寸、alpha、ICO 帧、README 引用一致性。
         if (args.FirstOrDefault() == "brand")
