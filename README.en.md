@@ -33,7 +33,20 @@
 
 > **Dougong** borrows the "Everything is a Plugin" idea from DeepSeek Harness (dsh) to build an independent Agent Harness SDK for the .NET ecosystem. It borrows architectural ideas only — no code is ported, and this is not an official DeepSeek project.
 
-A *dougong* (斗拱) is the bracket set in traditional Chinese timber architecture: standardized components assembled layer by layer to carry the roof. The project uses the same metaphor — the kernel bears and coordinates, plugins provide capabilities, and components can be composed, replaced, disabled and reloaded.
+A *dougong* (斗拱) is a real structural element in traditional Chinese timber architecture: independent
+components that share the load by being joined and combined. Dougong's emblem, **Yungong · 承智之枢**
+(The Pivot That Bears Intelligence), draws on that — the layered eaves catch complex intent and model
+capability, the central interlocking core is assembled from plugins through explicit interfaces, the
+returning cloud motifs on either side are actions sent out and feedback brought back, and the base
+lets actions leave verifiable results.
+
+The idea it carries is **承智成事** — bringing intelligence into action: scattered capabilities
+organised into action through clear connections.
+
+> "Yungong" and "The Pivot That Bears Intelligence" are contemporary names coined for this product,
+> not the names of historical artifacts; dougong and mortise-and-tenon joinery are a genuine part of
+> the timber-building tradition. The base is a metaphor — not a claim of guaranteed safety, of never
+> failing, or of process-level isolation.
 
 ## Current Status
 
