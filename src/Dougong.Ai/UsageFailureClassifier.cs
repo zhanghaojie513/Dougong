@@ -38,7 +38,11 @@ public static class UsageFailureClassifier
         if (error is OperationCanceledException or TimeoutException)
             return callerCancelled ? UsageFailureKind.Cancelled : UsageFailureKind.Timeout;
 
-        // 3. 解析失败：协议实现与 provider 输出不符，属于 SDK 侧问题。
+        // 3. 协议不符。专用类型优先，其余异常类型作兜底——
+        //    先判专用类型是为了让"确实是协议问题"与"疑似解析问题"可区分。
+        if (error is InvalidWireResponseException)
+            return UsageFailureKind.InvalidResponse;
+
         if (error is JsonException or FormatException or InvalidOperationException)
             return UsageFailureKind.InvalidResponse;
 

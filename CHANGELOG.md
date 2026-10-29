@@ -134,6 +134,18 @@
 
 ### Fixed
 
+- **畸形响应不再静默记成成功**。HTTP 200 之后如果响应体解析不出任何内容，
+  `HttpClientChatClient` 原先静默结束、产出零个 update，账目记成成功——
+  用户看到"成功但没有任何内容"，无从判断是模型没说话还是协议出了问题。
+  这也让 `UsageFailureKind.InvalidResponse` 成了一个**死枚举**：
+  枚举里有位置，但没有路径能触发它。
+  - 现在分两种情况报错：一条 SSE 负载都没看到（网关错误页、代理改写、
+    端点指向非流式接口）→ 抛 `InvalidWireResponseException`；
+    看到了负载但解析不出内容（协议实现与 provider 输出不符）→ 同样抛
+  - **有终结信号时允许零内容**：模型确实可以什么都不说，那不是缺陷
+  - 新增公开异常 `InvalidWireResponseException`（继承 `InvalidOperationException`）：
+    用类型而不是消息文本判断，消息改了也不会静默失效
+
 - **`scripts/update-api-baseline.sh` 一直在复制最老的包**。它用
   `ls *.nupkg | head -1` 选文件，拿到的是字典序第一个（`0.1.0-alpha.1`），
   于是"更新基线"每次都在复制旧包，基线永远停在最早版本——

@@ -26,6 +26,7 @@ public static class UsageChecks
         failures += await CheckAsync("failure-kind-does-not-guess", ClassifyUnknownAsync);
         failures += await CheckAsync("cancelled-is-not-counted-as-fault", CancelNotFaultAsync);
         failures += await CheckAsync("http-status-reaches-exception", HttpStatusReachesExceptionAsync);
+        failures += await CheckAsync("malformed-stream-is-not-silent-success", MalformedStreamAsync);
         failures += await CheckAsync("cancelled-call-keeps-elapsed", CancelledAsync);
         failures += await CheckAsync("summarizes-per-session", PerSessionAsync);
         failures += await CheckAsync("summarizes-per-day", PerDayAsync);
@@ -555,6 +556,55 @@ public static class UsageChecks
             {
                 Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
             });
+    }
+
+    /// <summary>
+    /// 畸形响应必须报错，不能静默产出空回复并记成成功。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条对应一个真实的能力空转</b>：<c>UsageFailureKind.InvalidResponse</c>
+    /// 早就在枚举里，但没有任何路径能触发它——HTTP 200 之后如果响应体解析不出
+    /// 任何内容，<see cref="HttpClientChatClient"/> 静默结束，产出零个 update；
+    /// <see cref="UsageRecordingChatClient"/> 看到没抛异常就记成成功。
+    /// <para>
+    /// 后果是用户在界面上看到"成功但没有任何内容"，无从判断是模型没说话
+    /// 还是协议实现出了问题。**枚举里有位置不等于接上了**，这条检查钉住接线。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> MalformedStreamAsync()
+    {
+        // 200 + 一坨不是 SSE 的东西（模拟网关错误页）。
+        using var http = new HttpClient(new StatusOnlyHandler(
+            System.Net.HttpStatusCode.OK, "<html>502 Bad Gateway</html>"))
+        {
+            BaseAddress = new Uri("https://example.invalid"),
+        };
+
+        var client = new HttpClientChatClient(
+            "https://example.invalid", "key", "model",
+            new OpenAiChatCompletionsFormat(), http);
+
+        var updates = 0;
+        try
+        {
+            await foreach (var _ in client.GetStreamingResponseAsync(
+                [new ChatMessage(ChatRole.User, "hi")]))
+            {
+                updates++;
+            }
+
+            // 静默走完：这正是缺陷——零 update 却当成成功。
+            return $"畸形响应静默产出 {updates} 个更新，应向调用方报错"
+                + "（否则用户看到空回复，且账目记成成功）";
+        }
+        catch (Exception ex)
+        {
+            // 抛了异常但要确认能被分成 InvalidResponse，否则分类还是空转。
+            var kind = UsageFailureClassifier.Classify(ex, callerCancelled: false);
+            return kind == UsageFailureKind.InvalidResponse
+                ? null
+                : $"抛了 {ex.GetType().Name} 但被分成 {kind}，应为 InvalidResponse";
+        }
     }
 
 }

@@ -107,20 +107,55 @@ public sealed class HttpClientChatClient : IChatClient
         var decoder = _format.CreateDecoder();
         var updates = new List<ChatResponseUpdate>();
 
+        // 诊断用的两个计数：看到了多少条 SSE 负载、其中多少条解出了内容。
+        //
+        // **没有它们就无法区分"模型没说话"与"我们解析不了"**——两种情况
+        // 都是零个 update，但前者正常、后者是协议层缺陷。
+        // 实测过：provider 返回 200 + 一坨 HTML（网关错误页）时，
+        // 这里静默走完，账目记成成功，用户看到空回复而无从判断原因。
+        var payloadCount = 0;
+        var decodedContentCount = 0;
+        var sawTerminalSignal = false;
+
         while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
         {
             // 只处理 SSE 的 data 行；注释行与 event 行不含负载。
             if (!line.StartsWith("data: ", StringComparison.Ordinal)) continue;
             var payload = line[6..];
-            if (payload is "[DONE]") break;
+            if (payload is "[DONE]") { sawTerminalSignal = true; break; }
 
+            payloadCount++;
             updates.Clear();
             decoder.Decode(payload, updates);
             foreach (var update in updates) yield return update;
-            if (decoder.IsTerminal) break;
+            decodedContentCount += updates.Count;
+            if (decoder.IsTerminal) { sawTerminalSignal = true; break; }
         }
 
-        foreach (var update in decoder.Flush()) yield return update;
+        var flushed = decoder.Flush();
+        foreach (var update in flushed) yield return update;
+        decodedContentCount += flushed.Count;
+
+        // **一条 SSE 负载都没看到** 且没有终结信号 ⇒ 响应体不是 SSE。
+        // 常见的 200 + HTML 错误页、被中间设备改写的响应都属于这一类。
+        // 有终结信号时允许零内容（模型确实可以什么都不说）。
+        if (payloadCount == 0 && !sawTerminalSignal && decoder.Usage is null)
+        {
+            throw new InvalidWireResponseException(
+                "响应体里没有任何 SSE 数据帧，也没有终结信号——"
+                + "这不是本协议的有效响应。常见原因：网关返回了 HTML 错误页、"
+                + "代理改写了响应、或端点路径指向了非流式接口。"
+                + "（HTTP 状态码是 200，所以不会走状态码错误分支。）");
+        }
+
+        // 看到了负载但一条内容都没解出来 ⇒ 协议实现与 provider 输出不符。
+        // 这是 SDK 侧要修的问题，不能当成"模型没说话"。
+        if (payloadCount > 0 && decodedContentCount == 0)
+        {
+            throw new InvalidWireResponseException(
+                $"收到 {payloadCount} 条 SSE 数据帧，但解析不出任何内容——"
+                + "协议实现与该 provider 的实际输出不符。");
+        }
 
         if (decoder.Usage is { } usage)
         {
