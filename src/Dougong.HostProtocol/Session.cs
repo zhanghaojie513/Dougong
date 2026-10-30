@@ -124,3 +124,46 @@ public sealed record ResyncCommand : ClientCommand
     /// <summary>要重同步的会话。null 表示只需要一个基准序号（比如还没打开会话时）。</summary>
     public string? SessionId { get; init; }
 }
+
+// ─────────────────────────────────────────────────────────────
+// 模型目录：多 provider 场景下，UI 要能列出"有哪些模型可选"
+// ─────────────────────────────────────────────────────────────
+
+/// <summary>
+/// 一个可选模型的描述。
+/// </summary>
+/// <remarks>
+/// <b>为什么由服务端提供而不是客户端自己查</b>：模型能力表在 SDK 里
+/// （<c>ProviderCatalog</c>），而界面的层通常不该引用 SDK。
+/// 经协议传纯数据既守住了分层，又让 UI 不必知道 SDK 的类型。
+/// <para>
+/// <b>只传界面需要的字段</b>：上下文窗口、输出上限、是否支持思考。
+/// 价格与营销文案不传——SDK 里也没有，编造会让用户看到假信息。
+/// </para>
+/// </remarks>
+/// <param name="ProviderId">所属 provider。</param>
+/// <param name="Id">模型标识。</param>
+/// <param name="ContextWindow">上下文窗口（token）。</param>
+/// <param name="MaxOutputTokens">输出容量上限（token）。</param>
+/// <param name="SupportsReasoning">是否支持思考模式。</param>
+public sealed record ModelInfo(
+    string ProviderId,
+    string Id,
+    int ContextWindow,
+    int MaxOutputTokens,
+    bool SupportsReasoning);
+
+/// <summary>模型目录。响应 <see cref="ListModelsCommand"/>。</summary>
+public sealed record ModelsListedEvent : ServerEvent
+{
+    /// <summary>全部可选模型。</summary>
+    public required IReadOnlyList<ModelInfo> Models { get; init; }
+}
+
+/// <summary>列出当前可选的模型。</summary>
+/// <remarks>
+/// <b>不需要参数</b>：模型目录由服务端的 provider 配置决定，
+/// 客户端没有可以筛选的维度。要按 provider 过滤是界面的显示决策，
+/// 不该变成协议参数。
+/// </remarks>
+public sealed record ListModelsCommand : ClientCommand;

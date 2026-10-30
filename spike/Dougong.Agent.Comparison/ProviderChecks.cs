@@ -27,6 +27,7 @@ public static class ProviderChecks
         failures += await CheckAsync("model-command-lists-and-switches", ModelCommandAsync);
         failures += await CheckAsync("secret-never-appears-in-doctor-output", SecretNeverPrintedAsync);
         failures += await CheckAsync("presets-are-data-only", PresetsAreDataOnly);
+        failures += await CheckAsync("reasoning-effort-semantics-are-documented", EffortSemanticsDocumented);
         failures += await CheckAsync("protocol-inference-three-levels", ProtocolInferenceAsync);
         failures += await CheckAsync("capabilities-and-fallback", CapabilitiesAndFallbackAsync);
         failures += await CheckAsync("presets-fit-their-budget", PresetsFitTheirBudgetAsync);
@@ -42,6 +43,57 @@ public static class ProviderChecks
             ? "PROVIDER: ALL PASS"
             : $"PROVIDER: {failures} FAILURE(S)");
         return failures;
+    }
+
+    /// <summary>
+    /// 推理档位映射的 key/value 语义必须写在公开文档里。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么这条值得钉</b>：<c>ReasoningEfforts</c> 与 <c>ThinkingLevelMap</c>
+    /// 都是 <c>IReadOnlyDictionary</c>。跨进程传它们时，宿主要把字典转成自己的
+    /// UI 类型——而"key 是什么、value 是什么、null 与空字典有什么区别"
+    /// 只能从文档得知。此前注释只写了"映射"，读的人得回去翻源码猜。
+    ///
+    /// <para>
+    /// 这些说明写在**生成脚本的模板**里（<c>sync-provider-presets.py</c>），
+    /// 所以这条断言同时守住"重新生成后说明不丢"。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> EffortSemanticsDocumented()
+    {
+        var root = FindRepoRoot();
+
+        // 生成产物里必须有那几条关键说明。
+        var presets = Path.Combine(root, "src", "Dougong.Ai", "ProviderPresets.g.cs");
+        if (!File.Exists(presets)) return Task.FromResult<string?>("找不到 ProviderPresets.g.cs");
+
+        var text = File.ReadAllText(presets);
+
+        string[] mustMention =
+        [
+            "固定八选一",
+            "Value 是该模型端点上认的字面量",
+            "只有 key 出现在映射里的档位才是这个模型支持的",
+            "null 与空字典不同",
+        ];
+
+        var missing = mustMention.Where(m => !text.Contains(m, StringComparison.Ordinal)).ToArray();
+        if (missing.Length > 0)
+            return Task.FromResult<string?>(
+                $"ProviderPresets.g.cs 的档位说明缺：{string.Join("、", missing)}");
+
+        // WireCompat 那一侧也要说清与目录数据的分工。
+        var compat = Path.Combine(root, "src", "Dougong.Ai", "WireCompat.cs");
+        var ctext = File.ReadAllText(compat);
+
+        if (!ctext.Contains("与 <c>ModelCapabilities.ReasoningEfforts</c> 的关系", StringComparison.Ordinal))
+        {
+            return Task.FromResult<string?>(
+                "WireCompat.ThinkingLevelMap 没说清它与 ModelCapabilities.ReasoningEfforts 的分工——"
+                + "两者都是字典，读者会困惑该用哪个");
+        }
+
+        return Task.FromResult<string?>(null);
     }
 
     /// <summary>完整配置能被解析，且选中项、来源、字段都对。</summary>

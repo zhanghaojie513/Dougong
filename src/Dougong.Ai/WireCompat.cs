@@ -97,15 +97,29 @@ public sealed record WireCompat
     public ThinkingFormat Thinking { get; init; } = ThinkingFormat.None;
 
     /// <summary>
-    /// 统一档位到该模型实际档位词的映射。null 表示直接透传档位词。
+    /// 统一档位 → 该模型实际档位词的映射。null 表示按同名透传。
     /// </summary>
     /// <remarks>
-    /// <b>为什么需要映射而不是透传</b>：各家档位词不一样（有的只有 low/medium/high，
-    /// 有的支持 xhigh/max，GLM 用 <c>none</c> 表示关闭）。把 <c>max</c> 原样发给只认
-    /// <c>high</c> 的端点，会被 400 拒绝或静默忽略。
+    /// <b>Key 是 Dougong 的统一档位词</b>，固定八选一（不区分大小写）：
+    /// <c>none</c> / <c>minimal</c> / <c>low</c> / <c>medium</c> / <c>high</c> /
+    /// <c>xhigh</c> / <c>max</c> / <c>default</c>。宿主只认这八个词，
+    /// 不必知道任何 provider 的方言。
+    /// <para>
+    /// <b>Value 是该端点认的字面量</b>，原样发出去。各家不同：有的只认
+    /// <c>low</c>/<c>medium</c>/<c>high</c>，有的支持 <c>xhigh</c>/<c>max</c>，
+    /// GLM 用 <c>none</c> 表示关闭。把 <c>max</c> 原样发给只认 <c>high</c> 的端点，
+    /// 会被 400 拒绝或静默忽略。
+    /// </para>
     /// <para>
     /// <b>值为 null 表示该档位不支持</b>，此时不发任何参数——而不是退化成"发一个相近的"。
     /// 静默降级会让用户以为选的那个档位生效了。
+    /// </para>
+    /// <para>
+    /// <b>与 <c>ModelCapabilities.ReasoningEfforts</c> 的关系</b>：那个是**目录数据**
+    /// （这个模型能选哪些档位），这个是**请求参数**（怎么把选中的档位翻译成对方的词）。
+    /// 宿主选档位时读前者，装配连接器时把前者传给后者。通常是同一份字典，
+    /// 但它们的职责不同——目录可以只暴露子集（比如 UI 只列三档），
+    /// 而映射要覆盖所有可能被选中的档位。
     /// </para>
     /// </remarks>
     public IReadOnlyDictionary<string, string?>? ThinkingLevelMap { get; init; }
