@@ -175,7 +175,7 @@ public sealed class MyTool : IAgentTool
 
 ## 五、事件流：怎么把进展显示出来
 
-`RunAsync` 是 `IAsyncEnumerable<AgentEvent>`，九种事件：
+`RunAsync` 是 `IAsyncEnumerable<AgentEvent>`，十一种事件：
 
 | 事件 | 什么时候 | 宿主通常做什么 |
 |---|---|---|
@@ -185,9 +185,36 @@ public sealed class MyTool : IAgentTool
 | `ToolCallRequested` | 要调用工具 | 显示"正在调用 X" |
 | `ToolCallCompleted` | 工具结束 | 显示结果或失败原因 |
 | `ToolResultTruncated` | 结果过长被裁 | **提示用户"模型看到的是裁剪版"** |
+| `UsageReported` | 本轮调用结束且有用量 | **真实用量**，可对账、可算成本 |
+| `ContextUsageReported` | 每轮调用前 | **估算**的上下文构成，显示占用率 |
 | `ContextCompacted` | 历史被压缩 | 提示"上下文已压缩" |
 | `PlanUpdated` | 模型更新了计划 | 显示计划 |
 | `RunFinished` | 结束 | 看 `Outcome` 决定后续 |
+
+### 5.0 两个用量事件不是一回事
+
+**这是最容易混的一对，混了会让成本统计出错。**
+
+| | `UsageReported` | `ContextUsageReported` |
+|---|---|---|
+| 数据来源 | provider 回报 | 字符统计估算 |
+| 能否对账 | **能** | **不能** |
+| 回答什么 | "这次调用花了多少" | "上下文装了多满" |
+| 出现时机 | 调用成功后 | 每轮调用前 |
+| 可能缺失 | provider 不报时没有 | 总量可能为 `null` |
+
+`ContextUsageReported` 拆成三项（照 dsh 的 `contextBreakdown` 口径）：
+`SystemPromptTokens` / `ToolDefinitionTokens` / `MessageTokens`。
+
+**为什么这项必须 SDK 给**：后两项宿主算不出来——系统提示词是 SDK 拼的，
+工具定义是 SDK 把 `IAgentTool` 序列化成 schema 的产物，宿主手里只有工具对象。
+
+**总量为 `null` 是正常状态**：压缩刚发生、下一次模型响应还没回来时，
+唯一可信的用量是压缩**之前**的，那时给一个数只会误导。界面应当显示"未知"
+而不是 0%——0% 会被读成"完全没占用"。
+
+`WindowRatio` 的分母是**模型窗口**，不是压缩预算。用户看的是"这个模型的窗口
+用了多少"；压缩预算还扣掉了输出预留与固定预留，那是内部判据。
 
 ### 5.1 推理内容（`ReasoningDelta`）
 

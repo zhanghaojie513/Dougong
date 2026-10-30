@@ -49,6 +49,20 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// </remarks>
     public string MemoryWorkspace { get; init; } = string.Empty;
 
+    /// <summary>
+    /// 本次运行使用的系统提示词全文；null 表示没有。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么运行时需要持有它</b>：上下文构成里的"系统提示词"那一栏
+    /// 只有运行时能算——提示词是它拼的，宿主手里没有最终文本。
+    /// 不传就是 null，那一栏显示 0。
+    /// <para>
+    /// 用 <c>init</c> 属性而不是构造参数：后者会改构造签名（ApiCompat CP0002）。
+    /// </para>
+    /// </remarks>
+    public string? SystemPrompt { get; init; }
+
+
     /// <summary>用裸 dispatcher 构造：内部包成固定访问点（不参与替换）。</summary>
     public LoopAgentRuntime(
         IChatClient client,
@@ -117,8 +131,61 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         // 不做多次重试：真溢出压一次基本就够，压不动时再试只是白等。
         var overflowRecoveryUsed = false;
 
+        // provider 回报的真实用量锚点。null 表示还没有可信基准——
+        // 此时上下文总量只能纯估算，精度明显更差。
+        UsageAnchor? usageAnchor = null;
+
         for (var round = 0; round < request.MaxToolRounds; round++)
         {
+            // ── 上下文构成报告 ────────────────────────────────────
+            // **在压缩之后发**：压缩会改变历史，报告必须反映"将要发出的那个请求"。
+            //
+            // 基准的选择是这套算法的关键。有 provider 回报的真实输入 token 时，
+            // 以它为基准、只估算它之后新增的消息；没有任何可信基准时才纯估算。
+            // 这与 pi 的 estimateContextTokens 一致（compaction.ts:196）——
+            // 真实用量里已经包含了系统提示与工具 schema 的开销，
+            // 拿它当基准比逐项估算准一个量级。
+            //
+            // **压缩之后必须把基准作废**：那个数是压缩前测的，
+            // 用它加上压缩后的历史会得出一个偏大的假数字。
+            {
+                var tools = await _dispatcher
+                    .GetToolsAsync(cancellationToken).ConfigureAwait(false);
+
+                var breakdown = ContextBreakdown.Measure(
+                    SystemPrompt, tools, baseline);
+
+                // 基准只在"它测量的仍是当前历史"时有效。
+                // 压缩会替换历史，此前记录的用量对不上新历史。
+                int? verified = null;
+                var anchor = usageAnchor;
+                if (anchor is not null && anchor.StillValid(baseline))
+                    verified = anchor.InputTokens;
+
+                // 有基准时：总量 = 基准 + 基准之后新增部分（含本轮用户输入）。
+                // 没有基准时：总量 = 三项估算之和。
+                int? total;
+                if (verified is { } basis && anchor is not null)
+                {
+                    var trailing = 0;
+                    for (var i = anchor.MessageCount; i < baseline.Count; i++)
+                        trailing += TokenBudget.Estimate(baseline[i].Content);
+                    total = basis + trailing;
+                }
+                else
+                {
+                    total = breakdown.TotalTokens;
+                }
+
+                yield return new AgentEvent.ContextUsageReported(
+                    SystemPromptTokens: breakdown.SystemPromptTokens,
+                    ToolDefinitionTokens: breakdown.ToolDefinitionTokens,
+                    MessageTokens: breakdown.MessageTokens,
+                    EstimatedTotalTokens: total,
+                    VerifiedInputTokens: verified,
+                    ContextWindowTokens: _limits?.ContextWindowTokens ?? 0);
+            }
+
             // 每轮调用模型前检查预算。压缩失败不中断运行——见类型注释。
             if (_limits is not null && _compactor is not null)
             {
@@ -129,6 +196,9 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 if (compaction.Replaced is { } replaced)
                 {
                     baseline = replaced;
+                    // **压缩后必须作废锚点**：它测的是压缩前的旧历史。
+                    // 留着它会把一个高出几倍的虚数当成"当前占用"。
+                    usageAnchor = null;
                     // 只替换前缀：[基线转换后...] + [本轮用户输入 ... 尾部追加]
                     // 尾部（循环内产生的 assistant/tool 交互）原样保留，
                     // 它们是当前工作上下文，且必须成对存在。
@@ -145,6 +215,13 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             // 回传思考内容，否则请求被拒。字段名由连接器翻译，本层只用中性键。
             var reasoning = new StringBuilder();
             var fragmentCount = new Dictionary<string, int>(StringComparer.Ordinal);
+
+            // 本轮 provider 回报的用量。可能为 null（端点不报，或流在回报前失败）。
+            UsageDetails? lastUsage = null;
+
+            // 本次请求用的历史快照。用量锚点要记"发出去的那份提示"的规模，
+            // 而不是本轮结束后的历史——那时已经追加了 assistant 回复与工具结果。
+            var requestBaseline = baseline;
 
             // 工具声明是运行时对连接器的正式输出，不是循环拼的提示文本。
             var chatOptions = new ChatOptions().Attach(await _dispatcher.GetToolsAsync(cancellationToken).ConfigureAwait(false));
@@ -263,6 +340,13 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 {
                     switch (content)
                     {
+                        // provider 回报的用量。流式中它可能出现在任意一帧，
+                        // 也可能一帧都没有（不少端点只在最后一帧给）。
+                        // 这里只收集，发事件延后到流结束——那时才确定本轮真的成功。
+                        case UsageContent usageContent:
+                            lastUsage = usageContent.Details;
+                            break;
+
                         case TextContent textContent when !string.IsNullOrEmpty(textContent.Text):
                             text.Append(textContent.Text);
                             yield return new AgentEvent.TextDelta(textContent.Text);
@@ -322,6 +406,31 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                             break;
                     }
                 }
+            }
+
+            // ── 用量与锚点 ────────────────────────────────────────
+            // 放在这里（流已正常结束、溢出重试已排除）的理由：
+            // 只有这一轮真的拿到了模型输出，用量才是这一轮的。
+            // 溢出重试走了 continue，那时不该发——它不是一次成功调用。
+            //
+            // **用 usage 更新锚点**：下一轮上下文估算以它为基准。
+            // 这是精度来源——provider 的输入 token 已含系统提示与工具 schema，
+            // 比纯字符估算准一个量级。
+            if (lastUsage is { } usage)
+            {
+                yield return new AgentEvent.UsageReported(
+                    InputTokens: (int?)usage.InputTokenCount,
+                    OutputTokens: (int?)usage.OutputTokenCount,
+                    CacheReadTokens: (int?)usage.CachedInputTokenCount,
+                    // M.E.AI 的 UsageDetails 没有独立的 cacheWrite，只有 AdditionalCounts。
+                    // 拿不到就是 null——**不填 0**，0 会被当成"确实没有缓存写入"。
+                    CacheWriteTokens: null,
+                    TotalTokens: (int?)usage.TotalTokenCount);
+
+                // 锚点记录的是"发出去的那份提示"的规模。它对应的是本轮请求
+                // 而不是本轮结束后的历史，所以用请求时的历史条数。
+                if (usage.InputTokenCount is { } inputTokens and > 0)
+                    usageAnchor = UsageAnchor.Capture((int)inputTokens, requestBaseline);
             }
 
             // 溢出恢复：本轮没产生任何模型输出，直接进下一轮（同一 round）。

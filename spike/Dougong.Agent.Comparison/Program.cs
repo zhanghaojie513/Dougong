@@ -190,6 +190,10 @@ public static class Program
         if (args.FirstOrDefault() == "provider")
             return await ProviderChecks.RunAsync();
 
+        // 上下文占用与用量：两个事件必须分开（估算 vs 实测）。
+        if (args.FirstOrDefault() == "context-usage")
+            return await ContextUsageChecks.RunAsync();
+
         if (args.FirstOrDefault() == "report")
             return await ReportChecks.RunAsync();
 

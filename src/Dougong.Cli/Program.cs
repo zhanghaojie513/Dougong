@@ -473,7 +473,7 @@ public static class Program
             {
                 // 必须在拉取第一个事件之前启动：等待模型是整轮最长的静默段，
                 // 而这段时间一个事件都不会来。放在循环里就永远不会按时亮起。
-                contextTokens = ContextTokens(messages, composition.ContextWindow) ?? -1;
+                // 轮初沿用上一轮的值；SDK 的 ContextUsageReported 到达后覆盖。
                 activity.StartTurn();
 
                 await foreach (var evt in runtime.RunAsync(request))
@@ -482,6 +482,19 @@ public static class Program
 
                     switch (evt)
                     {
+                        case AgentEvent.ContextUsageReported usage:
+                            // SDK 每轮报一次**估算**的上下文构成。用它而不是自己算：
+                            // 自算的漏了系统提示与工具 schema，而这两项的开销
+                            // 随工具数量变化，CLI 这边拿不到。
+                            // 总量为 null 表示压缩后还没有可信基准——那时不显示百分比。
+                            //
+                            // 也别用 UsageLedger 的会话累计值：那是每次调用的
+                            // 输入+输出累加，三轮对话后可能是实际上下文的三倍，
+                            // 进度条会一路顶到 100%。一个看起来精确的假数字，
+                            // 比不显示更糟。
+                            contextTokens = usage.EstimatedTotalTokens ?? -1;
+                            break;
+
                         case AgentEvent.TextDelta delta:
                             assistantText.Append(delta.Text);
                             Output.Text(delta.Text);
@@ -870,28 +883,6 @@ public static class Program
         Output.Line("对话中可用：/help  /status  /exit  /usage  /where  /memory  /model");
         Output.Line();
         Output.Line("文档：https://github.com/zhanghaojie513/Dougong");
-    }
-
-    /// <summary>
-    /// 状态栏用的上下文占用估算。**这是"已提交历史占多少"，不是"花了多少 token"。**
-    /// </summary>
-    /// <remarks>
-    /// <b>这里曾经是错的</b>：初版读 <see cref="UsageLedger"/> 的会话累计值，
-    /// 而那是每次调用的输入+输出累加。三轮对话后累计值可能是实际上下文的三倍，
-    /// 进度条会一路顶到 100%——一个看起来精确的假数字。
-    /// 上下文占用只能用 <see cref="TokenBudget.Estimate(IEnumerable{AgentMessage})"/>
-    /// 按当前历史估，与压缩器用的是同一个函数。
-    /// <para>
-    /// 不含本轮用户输入（它在轮末才追加进历史），所以略偏低——
-    /// 宁可偏低也不要按累计计费量虚报。
-    /// </para>
-    /// </remarks>
-    private static int? ContextTokens(IReadOnlyList<AgentMessage> history, int contextWindow)
-    {
-        // 没开压缩就不显示占用率，别白算。
-        if (contextWindow <= 0 || history.Count == 0) return null;
-
-        return TokenBudget.Estimate(history);
     }
 
     /// <summary>

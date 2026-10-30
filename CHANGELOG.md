@@ -70,6 +70,51 @@
   现在写清分工：**数据找 models.dev，行为找 pi，契约措辞找 dsh，
   交互找 hermes，C# 写法找 pi.net**。同一问题两家冲突时，先看谁给了解释。
 
+### Added
+
+- **`ContextUsageReported`：上下文的估算构成**，每轮一次。
+  拆成三项：`SystemPromptTokens` / `ToolDefinitionTokens` / `MessageTokens`，
+  外加 `EstimatedTotalTokens` 与 `VerifiedInputTokens`。
+
+  **为什么必须 SDK 提供**：三项里有两项宿主拿不到——系统提示词是 SDK 拼的；
+  工具定义是 SDK 把 `IAgentTool` 序列化成 schema 的产物，宿主手里只有工具对象，
+  自己算等于重做一遍序列化，必然与实际发出去的不一致。此前桌面端的右栏
+  "上下文" tab 只能标注"未实现"，CLI 也只能自己扫一遍历史，漏掉这两项。
+
+  **口径照 dsh 的 `contextBreakdown`**（`systemTokens` / `toolsTokens` /
+  `messageTokens`），语义一致：**上下文的构成，不是提供方计费规模**。
+
+- **`UsageReported`：本轮真实用量**（`InputTokens` / `OutputTokens` /
+  `CacheReadTokens` / `CacheWriteTokens` / `TotalTokens`）。
+
+  **为什么与上面拆成两个事件**：这个是 provider 回报的**实测值**，可以对账；
+  上面那个是**估算**，不能对账。混成一个会让成本统计出错。
+  `CacheWriteTokens` 拿不到时是 `null` 而不是 0——0 会被当成"确实没有缓存写入"。
+
+- **`UsageAnchor`：用真实用量做估算基准**。
+  有 provider 回报的输入 token 时，以它为基准、只估算其后新增的消息；
+  没有基准时才纯字符估算。真实用量里已包含系统提示与工具 schema，
+  比逐项估算准一个量级。这与 pi 的 `estimateContextTokens` 同一思路。
+
+  **锚点会失效**，这是最容易写错的地方：压缩替换历史后必须作废 ——
+  它测的是压缩前的旧历史，留着会算出"压缩后比压缩前还满"。
+
+- **`ContextBreakdown`：三项拆分的计算**（公开，宿主可复用于自己的展示）。
+
+- **`LoopAgentRuntime.SystemPrompt`**：系统提示词全文，供上面那项估算。
+  不传就是 null，该项显示 0——**不编一个值**。
+
+### 关于精度
+
+`ContextUsageReported` 的数值**全部是估算**，不是实测；`UsageReported` 才是实测。
+
+这一条必须写进文档和命名：`EstimatedTotalTokens`、`WindowRatio` 都带"估算"限定。
+两个数用途不同（前者"装了多满"，后者"花了多少"），混用会让成本统计出错。
+
+压缩后、下一次模型响应之前，`EstimatedTotalTokens` 返回 `null`——
+那时唯一可信的用量是压缩**之前**的，给一个数只会误导。pi 同样返回 `null`
+（`getContextUsage()` 注释：*context token count is unknown until the next LLM response*）。
+
 ### Changed
 
 - **拆开"输出容量上限"与"单次请求预留"两个概念**。

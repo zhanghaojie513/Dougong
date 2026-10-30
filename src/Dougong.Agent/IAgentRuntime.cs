@@ -97,6 +97,92 @@ public abstract record AgentEvent
     public sealed record ToolCallCompleted(ToolDispatchResult Result) : AgentEvent;
 
     /// <summary>
+    /// 本轮调用的**真实用量**（provider 回报）。每一轮成功调用后发一次。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是账，可以对账。</b>数值直接来自 provider 的 <c>usage</c> 字段，
+    /// 不是估算——所以它能用来算成本、比对账单。
+    /// <para>
+    /// <b>与 <see cref="ContextUsageReported"/> 的区别</b>：那个是"上下文装了多满"，
+    /// 这个是"这次调用花了多少"。两者数值不同（前者含缓存命中、后者是计费口径），
+    /// 用途也不同。**混用会让成本统计出错**，所以拆成两个事件。
+    /// </para>
+    /// <para>
+    /// <b>不出现的两种情况</b>：provider 没有回报 usage；本轮流式输出中途失败。
+    /// 宿主不能把它当作每轮必然发出的信号。
+    /// </para>
+    /// </remarks>
+    /// <param name="InputTokens">输入 token（含缓存命中部分）。未知时 null。</param>
+    /// <param name="OutputTokens">输出 token。未知时 null。</param>
+    /// <param name="CacheReadTokens">从缓存读取的输入 token。未知时 null。</param>
+    /// <param name="CacheWriteTokens">写入缓存的 token。未知时 null。</param>
+    /// <param name="TotalTokens">provider 报告的合计。未知时 null。</param>
+    public sealed record UsageReported(
+        int? InputTokens,
+        int? OutputTokens,
+        int? CacheReadTokens,
+        int? CacheWriteTokens,
+        int? TotalTokens) : AgentEvent;
+
+    /// <summary>
+    /// 本轮请求前上下文的**估算**构成。**这是估算，不是实测。**
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么必须是 SDK 提供</b>：三项里有两项宿主拿不到——
+    /// <list type="bullet">
+    /// <item><b>系统提示词</b>：SDK 拼的，宿主看不到最终文本。</item>
+    /// <item><b>工具定义</b>：SDK 在构造请求时把 <c>IAgentTool</c> 序列化成 schema，
+    /// 宿主手里只有工具对象。要自己算就得重做一遍序列化，而那必然与
+    /// 真正发出去的不一致。</item>
+    /// <item><b>对话消息</b>：这个宿主能算，但只有 SDK 能把三项凑成总数。</item>
+    /// </list>
+    /// <para>
+    /// <b>名字与文档都必须带"估算"</b>。它的用途是显示"上下文由什么构成"
+    /// （见 dsh 的 <c>contextBreakdown</c>，语义相同）。**不要拿它对账**——
+    /// 对账用 <see cref="UsageReported"/>。
+    /// </para>
+    /// <para>
+    /// <b>为什么 <see cref="EstimatedTotalTokens"/> 可为 null</b>：
+    /// 压缩刚发生、下一次模型响应还没回来时，唯一可信的真实用量是压缩**之前**的，
+    /// 那时给一个数只会误导。pi 在同样情形下返回 <c>null</c>
+    /// （<c>getContextUsage()</c> 的注释：<i>context token count is unknown until
+    /// the next LLM response</i>），这里照做。
+    /// </para>
+    /// </remarks>
+    /// <param name="SystemPromptTokens">最后一个非空系统提示词的估算。</param>
+    /// <param name="ToolDefinitionTokens">本次请求工具 schema 的估算。</param>
+    /// <param name="MessageTokens">其余可见历史的估算（含被压缩掉的摘要消息）。</param>
+    /// <param name="EstimatedTotalTokens">
+    /// 三项之和，即"下一个请求大概会发多少"。压缩后尚未获得新用量时为 null。
+    /// </param>
+    /// <param name="VerifiedInputTokens">
+    /// provider 最近一次回报的**真实**输入 token。有它时
+    /// <paramref name="EstimatedTotalTokens"/> 以它为基准加上后续增量，
+    /// 比纯估算准得多。null 表示还没有任何可信基准。
+    /// </param>
+    /// <param name="ContextWindowTokens">模型原始上下文窗口，供显示分母。</param>
+    public sealed record ContextUsageReported(
+        int SystemPromptTokens,
+        int ToolDefinitionTokens,
+        int MessageTokens,
+        int? EstimatedTotalTokens,
+        int? VerifiedInputTokens,
+        int ContextWindowTokens) : AgentEvent
+    {
+        /// <summary>
+        /// 占上下文窗口的比例（0..1）。总量未知时为 null。
+        /// </summary>
+        /// <remarks>
+        /// <b>分母是窗口不是压缩预算</b>——这一点与 pi 一致
+        /// （<c>percent = tokens / contextWindow</c>）。用户看的是"这个模型的窗口
+        /// 用了多少"，而压缩预算是内部判据，把它当分母会让百分比虚高。
+        /// </remarks>
+        public double? WindowRatio => EstimatedTotalTokens is { } total && ContextWindowTokens > 0
+            ? (double)total / ContextWindowTokens
+            : null;
+    }
+
+    /// <summary>
     /// 上下文已压缩。宿主应如实展示这件事：压缩是有损的，
     /// 用户需要知道"模型看到的不再是完整历史"。
     /// </summary>
