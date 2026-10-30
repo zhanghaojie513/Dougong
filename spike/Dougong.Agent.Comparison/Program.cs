@@ -186,6 +186,10 @@ public static class Program
         if (args.FirstOrDefault() == "doctor")
             return await DoctorChecks.RunAsync();
 
+        // 多 provider：配置解析、密钥不入盘、环境变量优先、/model 切换。
+        if (args.FirstOrDefault() == "provider")
+            return await ProviderChecks.RunAsync();
+
         if (args.FirstOrDefault() == "report")
             return await ReportChecks.RunAsync();
 

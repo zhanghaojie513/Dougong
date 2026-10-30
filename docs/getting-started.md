@@ -325,9 +325,23 @@ REM Windows cmd
 set DOUGONG_PROVIDER_PROTOCOL=anthropic
 ```
 
-> **密钥只从环境变量读，本项目的任何文件都不会保存它。** 这是刻意的：
-> 配置文件会进 git、进备份、进日志。关掉终端后这些 `export` 就失效了，
-> 下次要重新设（或者写进你的 shell 配置文件，那由你自己决定）。
+> **密钥只从环境变量读，本项目的任何文件都不会保存它。** 这条仍然成立：
+> 关掉终端后这些 `export` 就失效了，下次要重新设（或者写进你的 shell 配置文件，
+> 那由你自己决定）。
+>
+> 端点、模型、协议**可以**写进配置文件 `~/.dougong/config.toml`——那里面只有
+> 密钥的**变量名**，没有值。想配多个 provider 或省去每次 export 三个变量时用：
+>
+> ```toml
+> default_provider = "deepseek"
+>
+> [providers.deepseek]
+> base_url = "https://api.deepseek.com"
+> model    = "deepseek-chat"
+> key_env  = "DEEPSEEK_API_KEY"   # 变量名，不是密钥本身
+> ```
+>
+> 环境变量仍优先于配置文件。`key_env` 若写成密钥值会被硬拒并提示改写变量名。
 
 ### 6.3 先确认配置对不对
 

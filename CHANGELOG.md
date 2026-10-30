@@ -23,10 +23,45 @@
 
 ## [0.1.3-alpha.1] — 2026-10-30
 
-本版把三处「配置错要到运行时才炸」的静默失效改成装配期失败，
-并把压缩预算的判据收敛到单一来源。
+本版做两件事：把三处「配置错要到运行时才炸」的静默失效改成装配期失败，
+并把压缩预算的判据收敛到单一来源；同时引入**多 provider 配置**
+（配置文件为主、环境变量覆盖），密钥仍然只进环境变量。
 
 ### Added
+
+- **多 provider：`ProviderCatalog` + `ProviderConfigFile` + `config.toml`**。
+  ```toml
+  default_provider = "deepseek"
+
+  [providers.deepseek]
+  base_url = "https://api.deepseek.com"
+  wire_api  = "openai"
+  key_env   = "DEEPSEEK_API_KEY"   # 变量名，不是值
+  model     = "deepseek-chat"
+  ```
+  - **密钥策略不变，但配置文件终于可以存在了**。此前「密钥只从环境变量读」
+    被实现成「没有任何配置文件」——两件事被绑在一起。现在配置里只放
+    `key_env`（变量名），密钥值仍只从环境变量取，于是配置文件可以进 git、
+    进备份、进日志。`key_env` 若写成密钥值会被**硬拒**并提示改写变量名；
+    配套验证用唯一标记串跑完整 `--doctor`，断言输出与配置文件都不含它。
+  - **环境变量 > 配置文件**，覆盖粒度是整个 provider（不是单个字段）。
+    覆盖时配置文件里的其它 provider 保留，`/model` 列表不会凭空少一批。
+  - **`DOUGONG_PROVIDER_CONFIG`** 可整体改配置路径。`GetFolderPath(UserProfile)`
+    走操作系统 Known Folder API 且**不读 `USERPROFILE`**，没有这个开关就无法
+    在不碰真实用户目录的前提下验证配置。
+  - 内置预设 `deepseek` / `openai` / `anthropic`：**只有** `base_url`、
+    `wire_api`、`key_env` 三个字段，**没有模型名**（同一端点的可用模型会变，
+    写死会让用户拿到 404）。边界判据见 `goal.md` §3「反目标的边界」——
+    这是端点地址表，不是 provider 矩阵。
+
+- **`/model`：会话内切换 provider**。列全部 provider（含密钥是否已设置，
+  **绝不显示值**），`/model <名字>` 切换。切换换的是连接器
+  （`SwappableChatClient`）而不是重建运行时——重建会把内核租约、MCP 连接
+  与排空状态一起拆掉。切换前同时检查模型名与密钥，**两条一起报**，
+  避免用户补一条试一轮。只在本次会话有效，退出后回到 `default_provider`。
+
+- **`ProviderCatalog.ProviderPreset` / `ChatClientFactory.TryResolve`**：
+  配置解析的公开入口，宿主（桌面端等）可直接复用，不必各写一遍。
 
 - **`ContextBudgetValidation.Check`：压缩预算校验的可展示结论**。
   返回 `ContextBudgetVerdict(IsUsable, IsEnabled, Detail, Hint)`，不抛异常。
@@ -39,6 +74,17 @@
   - 窗口为 0 时返回 `IsUsable: true, IsEnabled: false`——
     「没配窗口 = 不压缩」是合法状态，不是错误。
 
+- **`SlidingWindowCompactor` 的四个默认值改成公开常量**
+  （`DefaultTriggerRatio` / `DefaultRetainRatio` / `DefaultPreservedHead` /
+  `DefaultPreservedTail`），并暴露实例的 `TriggerRatio` / `RetainRatio`。
+  宿主展示"当前策略"时只能读这里；此前它们只存在于参数表字面量里，
+  宿主想看只能自己抄一份，而抄出来的副本不会随 SDK 改。
+
+- **`DOUGONG_COMPACT_TRIGGER_RATIO` / `DOUGONG_COMPACT_RETAIN_RATIO`**：
+  压缩比例的覆盖入口。此前的两个比例**无调用点、无环境变量**，
+  用户被隐式默认（0.75 / 0.16）支配，既看不到也改不了。
+  `/status`、首页与 `--doctor` 现在都报出当前策略。
+
 - **`TokenBudget.DefaultOverheadTokens`**：预留量的单一常量。
   此前 `CompactionInput` 的参数默认值与 `ContextLimits.OverheadTokens`
   各写了一个字面量 `512`，加上宿主抄的那一份共三处副本。
@@ -48,6 +94,24 @@
   而不是静默当成「未配置」——静默回退到不压缩最危险，用户以为开了。
 
 ### Changed
+
+- **`--doctor` 的「provider 配置」改走 `ChatClientFactory.TryResolve`**，
+  与 REPL / ACP 同一路径。此前各处各读一遍环境变量，自检说「没问题」
+  而实际启动失败是必然会发生的事。现在报出：当前 provider、模型、协议、
+  端点、密钥变量是否已设置、还有几个可选、来源（配置文件或环境变量）。
+- **`/status` 增加压缩策略一行**（触发 / 保留比例），仅在启用压缩时显示。
+- **ACP 模式也接受配置文件**，与 REPL 同一解析路径——两个入口的 provider
+  来源必须一致，否则会出现「REPL 能连、ACP 连不上」这类只在协议形态上
+  暴露的怪事。
+
+### Breaking
+
+- **`DOUGONG_PROVIDER_*` 环境变量不再是唯一入口**，但仍是最高优先级；
+  只设环境变量的现有用法**行为不变**。此条列出是因为文档与报错文案都变了：
+  缺配置时的提示从「请设置三个环境变量」改为「写配置文件，或设环境变量」。
+- **`Dougong.Ai` 新增依赖 `Tomlyn 2.10.1`**（内核仍零第三方依赖）。
+  不手写解析器的理由：转义、多行字符串、数组、内联表都容易写出解析偏差，
+  而偏差表现为「读到的值和文件里写的不一样」，排查成本远高于一个依赖。
 
 - **`ContextLimits` 增加三参数构造函数，构造时即校验**。
   `new ContextLimits(4_000, 4_096)` 现在会在构造处抛
@@ -72,6 +136,22 @@
    而错的两个方向代价不对称（填小过早压缩，填大永不触发）
 
 所以本版只硬化「配置不合法要早炸」，不动「没配置就不启用」。
+
+### 为什么现在才让配置文件存在
+
+此前 README 与 `getting-started.md` 都写着「任何文件都不会保存密钥」，
+而实际实现是「**没有任何配置文件**」。这两条被绑在一起了，但它们是两件事：
+
+- **密钥不能落盘** —— 这条不可让渡，且现在仍然成立
+- **端点、模型、协议不能落盘** —— 这条从来没有理由
+
+把端点信息也逼进环境变量，代价是多 provider 根本无从表达：
+`FromEnvironment()` 只能返回一个配置。Codex 的 `env_key`、dsh 的
+`CredentialRef`、Hermes 的 `key_env` 三家用的是同一个解法——
+**配置里放变量名，值仍从环境取**。我们照做，于是那个"刻意"的理由
+（配置文件会进 git、进备份、进日志）不再成立：进 git 的只有变量名。
+
+这条边界的判据也顺带写进了 `goal.md` §3：端点地址表不是 provider 矩阵。
 
 ## [0.1.2-alpha.2] — 2026-10-30
 

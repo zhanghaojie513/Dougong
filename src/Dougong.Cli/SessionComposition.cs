@@ -51,6 +51,72 @@ public sealed class SessionComposition
     }
 
     /// <summary>
+    /// 从 <c>DOUGONG_COMPACT_TRIGGER_RATIO</c> 与 <c>DOUGONG_COMPACT_RETAIN_RATIO</c>
+    /// 读取压缩比例覆盖。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么需要这个入口</b>：这两个比例此前只有构造参数上的字面量，
+    /// 没有任何调用点传值，也没有环境变量——用户完全被隐式默认（0.75 / 0.16）支配，
+    /// 既看不到也改不了。压缩行为直接决定"会话能跑多长"和"多久花一次摘要调用"，
+    /// 属于必须可见可调的配置。
+    /// <para>
+    /// <b>返回错误而不抛</b>：<c>--doctor</c> 要把非法配置报成一条失败项，
+    /// 而装配期要硬失败。判据共享、控制流不同，与
+    /// <see cref="ContextBudgetValidation"/> 的分工一致。
+    /// </para>
+    /// <para>
+    /// 只覆盖比例，不覆盖头尾条数：那两个是结构约束（保证工具调用与结果不被拆开），
+    /// 不是调参项。
+    /// </para>
+    /// </remarks>
+    /// <param name="trigger">触发比例；未设置时为 <see cref="SlidingWindowCompactor.DefaultTriggerRatio"/>。</param>
+    /// <param name="retain">保留比例；未设置时为 <see cref="SlidingWindowCompactor.DefaultRetainRatio"/>。</param>
+    /// <param name="error">非法时的一句话说明；合法时为 null。</param>
+    public static bool TryReadCompactionRatios(
+        out double trigger, out double retain, out string? error)
+    {
+        trigger = SlidingWindowCompactor.DefaultTriggerRatio;
+        retain = SlidingWindowCompactor.DefaultRetainRatio;
+        error = null;
+
+        if (!TryReadRatio("DOUGONG_COMPACT_TRIGGER_RATIO", ref trigger, out error)) return false;
+        if (!TryReadRatio("DOUGONG_COMPACT_RETAIN_RATIO", ref retain, out error)) return false;
+
+        // 保留必须严格小于触发，否则压缩后仍在阈值之上——每次调用都再压一次，
+        // 摘要要花模型调用，表现为会话越来越慢、账单越来越高，且没有任何错误提示。
+        if (retain >= trigger)
+        {
+            error = $"保留比例 {retain} 必须小于触发比例 {trigger}；"
+                + "否则压缩后仍越过阈值，每次调用都会重复压缩。";
+            return false;
+        }
+
+        return true;
+
+        static bool TryReadRatio(string name, ref double value, out string? error)
+        {
+            error = null;
+            var raw = Environment.GetEnvironmentVariable(name);
+
+            // 没设 ≠ 设错。空字符串按未设置处理，与窗口变量的读法保持一致。
+            if (string.IsNullOrWhiteSpace(raw)) return true;
+
+            // 设了但不是 (0,1) 的数：必须报出来。静默回退到默认值最危险——
+            // 用户以为自己调过了，而实际跑的是默认策略。
+            if (!double.TryParse(raw, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+                || parsed <= 0 || parsed >= 1)
+            {
+                error = $"{name}='{raw}' 不是 (0, 1) 之间的数";
+                return false;
+            }
+
+            value = parsed;
+            return true;
+        }
+    }
+
+    /// <summary>
     /// 按 <c>DOUGONG_MEMORY</c> 决定记忆目录。
     /// </summary>
     /// <remarks>
@@ -131,10 +197,26 @@ public sealed class SessionComposition
             ? window
             : 0;
 
+        // 比例配置错要在装配时炸，不能带病启动：
+        // 保留 ≥ 触发时压缩后仍在阈值之上，表现是每轮都压一次——
+        // 会话越来越慢、账单越来越高，而界面上没有任何错误。
+        if (!TryReadCompactionRatios(out var triggerRatio, out var retainRatio, out var error))
+            throw new InvalidOperationException($"压缩比例配置无效：{error}");
+
         return new SessionComposition(
             sessionId, workspace, client, approver,
-            shellEnabled, contextWindow, ParseMcpServers(), memory, memoryStore);
+            shellEnabled, contextWindow, ParseMcpServers(), memory, memoryStore)
+        {
+            TriggerRatio = triggerRatio,
+            RetainRatio = retainRatio,
+        };
     }
+
+    /// <summary>本次会话的压缩触发比例。</summary>
+    public double TriggerRatio { get; private init; } = SlidingWindowCompactor.DefaultTriggerRatio;
+
+    /// <summary>本次会话的压缩保留比例。</summary>
+    public double RetainRatio { get; private init; } = SlidingWindowCompactor.DefaultRetainRatio;
 
     /// <summary>本次会话是否启用了 shell 工具。</summary>
     public bool ShellEnabled => _shellEnabled;
@@ -249,7 +331,9 @@ public sealed class SessionComposition
                 ContextWindowTokens = _contextWindow,
                 MaxOutputTokens = MaxOutputTokens,
             },
-            new SlidingWindowCompactor(preservedHead: 2, preservedTail: 6),
+            // 头尾条数用默认值（结构约束），比例用装配期读到的值——
+            // 不在这里重新读环境变量，否则 --doctor 校验的和实际用的可能不是同一组数。
+            new SlidingWindowCompactor(triggerRatio: TriggerRatio, retainRatio: RetainRatio),
             (transcript, ct) => SummarizeAsync(effective, transcript, ct))
         {
             Memory = Memory,

@@ -118,4 +118,45 @@ public static class ChatClientFactory
             MessagesPath = Environment.GetEnvironmentVariable("DOUGONG_ANTHROPIC_PATH"),
         };
     }
+
+    /// <summary>
+    /// 按「配置文件 → 环境变量覆盖」解析出本次要用的 provider。
+    /// </summary>
+    /// <remarks>
+    /// <b>优先级：环境变量 &gt; 配置文件</b>。理由是排错场景——
+    /// 用户改了配置却不生效时，最常见的原因是他 shell 里还有一个旧的 export。
+    /// 让环境变量赢，就能用"临时 export 一个值"来验证配置本身对不对；
+    /// 反过来则必须先清掉环境变量才能试配置，多一步且不直观。
+    /// <para>
+    /// <b>环境变量的覆盖粒度是整个 provider，不是单个字段</b>：它本来就是
+    /// "这次换一个端点跑"的意思。逐字段覆盖会造出配置文件的协议 + 环境变量的端点
+    /// 这类通常不成立的组合。
+    /// </para>
+    /// <para>
+    /// 全部来源都没有时返回 null——调用方据此报"未配置"，而不是拿空端点去发请求。
+    /// </para>
+    /// </remarks>
+    /// <param name="configPath">配置文件路径；null 用 <see cref="ProviderConfigFile.DefaultPath"/>。</param>
+    /// <param name="catalog">解析出的目录；无任何配置时为 null。</param>
+    /// <param name="error">配置文件有错时的诊断；成功时为 null。</param>
+    public static string? TryResolve(
+        string? configPath, out ProviderCatalog? catalog, out string? error)
+    {
+        catalog = null;
+        error = ProviderConfigFile.TryLoad(configPath, out var fromFile);
+        if (error is not null) return error;
+
+        // 环境变量优先：覆盖**选中项**，但不丢弃配置文件里的其它 provider。
+        // 否则 /model 的列表会凭空少一批，用户会以为配置没被读到。
+        if (FromEnvironment() is { } fromEnv)
+        {
+            catalog = fromFile is null
+                ? ProviderCatalog.Create([fromEnv], fromEnv.Name, sourcePath: "环境变量")
+                : fromFile.WithSelectedOverride(fromEnv);
+            return null;
+        }
+
+        catalog = fromFile;
+        return null;
+    }
 }

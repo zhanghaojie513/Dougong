@@ -123,8 +123,9 @@ export DOUGONG_PROVIDER_KEY=<密钥>
 # export DOUGONG_PROVIDER_PROTOCOL=anthropic
 ```
 
-> 密钥只从环境变量读取，本项目不写任何配置文件。这是刻意的：
-> 配置文件会进 git、进备份、进日志。
+> 密钥只从环境变量读取，本项目的任何文件都不会保存它。
+> 配置文件 `~/.dougong/config.toml` 里只有密钥的**变量名**（`key_env`），
+> 写成密钥值会被硬拒。
 
 ### 3.2 `401` / `403`：密钥无效或无权限
 

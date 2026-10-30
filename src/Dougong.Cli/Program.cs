@@ -116,17 +116,47 @@ public static class Program
             return 2;
         }
 
-        var config = ChatClientFactory.FromEnvironment();
-        if (config is null)
+        // provider 来源：配置文件为主，环境变量整体覆盖（见 ChatClientFactory.TryResolve）。
+        // 配置文件写错时必须报出**具体哪一行/哪个键**，不能静默回退到环境变量——
+        // 那样用户改了配置却不生效，而屏幕上什么都看不出来。
+        var resolveError = ChatClientFactory.TryResolve(null, out var catalog, out _);
+        if (resolveError is not null)
         {
-            Console.Error.WriteLine(
-                "缺少 provider 配置。请设置 DOUGONG_PROVIDER_BASE / KEY / MODEL 环境变量。");
+            Console.Error.WriteLine($"provider 配置有问题：{resolveError}");
+            Console.Error.WriteLine("运行 dougong --doctor 查看完整诊断。");
             return 2;
         }
 
-        if (Environment.GetEnvironmentVariable("DOUGONG_PROVIDER_KEY") is not { Length: > 0 })
+        if (catalog is null)
         {
-            Console.Error.WriteLine("缺少 DOUGONG_PROVIDER_KEY 环境变量。");
+            Console.Error.WriteLine(
+                "没有可用的 provider。二选一：");
+            Console.Error.WriteLine(
+                $"  · 写配置文件 {ProviderConfigFile.DefaultPath}（推荐，见 --help）");
+            Console.Error.WriteLine(
+                "  · 或设 DOUGONG_PROVIDER_BASE / MODEL / KEY 环境变量");
+            return 2;
+        }
+
+        var config = catalog.Selected;
+        if (string.IsNullOrWhiteSpace(config.Model))
+        {
+            Console.Error.WriteLine(
+                $"provider '{config.Name}' 没有配置 model。");
+            Console.Error.WriteLine(
+                $"在配置文件里给 [providers.{config.Name}] 加一行 model = \"<模型名>\"，"
+                + "或设 DOUGONG_PROVIDER_MODEL。");
+            return 2;
+        }
+
+        // 密钥：有 key_env 就必须能在环境里取到。取不到时报"缺哪个变量"，
+        // 而不是笼统说配置不全——用户需要知道该 export 什么。
+        if (config.ApiKeyEnvironmentVariable is { Length: > 0 } keyName
+            && Environment.GetEnvironmentVariable(keyName) is not { Length: > 0 })
+        {
+            Console.Error.WriteLine(
+                $"provider '{config.Name}' 需要环境变量 {keyName}，但它没有设置。");
+            Console.Error.WriteLine($"  export {keyName}='<你的密钥>'");
             return 2;
         }
 
@@ -222,6 +252,13 @@ public static class Program
             ? window
             : 0;
 
+        // 首页也报出压缩策略：默认值（75% / 16%）是一个具体选择，不是"没配置"。
+        // 非法配置这里不报错——装配期会硬失败，--doctor 也会单独列出，不重复打扰。
+        var policy = SessionComposition.TryReadCompactionRatios(
+                out var triggerRatio, out var retainRatio, out _)
+            ? $"；触发 {triggerRatio:P0} / 保留 {retainRatio:P0}"
+            : string.Empty;
+
         // 首页三档：Rich 出大字，Narrow 出单行，Plain 输出与改造前逐字一致的原文。
         // 原文由这里传入而不是 Banner 自己拼——"兼容"这件事不能靠猜。
         Banner.Print(
@@ -236,7 +273,7 @@ public static class Program
                 $"会话={sessionPath}",
                 $"shell 工具={(shellEnabled ? "已启用" : "未启用（DOUGONG_SHELL=1 开启）")}",
                 contextWindow > 0
-                    ? $"上下文压缩=已启用（窗口 {contextWindow} tokens）"
+                    ? $"上下文压缩=已启用（窗口 {contextWindow} tokens{policy}）"
                     : "上下文压缩=未启用（DOUGONG_CONTEXT_WINDOW 开启）",
             ]);
 
@@ -259,10 +296,18 @@ public static class Program
         IToolApprover approver = AutoApproveApprover.IsEnabled
             ? new AutoApproveApprover()
             : new ConsoleApprover();
-        var composition = await SessionComposition.CreateAsync(
-            sessionId, workspace, ChatClientFactory.Create(config), approver,
-            SessionComposition.MemoryDirectoryFromEnvironment(sessionDir));
+        // 会话中换模型的载体：换连接器而不是重建运行时。
+        // 重建会把内核租约、MCP 连接与排空状态一起拆掉，代价远大于一次赋值。
+        // **只建一个连接器**：可切换客户端包住它，装配拿到的也是它，
+        // 于是"换模型"对摘要器等所有下游同时生效，不会出现半新半旧。
+        var swappable = new SwappableChatClient(ChatClientFactory.Create(config));
+        var models = catalog;
+        var activeProvider = config.Name;
 
+        var composition = await SessionComposition.CreateAsync(
+            sessionId, workspace, swappable, approver,
+            SessionComposition.MemoryDirectoryFromEnvironment(sessionDir));
+        // 内核接线（G14）：默认启用——运行能力由内核解析，宿主不直接持有
         // 内核接线（G14）：默认启用——运行能力由内核解析，宿主不直接持有
         // dispatcher/runtime 实例。DOUGONG_KERNEL=0 可退回直连路径，
         // 保留给"怀疑内核接线本身有问题"时的对照手段。
@@ -370,7 +415,9 @@ public static class Program
 
             if (input.StartsWith('/'))
             {
-                if (!HandleCommand(input, messages, sessionPath, ledger, sessionId, composition))
+                if (!HandleCommand(
+                        input, messages, sessionPath, ledger, sessionId, composition,
+                        swappable, models, ref activeProvider))
                 {
                     foreach (var registry in mcpRegistries) registry.Dispose();
                     foreach (var mcpClient in mcpClients) await mcpClient.DisposeAsync();
@@ -492,9 +539,21 @@ public static class Program
 
     private static bool HandleCommand(
         string input, List<AgentMessage> history, string sessionPath,
-        UsageLedger ledger, string sessionId, SessionComposition composition)
+        UsageLedger ledger, string sessionId, SessionComposition composition,
+        SwappableChatClient swappable, ProviderCatalog models, ref string activeProvider)
     {
-        switch (input.Trim().ToLowerInvariant())
+        var trimmed = input.Trim();
+
+        // /model 带参数，不能先 ToLowerInvariant 整串再匹配——
+        // provider 名是用户起的，大小写有意义（虽然查找时忽略），
+        // 但整串小写会让回显的名字与用户写的不一致。
+        if (trimmed.StartsWith("/model", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleModelCommand(trimmed, swappable, models, ref activeProvider);
+            return true;
+        }
+
+        switch (trimmed.ToLowerInvariant())
         {
             case "/exit":
             case "/quit":
@@ -507,6 +566,7 @@ public static class Program
                 Output.Line("  /where    显示当前会话文件");
                 Output.Line("  /usage    显示本会话的 token 用量与调用次数");
                 Output.Line("  /memory   显示 L1 偏好记忆（含未启用的候选）");
+                Output.Line("  /model    列出全部 provider（/model <名字> 切换）");
                 return true;
 
             case "/history":
@@ -533,6 +593,119 @@ public static class Program
                 Output.Line($"  未知命令：{input}");
                 return true;
         }
+    }
+
+    /// <summary>
+    /// <c>/model</c>：列出或切换 provider。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么只列出不删除</b>：这里改的是运行中的选择，不改配置文件。
+    /// 会话结束就回到配置里的 <c>default_provider</c>——用户临时试一个端点，
+    /// 不该被永久记住。真要改默认值就去改配置，那是有意识的动作。
+    /// <para>
+    /// <b>密钥状态只报"有没有找到"，绝不打印值</b>。这条与
+    /// <c>--doctor</c> 的密钥检查同一口径，见 architecture.md §5.1。
+    /// </para>
+    /// </remarks>
+    private static void HandleModelCommand(
+        string input, SwappableChatClient swappable, ProviderCatalog models, ref string activeProvider)
+    {
+        var argument = input.Length > "/model".Length
+            ? input["/model".Length..].Trim()
+            : string.Empty;
+
+        if (argument.Length == 0)
+        {
+            PrintModelList(models, activeProvider);
+            return;
+        }
+
+        // `/model <名字>`：切换。名字来自用户配置，大小写不敏感查找。
+        var target = models.Find(argument);
+        if (target is null)
+        {
+            Output.Line($"  没有名为 '{argument}' 的 provider。");
+            PrintModelList(models, activeProvider);
+            return;
+        }
+
+        // 换之前必须先确认新 provider 能真的用：缺模型名或密钥时直接换过去，
+        // 会让下一次对话以一个看不出原因的 401/404 失败。
+        // **两项都要查**，不能查到一个就返回：只报模型不报密钥的话，
+        // 用户补上 model 再切一次，才被告知还缺密钥——两轮才能配好。
+        var problems = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(target.Model))
+        {
+            problems.Add(
+                $"没有配置 model（在配置文件的 [providers.{target.Name}] 段里加 "
+                + "model = \"<模型名>\"）");
+        }
+
+        if (target.ApiKeyEnvironmentVariable is { Length: > 0 } keyName
+            && Environment.GetEnvironmentVariable(keyName) is not { Length: > 0 })
+        {
+            problems.Add($"需要环境变量 {keyName}，但它没有设置（export {keyName}='<你的密钥>'）");
+        }
+
+        if (problems.Count > 0)
+        {
+            Output.Line($"  provider '{target.Name}' 不能切换：");
+            foreach (var problem in problems) Output.Line($"    · {problem}");
+            return;
+        }
+
+        var next = ChatClientFactory.Create(target);
+        var previous = swappable.Swap(next);
+        activeProvider = target.Name;
+
+        // 释放旧连接器：它是 HttpClientChatClient，持有自己的 HttpClient。
+        // 不释放会随切换次数累积。
+        // IChatClient 本身没有实现 IAsyncDisposable，所以要按类型判断——
+        // 直接 .DisposeAsync() 编译不过，而强转后不判空会在第三方连接器上炸。
+        if (!ReferenceEquals(previous, next))
+        {
+            if (previous is IAsyncDisposable asyncDisposable)
+                _ = asyncDisposable.DisposeAsync();
+            else if (previous is IDisposable disposable)
+                disposable.Dispose();
+        }
+
+        Output.Line($"  已切到 provider '{target.Name}'：{target.Model}"
+            + $"（{target.Protocol}，{target.BaseUrl}）");
+        Output.Line("  本次会话有效；退出后回到配置里的 default_provider。");
+    }
+
+    /// <summary>列出全部 provider 与当前选中项。</summary>
+    private static void PrintModelList(ProviderCatalog models, string activeProvider)
+    {
+        Output.Line($"  provider 列表（来源：{models.SourcePath ?? "内置预设"}）：");
+        Output.Line();
+
+        foreach (var provider in models.Providers)
+        {
+            var active = string.Equals(provider.Name, activeProvider, StringComparison.OrdinalIgnoreCase);
+            var marker = active ? "▶" : " ";
+
+            // 模型名可能为空（预设没有模型名），如实显示"未配置"而不是留白——
+            // 留白看不出是"没配"还是"显示被截断"。
+            var model = string.IsNullOrWhiteSpace(provider.Model) ? "未配置模型" : provider.Model;
+
+            // 密钥状态：只说有没有，不说是什么。
+            var keyState = provider.ApiKeyEnvironmentVariable switch
+            {
+                null or "" => "无需密钥",
+                { } name when Environment.GetEnvironmentVariable(name) is { Length: > 0 }
+                    => $"{name} 已设置",
+                { } name => $"{name} 未设置",
+            };
+
+            Output.Line($"  {marker} {provider.Name,-16} {model,-24} {provider.Protocol,-14} {keyState}");
+        }
+
+        Output.Line();
+        Output.Line("  切换：/model <名字>");
+        Output.Line($"  配置文件：{ProviderConfigFile.DefaultPath}");
     }
 
     /// <summary>
@@ -642,22 +815,35 @@ public static class Program
         Output.Line();
         Output.Line("第一次用：先跑 dougong --doctor 确认环境。");
         Output.Line();
-        Output.Line("需要三个环境变量（密钥只从环境变量读，不写入任何文件）：");
+        Output.Line($"provider 配置（推荐写 {ProviderConfigFile.DefaultPath}）：");
+        Output.Line("  default_provider = \"deepseek\"");
+        Output.Line("  [providers.deepseek]");
+        Output.Line("  base_url = \"https://api.deepseek.com\"");
+        Output.Line("  model    = \"deepseek-chat\"");
+        Output.Line("  key_env  = \"DEEPSEEK_API_KEY\"   # 变量名，不是密钥本身");
+        Output.Line();
+        Output.Line("  密钥只从环境变量读：export DEEPSEEK_API_KEY='...'");
+        Output.Line("  环境变量优先于配置文件。会话内 /model 可切换 provider。");
+        Output.Line();
+        Output.Line("也可全用环境变量（优先级最高）：");
         Output.Line("  DOUGONG_PROVIDER_BASE    服务地址，如 https://api.deepseek.com");
         Output.Line("  DOUGONG_PROVIDER_MODEL   模型名");
         Output.Line("  DOUGONG_PROVIDER_KEY     密钥");
         Output.Line();
         Output.Line("可选：");
+        Output.Line("  DOUGONG_PROVIDER_CONFIG    配置文件路径，默认 ~/.dougong/config.toml");
         Output.Line("  DOUGONG_PROVIDER_PROTOCOL  openai（默认）/ anthropic / responses");
         Output.Line("  DOUGONG_WORKSPACE          工作区目录，默认当前目录");
         Output.Line("  DOUGONG_SESSION_DIR        会话目录，默认 ~/.dougong/sessions");
         Output.Line("  DOUGONG_SHELL=1            启用 shell 工具（默认关闭）");
         Output.Line("  DOUGONG_MEMORY=1           启用 L1 偏好记忆（默认关闭）");
         Output.Line("  DOUGONG_CONTEXT_WINDOW     上下文窗口，设置后启用历史压缩");
+        Output.Line("  DOUGONG_COMPACT_TRIGGER_RATIO  压缩触发比例（默认 0.75）");
+        Output.Line("  DOUGONG_COMPACT_RETAIN_RATIO   压缩后保留比例（默认 0.16，须小于触发比例）");
         Output.Line("  DOUGONG_TUI=0              关闭底部活动行（默认在真终端里开启）");
         Output.Line("  DOUGONG_LOG=debug          分级日志：error/warn/info/debug");
         Output.Line();
-        Output.Line("对话中可用：/help  /status  /exit  /usage  /where  /memory");
+        Output.Line("对话中可用：/help  /status  /exit  /usage  /where  /memory  /model");
         Output.Line();
         Output.Line("文档：https://github.com/zhanghaojie513/Dougong");
     }
@@ -705,6 +891,13 @@ public static class Program
         Output.Line($"  上下文压缩: {(composition.ContextWindow > 0
             ? $"{composition.ContextWindow} tokens"
             : "未启用")}");
+        if (composition.ContextWindow > 0)
+        {
+            // 策略必须可见：两个比例直接决定"会话能跑多长"和"多久花一次摘要调用"，
+            // 此前它们只存在于构造参数的默认值里，用户既看不到也改不了。
+            Output.Line($"    策略    : 触发 {composition.TriggerRatio:P0}、"
+                + $"保留 {composition.RetainRatio:P0}（DOUGONG_COMPACT_*_RATIO 可调）");
+        }
         Output.Line($"  L1 记忆   : {(composition.Memory is null ? "未启用" : "已启用")}");
         Output.Line($"  MCP server: {composition.McpServers.Count} 个");
 
@@ -879,11 +1072,21 @@ public static class Program
     /// </remarks>
     private static async Task<int> RunAcpAgentAsync()
     {
-        var config = ChatClientFactory.FromEnvironment();
-        if (config is null)
+        // 与 REPL 入口走同一个解析路径：两个入口的 provider 来源必须一致，
+        // 否则会出现"REPL 能连、ACP 连不上"这类只有协议形态不同才暴露的怪事。
+        var acpResolveError = ChatClientFactory.TryResolve(null, out var acpCatalog, out _);
+        if (acpResolveError is not null)
+        {
+            Console.Error.WriteLine($"[acp] provider 配置有问题：{acpResolveError}");
+            return 2;
+        }
+
+        var config = acpCatalog?.Selected;
+        if (config is null || string.IsNullOrWhiteSpace(config.Model))
         {
             Console.Error.WriteLine(
-                "ACP 模式需要 DOUGONG_PROVIDER_BASE / KEY / MODEL 环境变量。");
+                "[acp] 没有可用的 provider：请写 ~/.dougong/config.toml，"
+                + "或设 DOUGONG_PROVIDER_BASE / MODEL / KEY 环境变量。");
             return 2;
         }
 

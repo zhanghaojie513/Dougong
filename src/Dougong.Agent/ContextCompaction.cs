@@ -17,11 +17,55 @@ namespace Dougong.Agent;
 /// </para>
 /// </remarks>
 public sealed class SlidingWindowCompactor(
-    int preservedHead = 2,
-    int preservedTail = 6,
-    double triggerRatio = 0.75,
-    double retainRatio = 0.16) : IContextCompactor
+    int preservedHead = SlidingWindowCompactor.DefaultPreservedHead,
+    int preservedTail = SlidingWindowCompactor.DefaultPreservedTail,
+    double triggerRatio = SlidingWindowCompactor.DefaultTriggerRatio,
+    double retainRatio = SlidingWindowCompactor.DefaultRetainRatio) : IContextCompactor
 {
+    /// <summary>默认保留开头条数。</summary>
+    public const int DefaultPreservedHead = 2;
+
+    /// <summary>默认保留最近条数。</summary>
+    public const int DefaultPreservedTail = 6;
+
+    /// <summary>
+    /// 默认触发比例：历史超过有效预算的这个比例就压缩。
+    /// </summary>
+    /// <remarks>
+    /// <b>必须是公开常量而不是构造参数上的字面量</b>：宿主要向用户展示
+    /// "当前策略是什么"，而它只能读到这里。此前这四个默认值只存在于
+    /// 参数表里，宿主想看只能自己抄一遍——抄出来的副本不会随 SDK 改而变。
+    /// <para>
+    /// <b>与 dsh 的偏差是有意的</b>：dsh 的 <c>thresholdRatio</c> 默认 0.8，
+    /// 这里取 0.75。原因是两者的阈值基数不同——dsh 的 headroom 默认 65 536
+    /// token，且它的比例乘在 <c>W − O</c> 上；我们的预留量是
+    /// <see cref="TokenBudget.DefaultOverheadTokens"/>（512），比例乘在
+    /// <c>W − O − 预留</c> 上。基数小得多，同样的 0.8 会让压缩明显更晚触发，
+    /// 而我们的估算偏保守、更早触发是安全方向。
+    /// </para>
+    /// <para>
+    /// 见过一次这个差异被当成 bug 提出来（"你说按 dsh 取值，但这里是 0.75"），
+    /// 所以写在这里：<b>对 dsh 的是 <c>retainRatio</c>，不是全部参数</b>。
+    /// </para>
+    /// </remarks>
+    public const double DefaultTriggerRatio = 0.75;
+
+    /// <summary>
+    /// 默认保留比例：压缩后最近历史降到有效预算的这个比例。
+    /// </summary>
+    /// <remarks>
+    /// 0.16 与 dsh 的 <c>retainRatio</c> 一致，按 1M 窗口设计：触发 0.75、
+    /// 保留 0.16，压缩后降到 0.16–0.2，能跑很久再触发。
+    /// 按 128K 那种小窗口反推会得出偏小的值，而 128K 已不是典型值。
+    /// <para>
+    /// <b>数值取自 dsh，基数不是</b>：dsh 乘在 <c>W − O</c> 上，
+    /// 我们乘在 <c>W − O − 预留</c> 上（见 <see cref="DefaultTriggerRatio"/> 的说明）。
+    /// 所以同一个 0.16 在两边折算出的绝对 token 数并不相同——
+    /// 只对齐数值而不对齐基数是这里的一处已知偏差，不是漏改。
+    /// </para>
+    /// </remarks>
+    public const double DefaultRetainRatio = 0.16;
+
     /// <summary>保留最近历史的条数下限。</summary>
     /// <remarks>
     /// <b>条数下限与 token 比例互补，不是二选一</b>：小窗口下 16% 可能只够
@@ -58,6 +102,16 @@ public sealed class SlidingWindowCompactor(
     private readonly int _preservedHead = preservedHead >= 0
         ? preservedHead
         : throw new ArgumentOutOfRangeException(nameof(preservedHead), "保留条数不能为负。");
+
+    /// <summary>实际生效的触发比例。</summary>
+    /// <remarks>
+    /// <b>读的是校验后的值，不是构造参数原样透出</b>：宿主展示"当前策略"
+    /// 时必须与压缩器真正用的数一致，否则又是一处会漂移的副本。
+    /// </remarks>
+    public double TriggerRatio => _triggerRatio;
+
+    /// <summary>实际生效的保留比例。</summary>
+    public double RetainRatio => _retainRatio;
 
     public CompactionPlan? Plan(CompactionInput input, bool force = false)
     {

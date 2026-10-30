@@ -39,6 +39,10 @@ public static class DoctorChecks
             ImpossibleWindowIsFlaggedAsync);
         failures += await CheckAsync("doctor-rejects-malformed-context-window",
             MalformedWindowIsRejectedAsync);
+        failures += await CheckAsync("doctor-reports-compaction-strategy",
+            CompactionStrategyIsVisibleAsync);
+        failures += await CheckAsync("doctor-rejects-impossible-compaction-ratios",
+            ImpossibleRatiosAreRejectedAsync);
 
         Console.WriteLine(failures == 0
             ? "DOCTOR: ALL PASS"
@@ -294,6 +298,8 @@ public static class DoctorChecks
                      "DOUGONG_PROVIDER_KEY", "DOUGONG_PROVIDER_PROTOCOL",
                      "DOUGONG_WORKSPACE", "DOUGONG_SESSION_DIR", "DOUGONG_MEMORY",
                      "DOUGONG_CONTEXT_WINDOW",
+                     // 比例覆盖同理：本机若设了非法值，会把"默认策略"的断言带偏。
+                     "DOUGONG_COMPACT_TRIGGER_RATIO", "DOUGONG_COMPACT_RETAIN_RATIO",
                  })
         {
             startInfo.Environment.Remove(name);
@@ -681,6 +687,109 @@ public static class DoctorChecks
         // 必须是 [失败] 而不是 [通过]：静默回退到"未压缩"是本项要防的事。
         if (!result.Stdout.Contains("[失败] 上下文压缩", StringComparison.Ordinal))
             return $"非法窗口值没有报为失败项。stdout={Trim(result.Stdout)}";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 压缩策略（触发 / 保留比例）必须在自检里被报出来。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么这条重要</b>：两个比例此前只有构造参数的默认值，没有任何调用点、
+    /// 没有环境变量——用户被隐式默认（0.75 / 0.16）支配，既看不到也改不了。
+    /// 压缩策略直接决定"会话能跑多长"和"多久花一次摘要调用"，
+    /// 只写进代码而不报出来，等于一个不可见的策略在替用户做决定。
+    /// <para>
+    /// <b>必须同时验覆盖生效</b>：只断言"出现了策略字样"的话，
+    /// 把默认值硬编码进输出也能过。改成非默认值再看报出来的数，
+    /// 才能证明读到的是环境变量而不是常量。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> CompactionStrategyIsVisibleAsync()
+    {
+        var defaults = await RunDoctorAsync(new Dictionary<string, string?>
+        {
+            ["DOUGONG_CONTEXT_WINDOW"] = "1000000",
+        });
+
+        if (defaults.Stdout.Contains("不可行", StringComparison.Ordinal))
+            return $"窗口 1000000 是合法配置，却报不可行。stdout={Trim(defaults.Stdout)}";
+
+        // 措辞与格式：Doctor 里是 `策略 触发 75% / 保留 16%`。
+        if (!defaults.Stdout.Contains("触发 75%", StringComparison.Ordinal)
+            || !defaults.Stdout.Contains("保留 16%", StringComparison.Ordinal))
+        {
+            return $"自检没有报出压缩策略（应为触发 75% / 保留 16%）。"
+                + $"stdout={Trim(defaults.Stdout)}";
+        }
+
+        // 覆盖后必须跟着变：证明读的是环境变量，不是写死的默认值。
+        var overridden = await RunDoctorAsync(new Dictionary<string, string?>
+        {
+            ["DOUGONG_CONTEXT_WINDOW"] = "1000000",
+            ["DOUGONG_COMPACT_TRIGGER_RATIO"] = "0.6",
+            ["DOUGONG_COMPACT_RETAIN_RATIO"] = "0.2",
+        });
+
+        if (!overridden.Stdout.Contains("触发 60%", StringComparison.Ordinal)
+            || !overridden.Stdout.Contains("保留 20%", StringComparison.Ordinal))
+        {
+            return $"比例覆盖没有生效（应为触发 60% / 保留 20%）。"
+                + $"stdout={Trim(overridden.Stdout)}";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 保留比例不小于触发比例时，自检必须报失败并说清原因。
+    /// </summary>
+    /// <remarks>
+    /// <b>这种配置的危害为什么不直观</b>：压缩后仍在阈值之上，
+    /// 于是每轮都压一次。每次压缩要花一次模型调用——表现是会话越来越慢、
+    /// 账单越来越高，而界面上**没有任何错误**。用户只会觉得"这工具很慢"。
+    /// <para>
+    /// <b>两个方向都要测</b>：等于 和 大于 是两条不同的路径，
+    /// 只测一条可能漏掉另一条的判据。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> ImpossibleRatiosAreRejectedAsync()
+    {
+        var equal = await RunDoctorAsync(new Dictionary<string, string?>
+        {
+            ["DOUGONG_CONTEXT_WINDOW"] = "1000000",
+            ["DOUGONG_COMPACT_TRIGGER_RATIO"] = "0.5",
+            ["DOUGONG_COMPACT_RETAIN_RATIO"] = "0.5",
+        });
+
+        if (!equal.Stdout.Contains("[失败] 上下文压缩", StringComparison.Ordinal))
+            return $"保留 = 触发（0.5 / 0.5）没有报为失败项。stdout={Trim(equal.Stdout)}";
+
+        if (!equal.Stdout.Contains("必须小于触发比例", StringComparison.Ordinal))
+            return $"失败项没说清原因（保留必须小于触发）。stdout={Trim(equal.Stdout)}";
+
+        var greater = await RunDoctorAsync(new Dictionary<string, string?>
+        {
+            ["DOUGONG_CONTEXT_WINDOW"] = "1000000",
+            ["DOUGONG_COMPACT_TRIGGER_RATIO"] = "0.3",
+            ["DOUGONG_COMPACT_RETAIN_RATIO"] = "0.6",
+        });
+
+        if (!greater.Stdout.Contains("[失败] 上下文压缩", StringComparison.Ordinal))
+            return $"保留 > 触发（0.3 / 0.6）没有报为失败项。stdout={Trim(greater.Stdout)}";
+
+        // 越界值也必须拦：1.5 不是比例，静默回退到默认会让用户以为调过了。
+        var outOfRange = await RunDoctorAsync(new Dictionary<string, string?>
+        {
+            ["DOUGONG_CONTEXT_WINDOW"] = "1000000",
+            ["DOUGONG_COMPACT_RETAIN_RATIO"] = "1.5",
+        });
+
+        if (!outOfRange.Stdout.Contains("[失败] 上下文压缩", StringComparison.Ordinal))
+            return $"越界比例（1.5）没有报为失败项。stdout={Trim(outOfRange.Stdout)}";
+
+        if (!outOfRange.Stdout.Contains("不是 (0, 1) 之间的数", StringComparison.Ordinal))
+            return $"越界比例没报出具体原因。stdout={Trim(outOfRange.Stdout)}";
 
         return null;
     }

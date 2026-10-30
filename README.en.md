@@ -163,7 +163,7 @@ The package is `Dougong.Cli`; the command is `dougong`. The names differ on purp
 packages follow the `Dougong.*` convention, commands stay short.
 
 > In `0.1.3-alpha.1` the command surface is complete (`--doctor`, `--report`, `--help`,
-> REPL, `--acp` are all exercised, behavior pinned by 45 self-check suites), but the
+> REPL, `--acp` are all exercised, behavior pinned by 46 self-check suites), but the
 > **terminal presentation and wording are still being polished**.
 
 **As a library**:
@@ -211,6 +211,49 @@ API key (taken only from the `NUGET_API_KEY` environment variable).
 > **Compatibility**: the project is `0.x` and **makes no backward-compatibility promise**,
 > but every public API change is caught by ApiCompat and recorded in
 > [CHANGELOG](CHANGELOG.md). Rules in [compat policy](docs/compat-policy.md).
+
+### Provider configuration
+
+Two ways; **environment variables win**.
+
+**① Config file** (recommended; supports multiple providers): `~/.dougong/config.toml`
+
+```toml
+default_provider = "deepseek"
+
+[providers.deepseek]
+base_url = "https://api.deepseek.com"
+wire_api  = "openai"            # openai (default) / responses / anthropic
+model     = "deepseek-chat"
+key_env   = "DEEPSEEK_API_KEY"  # the variable NAME, not the key itself
+
+[providers.local]
+base_url = "http://127.0.0.1:1234/v1"
+model    = "qwen3"
+```
+
+```bash
+export DEEPSEEK_API_KEY='sk-...'
+dougong
+```
+
+**② Three environment variables** (highest priority; handy for trying an endpoint):
+
+```bash
+export DOUGONG_PROVIDER_BASE=https://api.deepseek.com
+export DOUGONG_PROVIDER_MODEL=deepseek-chat
+export DOUGONG_PROVIDER_KEY=sk-...
+```
+
+**The API key is read only from the environment; no file ever stores it.** The
+config file holds only the variable name (`key_env`); writing a key value there is
+rejected outright with a hint to use a variable name. That is why the config file is
+safe to commit and back up. The built-in presets (`deepseek` / `openai` / `anthropic`)
+carry only an endpoint and a variable name — **no model name** — because the models
+available at one endpoint change, and hard-coding one would hand you a 404.
+
+Inside a session, `/model` lists every provider and switches between them
+(the switch lasts for that session only).
 
 ## Documentation
 

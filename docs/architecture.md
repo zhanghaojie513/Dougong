@@ -439,6 +439,34 @@ public sealed record AgentToolResult(JsonElement Content, JsonElement? Details =
 - `ChatClientFactory`：按命名配置（provider / endpoint / model / key 来源）建 `IChatClient`；官方与社区 M.E.AI 连接器即插即用；DeepSeek 走 OpenAI 兼容端点。
 - **协议是显式维度**（M1 已实现）：同一 provider 可能同时提供 chat-completions、`/responses` 与 Anthropic `/v1/messages`，三者的工具声明形状、工具调用形状、参数片段字段、终结信号位置、system 提示位置都不同，因此各自独立实现、独立校验，共用同一份 HTTP 传输。工具结果回填与"文本与工具调用是否同一条消息"属于协议层责任，必须由确定性帧回放证明，不能只靠一次真实调用通过。
 - 密钥只从环境变量或宿主凭据通道读取，不进入配置文件与日志；配置对象只记录"从哪里取密钥"。
+- **多 provider：配置文件 + 环境变量覆盖（0.1.3 已实现）**。
+  `ProviderCatalog` 持有具名 provider 集合与"当前选中"，`ProviderConfigFile` 从
+  `~/.dougong/config.toml` 读出它们（`DOUGONG_PROVIDER_CONFIG` 可整体改路径）。
+  ```toml
+  default_provider = "deepseek"
+
+  [providers.deepseek]
+  base_url = "https://api.deepseek.com"
+  wire_api  = "openai"            # openai（默认）/ responses / anthropic
+  key_env   = "DEEPSEEK_API_KEY"  # **变量名，不是值**
+  model     = "deepseek-chat"
+  ```
+  三个设计点：
+  - **配置里只出现变量名**。`key_env` 写成密钥值会被硬拒（"看起来是一个密钥值而不是变量名"）。
+    这条做成校验而不是文档约定，因为泄漏一旦发生（提交进 git）就没有补救机会。
+    `provider` 套件用唯一标记串跑完整 `--doctor` 并断言输出与文件都不含它。
+  - **环境变量 > 配置文件**，且覆盖粒度是**整个 provider 而非单个字段**。理由是排错：
+    用户改了配置不生效时，最常见原因是 shell 里还有旧 export；让环境变量赢就能用
+    "临时 export 一个值"来验证配置本身。逐字段覆盖会造出配置文件的协议 + 环境变量的端点
+    这类通常不成立的组合。覆盖时**配置文件里的其它 provider 保留**，否则 `/model`
+    的列表会凭空少一批。
+  - **预设是纯数据行，不是 provider 矩阵**。内置预设每条只有 `base_url`、`wire_api`、
+    `key_env`，没有任何厂商特例代码，也不带模型名（同一端点的可用模型会变，
+    写死会让用户拿到 404）。边界判据见 `goal.md` §3「反目标的边界」。
+  - **`/model` 换的是连接器，不是运行时**。`SwappableChatClient` 包住当前连接器并
+    支持整体替换；重建运行时会把内核租约、MCP 连接与排空状态一起拆掉，代价远大于一次赋值。
+    切换前同时检查模型名与密钥，**两条一起报**——只报一条用户要试两轮才配好。
+    切换只在本次会话有效，退出后回到配置里的 `default_provider`。
 - **协议内方言差异走 `WireCompat`（G12/G13 已修）**：跨层契约用中性键（`AgentPropertyKeys.Reasoning`），Agent 层不出现任何 provider 字段名；连接器负责翻译成具体方言。`WireCompat` 目前只放两个开关——`ReasoningField`（思考内容字段名）与 `MaxTokensField`（输出上限字段名，null 表示不发）。
   **为什么只有两个**：只放已经踩过或明确知道的差异，且全部带默认值。没有具体 provider 要接时加开关就是死代码——与 §4.4 拒绝"预先冻结资源键格式"同一判据。
   **为什么不建 42 家 provider 矩阵**：`goal.md` §3 将其列为反目标。本层站在 M.E.AI 上复用社区连接器；`WireCompat` 只解决"同一协议内的字段名差异"，量级与矩阵完全不同。

@@ -74,42 +74,69 @@ public static class Doctor
 
     private static CheckResult CheckProviderConfig()
     {
-        var baseUrl = Environment.GetEnvironmentVariable("DOUGONG_PROVIDER_BASE");
-        var model = Environment.GetEnvironmentVariable("DOUGONG_PROVIDER_MODEL");
-        var key = Environment.GetEnvironmentVariable("DOUGONG_PROVIDER_KEY");
-        var protocol = Environment.GetEnvironmentVariable("DOUGONG_PROVIDER_PROTOCOL") ?? "openai";
-
-        var missing = new List<string>();
-        if (string.IsNullOrWhiteSpace(baseUrl)) missing.Add("DOUGONG_PROVIDER_BASE");
-        if (string.IsNullOrWhiteSpace(model)) missing.Add("DOUGONG_PROVIDER_MODEL");
-        if (string.IsNullOrWhiteSpace(key)) missing.Add("DOUGONG_PROVIDER_KEY");
-
-        if (missing.Count > 0)
+        // 走与 REPL/ACP 同一个解析路径，而不是各读一遍环境变量。
+        // 分开读的话，自检说"配置没问题"而实际启动失败是必然会发生的事。
+        var resolveError = ChatClientFactory.TryResolve(null, out var catalog, out _);
+        if (resolveError is not null)
         {
-            return new(Level.Fail, "provider 配置",
-                $"缺少 {string.Join(" / ", missing)}",
-                "设置这三个环境变量后再运行。示例：\n"
-                + "      DOUGONG_PROVIDER_BASE=https://api.example.com/v1\n"
-                + "      DOUGONG_PROVIDER_MODEL=<模型名>\n"
-                + "      DOUGONG_PROVIDER_KEY=<密钥>\n"
-                + "  协议默认 chat-completions；Anthropic 兼容端点设 DOUGONG_PROVIDER_PROTOCOL=anthropic。");
+            return new(Level.Fail, "provider 配置", resolveError,
+                "修好配置文件后重跑 --doctor。未知键、非法地址、把密钥值写进 key_env 都会报在这里。");
         }
 
-        // 只报告长度，绝不打印值。
-        var detail = $"base={baseUrl}  model={model}  protocol={protocol}  key=已设置({key!.Length} 字符)";
+        if (catalog is null)
+        {
+            return new(Level.Fail, "provider 配置",
+                "缺少 provider 配置：没有任何可用的 provider",
+                "二选一：\n"
+                + $"    · 写配置文件 {ProviderConfigFile.DefaultPath}（推荐），形如：\n"
+                + "        default_provider = \"deepseek\"\n"
+                + "        [providers.deepseek]\n"
+                + "        base_url = \"https://api.deepseek.com\"\n"
+                + "        model = \"deepseek-chat\"\n"
+                + "        key_env = \"DEEPSEEK_API_KEY\"\n"
+                + "    · 或设 DOUGONG_PROVIDER_BASE / MODEL / KEY 三个环境变量");
+        }
 
-        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
+        var selected = catalog.Selected;
+
+        if (string.IsNullOrWhiteSpace(selected.Model))
+        {
+            return new(Level.Fail, "provider 配置",
+                $"provider '{selected.Name}' 没有配置 model",
+                $"在配置文件里给 [providers.{selected.Name}] 加 model = \"<模型名>\"，"
+                + "或设 DOUGONG_PROVIDER_MODEL。");
+        }
+
+        if (!Uri.TryCreate(selected.BaseUrl, UriKind.Absolute, out var uri)
             || (uri.Scheme != "http" && uri.Scheme != "https"))
         {
             return new(Level.Fail, "provider 配置",
-                $"base 不是合法的 http(s) 地址：{baseUrl}", "检查 DOUGONG_PROVIDER_BASE，它应当形如 https://host/v1。");
+                $"base 不是合法的 http(s) 地址：{selected.BaseUrl}",
+                "检查该 provider 的 base_url，它应当形如 https://host/v1。");
         }
 
-        if (protocol is not ("openai" or "anthropic" or "responses"))
+        // 密钥状态：只说有没有找到、来自哪个变量名，**绝不打印值**。
+        // 这条与 /model 的列表同一口径。
+        if (selected.ApiKeyEnvironmentVariable is { Length: > 0 } keyName)
         {
-            return new(Level.Fail, "provider 配置",
-                $"未知协议 '{protocol}'", "DOUGONG_PROVIDER_PROTOCOL 只接受 openai / anthropic / responses。");
+            var present = Environment.GetEnvironmentVariable(keyName) is { Length: > 0 };
+            if (!present)
+            {
+                return new(Level.Fail, "provider 配置",
+                    $"provider '{selected.Name}' 需要环境变量 {keyName}，但它没有设置",
+                    $"export {keyName}='<你的密钥>' 后重跑。密钥只从环境变量读，不写进配置文件。");
+            }
         }
+
+        var others = catalog.Providers.Count - 1;
+        var keyState = selected.ApiKeyEnvironmentVariable is { Length: > 0 } name
+            ? $"{name} 已设置"
+            : "无需密钥";
+
+        var detail = $"当前 '{selected.Name}'：model={selected.Model}  "
+            + $"protocol={selected.Protocol}  base={selected.BaseUrl}  key={keyState}"
+            + (others > 0 ? $"；另有 {others} 个可选（/model 查看）" : string.Empty)
+            + $"；来源={catalog.SourcePath}";
 
         return new(Level.Pass, "provider 配置", detail);
     }
@@ -236,6 +263,15 @@ public static class Doctor
 
         var window = int.TryParse(raw, out var value) ? value : 0;
 
+        // 比例配置无论窗口开没开都要校验：写错了就该报，而不是等开了窗口才炸。
+        if (!SessionComposition.TryReadCompactionRatios(
+                out var triggerRatio, out var retainRatio, out var ratioError))
+        {
+            return new(Level.Fail, name, $"压缩比例配置无效：{ratioError}",
+                "DOUGONG_COMPACT_TRIGGER_RATIO 与 DOUGONG_COMPACT_RETAIN_RATIO 都要在 (0, 1)，"
+                + "且保留 < 触发；删掉变量即用默认值。");
+        }
+
         var verdict = ContextBudgetValidation.Check(window, SessionComposition.MaxOutputTokens);
 
         if (!verdict.IsUsable)
@@ -245,9 +281,15 @@ public static class Doctor
         }
 
         // 未启用压缩是合法状态，但不是"通过"——用户可能以为自己开了。
-        return verdict.IsEnabled
-            ? new(Level.Pass, name, verdict.Detail)
-            : new(Level.Pass, name, verdict.Detail, verdict.Hint);
+        if (!verdict.IsEnabled)
+        {
+            return new(Level.Pass, name, verdict.Detail, verdict.Hint);
+        }
+
+        // 策略必须报出来：默认值不是"没有配置"，而是一个具体选择
+        // （触发 75% / 保留 16%）。不说就等于让用户以为自己没被策略支配。
+        return new(Level.Pass, name,
+            $"{verdict.Detail}；策略 触发 {triggerRatio:P0} / 保留 {retainRatio:P0}");
     }
 
     /// <summary>

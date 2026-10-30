@@ -15,6 +15,13 @@
     <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.11.0" />
     <PackageVersion Include="xunit.v3" Version="4.0.2" />
 
+    <!-- TOML 配置解析（多 provider 配置）。**只有 Dougong.Ai 引用**，
+         内核仍保持零第三方依赖。
+         为什么不手写：TOML 的转义、多行字符串、数组、内联表都容易写出
+         解析偏差，而偏差在配置上表现为"读到的值和文件里写的不一样"——
+         排查成本远高于一个依赖。 -->
+    <PackageVersion Include="Tomlyn" Version="2.10.1" />
+
     <!-- 终端呈现（CLI 实施计划 S1）。**只有 Dougong.Cli 引用**，
          SDK 包保持零 UI 依赖——ArchitectureBoundaryTests 断言这一点。
          为什么用库而不是手写 ANSI：颜色自动降级、CJK 宽度、表格对齐、

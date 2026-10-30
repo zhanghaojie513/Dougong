@@ -199,7 +199,7 @@ dotnet test Dougong.slnx -c Release --no-build
 运行器，因此 `dotnet test` 走新体验，不需要 VSTest adapter。
 
 ```bash
-# 全部确定性自检套件（当前 44 套，不联网、不需要 API Key）
+# 全部确定性自检套件（当前 46 套，不联网、不需要 API Key）
 # 脚本会先单独重建 spike——它不在 solution 里，全量构建不会重建它
 bash scripts/all-checks.sh
 ```
@@ -260,6 +260,54 @@ dougong --doctor
 
 同一套差异适用于其它 CLI 命令：源码场景一律是
 `dotnet run --project src/Dougong.Cli -c Release -- <参数>`。
+
+### 配置模型
+
+两种方式，**环境变量优先**：
+
+**① 配置文件**（推荐，可配多个 provider）：`~/.dougong/config.toml`
+
+```toml
+default_provider = "deepseek"
+
+[providers.deepseek]
+base_url = "https://api.deepseek.com"
+wire_api  = "openai"            # openai（默认）/ responses / anthropic
+model     = "deepseek-chat"
+key_env   = "DEEPSEEK_API_KEY"  # 变量名，不是密钥本身
+
+[providers.local]
+base_url = "http://127.0.0.1:1234/v1"
+model    = "qwen3"
+```
+
+```bash
+export DEEPSEEK_API_KEY='sk-...'
+dougong
+```
+
+**② 三个环境变量**（优先级最高，适合临时试一个端点）：
+
+```bash
+export DOUGONG_PROVIDER_BASE=https://api.deepseek.com
+export DOUGONG_PROVIDER_MODEL=deepseek-chat
+export DOUGONG_PROVIDER_KEY=sk-...
+```
+
+**密钥只从环境变量读，任何文件都不保存它。** 配置文件里只有变量名
+（`key_env`）；写成密钥值会被硬拒并提示改写。因此配置文件可以进 git、进备份。
+内置预设 `deepseek` / `openai` / `anthropic` 只有端点与变量名，**没有模型名**
+——同一端点的可用模型会变，写死会让你拿到 404。
+
+会话内用 `/model` 列出全部 provider 并切换（切换只在本次会话有效）：
+
+```text
+> /model
+  ▶ deepseek         deepseek-chat   OpenAiChatCompletions  DEEPSEEK_API_KEY 已设置
+    local            qwen3           OpenAiChatCompletions  无需密钥
+    openai           未配置模型        OpenAiChatCompletions  OPENAI_API_KEY 未设置
+> /model local
+```
 
 ## 文档
 
