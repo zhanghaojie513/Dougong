@@ -19,7 +19,53 @@
 
 ---
 
-## [Unreleased]
+## [0.1.11-alpha.1] — 2026-10-31
+
+**文件与命令执行的 seam、宿主契约包、上下文占用事件。**
+
+### Added
+
+- **新包 `Dougong.HostProtocol`：宿主契约**（35 个类型，零依赖）。
+  触发条件变了：此前评估"不抽"是因为只有一个消费者；开源 + web 在计划中
+  之后那变成"第二个消费者"。
+  包里刻意不含工作区浏览（服务 UI 形态）与鉴权（那是行为不是类型）。
+  `HostProtocolContract.Version` 存在但协商未实现，源码注释写明。
+- **`IFileSystem` + `LocalFileSystem`**：文件能力的可替换 seam（原子写 + 版本守卫）。
+  文件工具从 CLI 搬到 SDK，两入口共用同一实现。
+- **`IShellExecutor` + `LocalShellExecutor`**：命令执行的可替换 seam。
+  换沙箱只换实现，工具不改。
+- **`ContextUsageReported` / `UsageReported`**：上下文构成估算与真实用量分成两个事件。
+  前者是估算不能对账，后者是 provider 回报可以对账；混用会让成本统计出错。
+- **`DOUGONG_REQUEST_OUTPUT_RESERVE`**：单次请求的输出预留（原 `DOUGONG_MAX_OUTPUT_TOKENS`，
+  语义从"模型容量上限"改为"请求预留"）。
+
+### Changed
+
+- **`ContextLimits` / `CompactionInput` 的 `MaxOutputTokens` → `RequestOutputReserve`**。
+  一个字段混了"模型输出容量上限"与"单次请求预留"两个概念，kimi-k3（1048576/1048576）
+  因此算出负预算、应用起不来。项目无外部调用者，直接改名不留别名。
+- **预设表恢复上游真值**：此前为了让旧公式不崩，输出上限被收敛到上下文的 25%
+  （kimi-k3 被写成 262144，是编的值）。概念拆开后不再需要。
+- **`ShellTool` 接受 `IShellExecutor`**；原 `ShellTool(string workspace, ...)` 保留。
+
+### Fixed
+
+- **预设表 52 条模型装不下输出**（kimi-k3、doubao、grok-4.5）。
+  根因是 `limit.output` 被当成"单次回复上限"，而它是"输出方向容量上限"。
+- **配置文件里的 `context_window` / `max_output_tokens` 在 CLI 不生效**：
+  装配只读环境变量，运行时用常量 4096。桌面端读配置、CLI 读常量，
+  同一个文件在两边算出不同预算，而两边都不报错。
+- **CI 依赖未声明的 Python**：自检调用 `python` 启动核对脚本，
+  而 ubuntu-latest 只有 `python3`。改成纯 C# 实现。
+- **CI 的基线校验漏了新包**：漏一个不报错，只会让那个包悄悄没有基线保护。
+
+### Docs
+
+- `dsh-capability-gap.md` + `dsh-capability-progress.md`：dsh 236 个包的能力全景、
+  逐项状态（91 项）与实现方式对照。
+- `architecture.md` §0：参考项目分工——数据找 models.dev，行为找 pi，
+  契约措辞找 dsh，交互找 hermes，C# 写法找 pi.net。
+- `compat-policy.md` §7.1：明确 0.x 不做会话兼容。
 
 ## [0.1.10-alpha.1] — 2026-10-30
 
@@ -69,167 +115,6 @@
 
   现在写清分工：**数据找 models.dev，行为找 pi，契约措辞找 dsh，
   交互找 hermes，C# 写法找 pi.net**。同一问题两家冲突时，先看谁给了解释。
-
-### Added
-
-- **新包 `Dougong.HostProtocol`：宿主契约**（35 个类型，零依赖）。
-
-  **触发条件变了**：此前评估"不抽"，理由是"只有一个消费者"。开源 +
-  web 客户端在计划中之后，那变成了"第二个消费者"，判断随之改。
-
-  **包里有什么**：信封（`ClientCommand` / `ServerEvent` / `HostProtocolContract`
-  的版本与序列化配置）、会话、回合、条目（六种）、审批、引擎状态。
-
-  **包里刻意没有什么**：
-  - **工作区浏览**（列目录、目录条目、文件变更摘要）。判据是它们服务的是
-    **某个 UI 的形态**——右栏文件树、改动 tab。放进契约等于强迫所有客户端
-    接受一种界面组织方式，以及一种"怎么算变更"的实现。
-    "用户能看工作区哪些部分"是**权限策略**不是消息契约；共享的应当是
-    路径边界判断的**函数**。
-  - **鉴权类型**：它是**行为**不是**类型**（谁先发、不兼容时怎么拒绝、
-    谁能看哪些会话），只能对着真实场景设计。
-  - **传输**：TCP / 命名管道 / WebSocket 由宿主选。
-
-  **零依赖是刻意的**：不引用 `Dougong.Agent`——契约一旦依赖运行时实现，
-  别人的宿主就用不了了。宿主可以把这份契约用在任何后端上。
-
-  **`HostProtocolContract.Version` 存在但未实现协商**，源码注释里写明了。
-  契约里没实现的条款比没有条款更危险——别人会以为设了就生效。
-
-- **`host-protocol` 验证套件 6 项**：命令/事件/条目的多态往返、
-  每个派生类型都登记了判别器、未知 `method` 明确失败、
-  序列化配置本身正确（枚举写字符串、null 不写）。
-
-  做了反向对照：删掉一个 `[JsonDerivedType]` 后，三条用例准确报红并点名类型。
-
-### 关于一条走了回头路的设计
-
-抽包时我先把 `WorkspaceChangedEvent` 写成"某个文件变了"（单个 `Path`），
-复核时发现原契约是**回合结束时的变更摘要**（`Diff` + `HasChanges`）——
-两者名字像但语义完全不同。改回之后又意识到：**这个类型根本不该进契约**，
-它是 UI 的"改动 tab"服务的东西。
-
-两次都差点把一个 UI 形态固化成对外承诺。记下来是因为这类错很难自己发现：
-类型名一样、编译通过、测试也能过。
-
-### Added
-
-- **`IShellExecutor`：命令执行的可替换 seam**，加 `LocalShellExecutor` 实现。
-
-  **为什么需要它**：进程创建此前焊在 `ShellTool` 里（直接 `new Process`）。
-  这带来两个后果：
-  - 换沙箱执行要**改工具本身**——而沙箱是"怎么起进程"的问题，
-    与"模型怎么调命令"无关，两者不该耦合。
-  - 测试里无法替换，跑一次就要真起进程，跑不了"命令被拒"这类分支。
-
-  与 dsh 的对应：它分的正是 `dsh-shell`（执行 seam）与 `dsh-tool-bash`（工具）。
-  我们此前把两者合成一个类，而阶段 3 的沙箱必须从这一层进。
-
-  接口只描述"起一个进程并等它结束"，**不含策略**：命令黑白名单、输出上限、
-  超时语义都不在 seam 里。把策略塞进去会让"换实现"变成"换语义"，那不是替换。
-
-  新增 `ShellTool(IShellExecutor, ...)` 重载；原 `ShellTool(string workspace, ...)`
-  保留，内部构造 `LocalShellExecutor`。换沙箱只换这一个参数。
-
-- **`filesystem` 套件加一项 `shell-executor-is-replaceable`**：用替身执行器
-  验证工具确实走 seam，且参数作为独立 argv 项被引用（不拼进命令文本——
-  那等于把 shell 语法交给模型）。反向对照确认：让工具忽略注入的执行器后，
-  该条准确报红。
-
-### 顺带修的一处测试缺陷
-
-`shell-executor-is-replaceable` 第一版只断言单引号引用，在 Windows 上失败——
-而失败原因与它要防的问题无关。改成接受两种平台的引用符：
-**只断言一种会让用例在另一个平台上假红，那种红会把真正的回归埋掉。**
-
-### Added
-
-- **`IFileSystem`：文件能力的可替换 seam**，加 `LocalFileSystem` 实现。
-  ```csharp
-  ValueTask<string> ReadTextAsync(path, ct);
-  ValueTask<FileStat?> StatAsync(path, ct);          // 版本是不透明值
-  ValueTask<IReadOnlyList<FileEntry>> ListDirectoryAsync(path, ct);
-  ValueTask<FileWriteOutcome> WriteTextAsync(path, content, expected?, ct);
-  ```
-
-  **为什么需要这一层**：沙箱要在写入前拦截；版本守卫要在同一处实现；
-  原子写的"临时文件 + 改名"不该在每个工具里重写。工具直接调 `File.*` 时，
-  拦截点只能是每个调用方——漏一个就是洞。
-
-  **与 dsh 的 `dsh-fs` 的差别**：它有 `processPath`、`fileUrl`、跨执行世界的
-  路径映射与 `watch`，那些服务于"沙箱进程里路径与宿主不同"和远程工作区。
-  我们目前没有这两种形态，按 `goal.md`「不做没有消费者的架子」只放四个方法。
-
-- **`FileWriteOutcome.Before`：写之前的内容**。这是 diff 的唯一原料——
-  写完之后再读拿到的是新内容。桌面端的"改动前后对照"就是缺这个。
-
-- **`FileWriteExpectation`：版本守卫**（`MustNotExist` / `MustMatchVersion`）。
-  不符合时抛 `FileVersionConflictException`，**不静默覆盖**。
-  防的是"模型读到第 100 行，期间用户手工改了文件，写回时把用户改动冲掉"。
-  版本用**内容哈希**而不是 mtime：FAT 的 mtime 粒度是 2 秒，两次快速修改
-  会得到相同 mtime，于是"内容变了但版本没变"。
-
-- **`ReadFileTool` / `WriteFileTool` 搬到 SDK**（原在 `Dougong.Cli/FileTools.cs`）。
-  桌面端此前只能自己重写一遍，两个宿主的路径校验、编码、大小限制必然分叉。
-  现在两个入口共用同一实现，并由 `filesystem` 套件断言它们住在 `Dougong.Agent`。
-
-  `read_file` 的返回增加 `version`，`write_file` 增加可选的 `expected_version`
-  与 `previous_content`。不传 `expected_version` 时行为与之前一致（整文件重写）。
-
-- **`write_file` 遇到版本冲突时返回失败结果而不是抛异常**：这是模型可以
-  自我纠正的常规情况（重读文件再来），不是环境故障。抛异常会让整轮以
-  Failed 结束，而模型其实只需要知道"文件变了"。
-
-### Breaking
-
-- **`ReadFileTool` / `WriteFileTool` 构造参数从 `string workspace` 改为
-  `IFileSystem files`**，且类型从 `Dougong.Cli` 移到 `Dougong.Agent`
-  （`internal` → `public`）。项目无外部调用者，直接改不留别名。
-
-### Added
-
-- **`ContextUsageReported`：上下文的估算构成**，每轮一次。
-  拆成三项：`SystemPromptTokens` / `ToolDefinitionTokens` / `MessageTokens`，
-  外加 `EstimatedTotalTokens` 与 `VerifiedInputTokens`。
-
-  **为什么必须 SDK 提供**：三项里有两项宿主拿不到——系统提示词是 SDK 拼的；
-  工具定义是 SDK 把 `IAgentTool` 序列化成 schema 的产物，宿主手里只有工具对象，
-  自己算等于重做一遍序列化，必然与实际发出去的不一致。此前桌面端的右栏
-  "上下文" tab 只能标注"未实现"，CLI 也只能自己扫一遍历史，漏掉这两项。
-
-  **口径照 dsh 的 `contextBreakdown`**（`systemTokens` / `toolsTokens` /
-  `messageTokens`），语义一致：**上下文的构成，不是提供方计费规模**。
-
-- **`UsageReported`：本轮真实用量**（`InputTokens` / `OutputTokens` /
-  `CacheReadTokens` / `CacheWriteTokens` / `TotalTokens`）。
-
-  **为什么与上面拆成两个事件**：这个是 provider 回报的**实测值**，可以对账；
-  上面那个是**估算**，不能对账。混成一个会让成本统计出错。
-  `CacheWriteTokens` 拿不到时是 `null` 而不是 0——0 会被当成"确实没有缓存写入"。
-
-- **`UsageAnchor`：用真实用量做估算基准**。
-  有 provider 回报的输入 token 时，以它为基准、只估算其后新增的消息；
-  没有基准时才纯字符估算。真实用量里已包含系统提示与工具 schema，
-  比逐项估算准一个量级。这与 pi 的 `estimateContextTokens` 同一思路。
-
-  **锚点会失效**，这是最容易写错的地方：压缩替换历史后必须作废 ——
-  它测的是压缩前的旧历史，留着会算出"压缩后比压缩前还满"。
-
-- **`ContextBreakdown`：三项拆分的计算**（公开，宿主可复用于自己的展示）。
-
-- **`LoopAgentRuntime.SystemPrompt`**：系统提示词全文，供上面那项估算。
-  不传就是 null，该项显示 0——**不编一个值**。
-
-### 关于精度
-
-`ContextUsageReported` 的数值**全部是估算**，不是实测；`UsageReported` 才是实测。
-
-这一条必须写进文档和命名：`EstimatedTotalTokens`、`WindowRatio` 都带"估算"限定。
-两个数用途不同（前者"装了多满"，后者"花了多少"），混用会让成本统计出错。
-
-压缩后、下一次模型响应之前，`EstimatedTotalTokens` 返回 `null`——
-那时唯一可信的用量是压缩**之前**的，给一个数只会误导。pi 同样返回 `null`
-（`getContextUsage()` 注释：*context token count is unknown until the next LLM response*）。
 
 ### Changed
 
