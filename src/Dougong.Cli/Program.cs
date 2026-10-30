@@ -272,7 +272,7 @@ public static class Program
         // 非法配置这里不报错——装配期会硬失败，--doctor 也会单独列出，不重复打扰。
         var policy = SessionComposition.TryReadCompactionRatios(
                 out var triggerRatio, out var retainRatio, out _)
-            ? $"；触发 {triggerRatio:P0} / 保留 {retainRatio:P0}"
+            ? $"；触发 {PercentText.Format(triggerRatio)} / 保留 {PercentText.Format(retainRatio)}"
             : string.Empty;
 
         // 首页三档：Rich 出大字，Narrow 出单行，Plain 输出与改造前逐字一致的原文。
@@ -910,8 +910,8 @@ public static class Program
         {
             // 策略必须可见：两个比例直接决定"会话能跑多长"和"多久花一次摘要调用"，
             // 此前它们只存在于构造参数的默认值里，用户既看不到也改不了。
-            Output.Line($"    策略    : 触发 {composition.TriggerRatio:P0}、"
-                + $"保留 {composition.RetainRatio:P0}（DOUGONG_COMPACT_*_RATIO 可调）");
+            Output.Line($"    策略    : 触发 {PercentText.Format(composition.TriggerRatio)}、"
+                + $"保留 {PercentText.Format(composition.RetainRatio)}（DOUGONG_COMPACT_*_RATIO 可调）");
         }
         Output.Line($"  L1 记忆   : {(composition.Memory is null ? "未启用" : "已启用")}");
         Output.Line($"  MCP server: {composition.McpServers.Count} 个");
@@ -950,7 +950,7 @@ public static class Program
         {
             Output.Line(
                 $"  ⚠ 未报告  : {summary.UnreportedCalls} 次调用没有用量数据，"
-                + $"覆盖率 {summary.ReportedRatio:P0}");
+                + $"覆盖率 {PercentText.Format(summary.ReportedRatio)}");
         }
 
         Output.Line($"  累计耗时  : {summary.TotalElapsed.TotalSeconds:0.0}s");

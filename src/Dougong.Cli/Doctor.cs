@@ -290,7 +290,7 @@ public static class Doctor
         // 策略必须报出来：默认值不是"没有配置"，而是一个具体选择
         // （触发 75% / 保留 16%）。不说就等于让用户以为自己没被策略支配。
         return new(Level.Pass, name,
-            $"{verdict.Detail}；策略 触发 {triggerRatio:P0} / 保留 {retainRatio:P0}");
+            $"{verdict.Detail}；策略 触发 {PercentText.Format(triggerRatio)} / 保留 {PercentText.Format(retainRatio)}");
     }
 
     /// <summary>
