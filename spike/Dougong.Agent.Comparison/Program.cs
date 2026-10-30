@@ -194,6 +194,10 @@ public static class Program
         if (args.FirstOrDefault() == "context-usage")
             return await ContextUsageChecks.RunAsync();
 
+        // 文件能力：seam + 工具，重点验原子写与版本守卫。
+        if (args.FirstOrDefault() == "filesystem")
+            return await FileSystemChecks.RunAsync();
+
         if (args.FirstOrDefault() == "report")
             return await ReportChecks.RunAsync();
 

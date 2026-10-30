@@ -72,6 +72,50 @@
 
 ### Added
 
+- **`IFileSystem`：文件能力的可替换 seam**，加 `LocalFileSystem` 实现。
+  ```csharp
+  ValueTask<string> ReadTextAsync(path, ct);
+  ValueTask<FileStat?> StatAsync(path, ct);          // 版本是不透明值
+  ValueTask<IReadOnlyList<FileEntry>> ListDirectoryAsync(path, ct);
+  ValueTask<FileWriteOutcome> WriteTextAsync(path, content, expected?, ct);
+  ```
+
+  **为什么需要这一层**：沙箱要在写入前拦截；版本守卫要在同一处实现；
+  原子写的"临时文件 + 改名"不该在每个工具里重写。工具直接调 `File.*` 时，
+  拦截点只能是每个调用方——漏一个就是洞。
+
+  **与 dsh 的 `dsh-fs` 的差别**：它有 `processPath`、`fileUrl`、跨执行世界的
+  路径映射与 `watch`，那些服务于"沙箱进程里路径与宿主不同"和远程工作区。
+  我们目前没有这两种形态，按 `goal.md`「不做没有消费者的架子」只放四个方法。
+
+- **`FileWriteOutcome.Before`：写之前的内容**。这是 diff 的唯一原料——
+  写完之后再读拿到的是新内容。桌面端的"改动前后对照"就是缺这个。
+
+- **`FileWriteExpectation`：版本守卫**（`MustNotExist` / `MustMatchVersion`）。
+  不符合时抛 `FileVersionConflictException`，**不静默覆盖**。
+  防的是"模型读到第 100 行，期间用户手工改了文件，写回时把用户改动冲掉"。
+  版本用**内容哈希**而不是 mtime：FAT 的 mtime 粒度是 2 秒，两次快速修改
+  会得到相同 mtime，于是"内容变了但版本没变"。
+
+- **`ReadFileTool` / `WriteFileTool` 搬到 SDK**（原在 `Dougong.Cli/FileTools.cs`）。
+  桌面端此前只能自己重写一遍，两个宿主的路径校验、编码、大小限制必然分叉。
+  现在两个入口共用同一实现，并由 `filesystem` 套件断言它们住在 `Dougong.Agent`。
+
+  `read_file` 的返回增加 `version`，`write_file` 增加可选的 `expected_version`
+  与 `previous_content`。不传 `expected_version` 时行为与之前一致（整文件重写）。
+
+- **`write_file` 遇到版本冲突时返回失败结果而不是抛异常**：这是模型可以
+  自我纠正的常规情况（重读文件再来），不是环境故障。抛异常会让整轮以
+  Failed 结束，而模型其实只需要知道"文件变了"。
+
+### Breaking
+
+- **`ReadFileTool` / `WriteFileTool` 构造参数从 `string workspace` 改为
+  `IFileSystem files`**，且类型从 `Dougong.Cli` 移到 `Dougong.Agent`
+  （`internal` → `public`）。项目无外部调用者，直接改不留别名。
+
+### Added
+
 - **`ContextUsageReported`：上下文的估算构成**，每轮一次。
   拆成三项：`SystemPromptTokens` / `ToolDefinitionTokens` / `MessageTokens`，
   外加 `EstimatedTotalTokens` 与 `VerifiedInputTokens`。

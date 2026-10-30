@@ -339,8 +339,12 @@ public sealed class SessionComposition
             new WorkspacePathGuard(_workspace),
             store);
 
-        dispatcher.Register(new ReadFileTool(_workspace));
-        dispatcher.Register(new WriteFileTool(_workspace));
+        // 文件工具来自 SDK，不是 CLI 自己那份——两个入口必须同源，
+        // 否则路径校验、编码、大小限制会各走各的。
+        // 文件能力经 seam 注入：换一个实现就能加沙箱或换成远程工作区。
+        var files = new LocalFileSystem(_workspace);
+        dispatcher.Register(new ReadFileTool(files));
+        dispatcher.Register(new WriteFileTool(files));
         // 计划工具：ACP plan 的唯一数据源。两个入口都要有，否则
         // "CLI 能看计划、ACP 看不到"——正是入口能力不一致的老问题。
         dispatcher.Register(new TodoWriteTool());

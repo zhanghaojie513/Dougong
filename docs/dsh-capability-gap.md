@@ -140,10 +140,13 @@
 
 | dsh | 能力 | 我们 | 差距 |
 |---|---|---|---|
-| `dsh-user-approval` | 一次性审批，fail-closed | `IToolApprover` + `PermissionPolicyApprover` | **已有** |
-| `dsh-user-questions` | 向人类提问的 seam | `AcpElicitationTool`（仅 ACP） | **部分** |
-| `dsh-permission-presets` | 权限预设（沙箱 + 审批打包） | **无** | **缺** |
-| `dsh-approval` 相关持久化 | 审批记录 | `ApprovalLog` | **已有** |
+| `dsh-user-approval` | 一次性审批，fail-closed，审批/请求瀑布 | `IToolApprover` + `PermissionPolicyApprover` + `ApprovalLog`（含记录持久化） | **已有** |
+| `dsh-user-questions` | 向人类提问的 seam | `AcpElicitationTool`（仅 ACP） | **部分**：REPL 侧没有等价物 |
+| `dsh-permission-presets` | 权限预设（沙箱 + 审批打包成一个选项） | **无** | **缺** |
+
+**注**：dsh 没有独立的"审批持久化"包，审批记录拼在 `dsh-user-approval`
+与 `dsh-client-ui-approval` 里。我们的 `ApprovalLog` 是独立实现，
+比它更显式——这一项我们反而更清楚。
 
 ---
 

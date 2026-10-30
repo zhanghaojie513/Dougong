@@ -234,8 +234,11 @@ public static class WorkspaceLockChecks
         Directory.CreateDirectory(workspace);
         try
         {
-            var read = new Dougong.Cli.ReadFileTool(workspace);
-            var write = new Dougong.Cli.WriteFileTool(workspace);
+            // 工具已从 CLI 搬到 SDK：两个入口共用一个实现，
+            // 因此这里直接构造 SDK 的工具（seam 用本地实现）。
+            var files = new LocalFileSystem(workspace);
+            var read = new ReadFileTool(files);
+            var write = new WriteFileTool(files);
 
             var readPlan = read.DescribeExecution(Args("a.txt"));
             var writePlan = write.DescribeExecution(Args("a.txt"));
