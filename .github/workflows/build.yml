@@ -58,7 +58,10 @@ jobs:
         shell: bash
         run: |
           missing=0
-          for pkg in Dougong.Kernel Dougong.Agent Dougong.Hosting Dougong.Ai Dougong.Mcp Dougong.Acp; do
+          # 这份列表必须与 scripts/update-api-baseline.sh 的 PACKAGES 一致。
+          # 漏一个不会报错，只会让那个包**悄悄地没有基线保护**——
+          # 而那正是这道检查要防的事。
+          for pkg in Dougong.Kernel Dougong.Agent Dougong.Hosting Dougong.Ai Dougong.Mcp Dougong.Acp Dougong.HostProtocol; do
             path="artifacts/baseline/$pkg.nupkg"
             if [ ! -f "$path" ]; then
               echo "::error::缺少基线：$path（见 scripts/update-api-baseline.sh）"

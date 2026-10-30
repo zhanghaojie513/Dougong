@@ -42,6 +42,7 @@ public static class ToolPackageChecks
         failures += Check("readme-test-count-matches-reality", ReadmeTestCount);
         failures += Check("docs-have-no-broken-relative-links", NoBrokenDocLinks);
         failures += Check("capability-progress-counts-are-consistent", ProgressCountsConsistent);
+        failures += Check("baseline-package-lists-agree", BaselineListsAgree);
         failures += Check("no-hardcoded-version-in-sources", NoHardcodedVersion);
         failures += await CheckAsync("version-is-consistent-across-outputs", VersionConsistentAsync);
 
@@ -655,43 +656,168 @@ public static class ToolPackageChecks
     /// 手改一行状态时很容易只改一处，而两处对不上时**没有任何迹象**：
     /// 总览是个正常的百分比，清单看起来也在，只有数一遍才露馅。
     ///
-    /// 交给 <c>scripts/check-capability-progress.py</c> 数，这里只跑它并断言退出码。
-    /// 重写一遍统计逻辑会引入第二份实现——那正是这类文档最容易出的问题。
+    /// <para>
+    /// <b>用 C# 实现而不是调 Python 脚本</b>：调用外部脚本会让这条检查依赖
+    /// 一个**未声明的运行时**。实测踩到过——CI 的 ubuntu-latest 上没有
+    /// <c>python</c>（只有 <c>python3</c>），于是整条检查报"无法运行核对脚本"，
+    /// 而它看起来像文档有问题。自检不该依赖仓库里没写明的东西。
+    /// </para>
     /// </remarks>
+    /// <summary>
+    /// 基线包清单必须三处一致：基线脚本、发布脚本、CI 的校验步骤。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么必须自检</b>：同一份包列表写在三个地方，而**漏一个不会报错**——
+    /// 只会让那个包悄悄地没有基线保护，或发布时少推一个包。
+    /// 2026-10-31 实测踩到：抽了 <c>Dougong.HostProtocol</c> 之后，
+    /// 基线脚本与发布脚本都加了，唯独 CI 的校验步骤漏了。
+    ///
+    /// <para>
+    /// 三处的写法还不同（`PACKAGES=(A B)` / `PACKAGES=(A B)` / `for pkg in A B`），
+    /// 所以这里按"名字是否出现"比对，不解析语法。
+    /// </para>
+    /// </remarks>
+    private static string? BaselineListsAgree()
+    {
+        var root = FindRepoRoot();
+
+        string Read(string relative)
+        {
+            var path = Path.Combine(root, relative);
+            return File.Exists(path) ? File.ReadAllText(path) : string.Empty;
+        }
+
+        var baseline = Read(Path.Combine("scripts", "update-api-baseline.sh"));
+        var publish = Read(Path.Combine("scripts", "publish-nuget.sh"));
+        var ci = Read(Path.Combine(".github", "workflows", "build.yml"));
+
+        if (baseline.Length == 0) return "读不到 update-api-baseline.sh";
+        if (publish.Length == 0) return "读不到 publish-nuget.sh";
+        if (ci.Length == 0) return "读不到 build.yml";
+
+        // 以基线脚本为准：它列出的每个包都必须出现在另外两处。
+        var packages = System.Text.RegularExpressions.Regex
+            .Match(baseline, @"PACKAGES=\(([^)]*)\)")
+            .Groups[1].Value
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Select(n => n.Replace("Dougong.", string.Empty, StringComparison.Ordinal))
+            .ToArray();
+
+        if (packages.Length == 0) return "基线脚本里解析不到 PACKAGES";
+
+        var missingInPublish = packages
+            .Where(p => !publish.Contains(" " + p + " ", StringComparison.Ordinal)
+                     && !publish.Contains("(" + p + " ", StringComparison.Ordinal))
+            .ToArray();
+
+        var missingInCi = packages
+            .Where(p => !ci.Contains("Dougong." + p, StringComparison.Ordinal))
+            .ToArray();
+
+        var problems = new List<string>();
+        if (missingInPublish.Length > 0)
+            problems.Add($"发布脚本缺：{string.Join("、", missingInPublish)}");
+        if (missingInCi.Length > 0)
+            problems.Add($"CI 基线校验缺：{string.Join("、", missingInCi)}");
+
+        return problems.Count == 0 ? null : "包清单三处不一致——" + string.Join("；", problems);
+    }
+
     private static string? ProgressCountsConsistent()
     {
         var root = FindRepoRoot();
-        var script = Path.Combine(root, "scripts", "check-capability-progress.py");
-        if (!File.Exists(script)) return $"找不到核对脚本：{script}";
+        var doc = Path.Combine(root, "docs", "dsh-capability-progress.md");
+        if (!File.Exists(doc)) return $"找不到能力清单：{doc}";
 
-        var startInfo = new System.Diagnostics.ProcessStartInfo("python")
+        var text = File.ReadAllText(doc);
+
+        // 逐项清单在「## 二」与「## 三」之间。
+        var bodyStart = text.IndexOf("## 二、逐项清单", StringComparison.Ordinal);
+        var bodyEnd = text.IndexOf("## 三、P0 进度", StringComparison.Ordinal);
+        if (bodyStart < 0 || bodyEnd < bodyStart)
+            return "能力清单缺少「## 二、逐项清单」或「## 三、P0 进度」小节";
+
+        var body = text[bodyStart..bodyEnd];
+
+        var marks = new[] { "✅", "🟡", "⬜", "➖" };
+        var actual = marks.ToDictionary(m => m, _ => 0);
+
+        foreach (var line in body.Split(NewLine))
         {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            WorkingDirectory = root,
-        };
-        startInfo.ArgumentList.Add("-I");
-        startInfo.ArgumentList.Add(script);
+            var trimmed = line.TrimStart();
+            if (!trimmed.StartsWith('|')) continue;
 
-        try
-        {
-            using var process = System.Diagnostics.Process.Start(startInfo)!;
-            var stdout = process.StandardOutput.ReadToEnd();
-            var stderr = process.StandardError.ReadToEnd();
-            process.WaitForExit(30_000);
-
-            // 脚本失败时不要假通过——那会让这条检查变成装饰。
-            if (process.ExitCode != 0)
-                return $"能力清单统计不一致：{(stderr + stdout).Trim()}";
-
-            return null;
+            foreach (var mark in marks)
+            {
+                if (trimmed.StartsWith("| " + mark, StringComparison.Ordinal))
+                {
+                    actual[mark]++;
+                    break;
+                }
+            }
         }
-        catch (Exception ex)
+
+        var total = actual.Values.Sum();
+        if (total == 0) return "逐项清单里一个状态标记都没有——格式可能变了";
+
+        var claimed = ParseTotalRow(text);
+        if (claimed is null) return "总览表缺少可解析的「合计」行";
+
+        var problems = new List<string>();
+        for (var i = 0; i < marks.Length; i++)
         {
-            return $"无法运行核对脚本（{ex.GetType().Name}）：{ex.Message}";
+            if (claimed[i] != actual[marks[i]])
+                problems.Add($"{marks[i]} 总览写 {claimed[i]}，实际 {actual[marks[i]]}");
         }
+
+        if (claimed[4] != total)
+            problems.Add($"小计总览写 {claimed[4]}，实际 {total}");
+
+        return problems.Count == 0
+            ? null
+            : "能力清单统计不一致：" + string.Join("；", problems);
     }
+
+    /// <summary>换行符。用常量而不是内联字面量，避免嵌套转义。</summary>
+    private const char NewLine = '\n';
+
+    /// <summary>
+    /// 从总览表读「合计」那一行，返回 5 个计数：4 个状态 + 小计。
+    /// </summary>
+    private static int[]? ParseTotalRow(string text)
+    {
+        var overviewStart = text.IndexOf("## 一、进度总览", StringComparison.Ordinal);
+        if (overviewStart < 0) return null;
+
+        var overviewEnd = text.IndexOf("## 二、", overviewStart, StringComparison.Ordinal);
+        var overview = overviewEnd > overviewStart
+            ? text[overviewStart..overviewEnd]
+            : text[overviewStart..];
+
+        foreach (var line in overview.Split(NewLine))
+        {
+            if (!line.Contains("**合计**", StringComparison.Ordinal)) continue;
+
+            var cells = line.Split('|')
+                .Select(c => c.Trim().Trim('*'))
+                .Where(c => c.Length > 0)
+                .ToArray();
+
+            // 期望：合计 + 4 个状态 + 小计 + 完成度
+            if (cells.Length < 6) return null;
+
+            var values = new int[5];
+            for (var i = 0; i < 5; i++)
+            {
+                if (!int.TryParse(cells[i + 1], out values[i])) return null;
+            }
+
+            return values;
+        }
+
+        return null;
+    }
+
 
     /// <summary>
     /// 所有 Markdown 里的相对链接都必须指向真实存在的文件。
