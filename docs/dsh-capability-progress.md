@@ -44,21 +44,21 @@
 
 | 能力域 | ✅ | 🟡 | ⬜ | ➖ | 小计 | 完成度 |
 |---|---|---|---|---|---|---|
-| 1. Agent 循环 | 3 | 1 | 3 | 1 | 8 | 50% |
+| 1. Agent 循环 | 4 | 1 | 3 | 1 | 9 | 56% |
 | 2. LLM 与用量 | 4 | 2 | 3 | 0 | 9 | 56% |
-| 3. 会话与持久化 | 2 | 3 | 7 | 1 | 13 | 29% |
-| 4. 工具 | 2 | 4 | 11 | 3 | 20 | 22% |
+| 3. 会话与持久化 | 2 | 3 | 8 | 1 | 14 | 27% |
+| 4. 工具 | 2 | 5 | 11 | 4 | 22 | 25% |
 | 5. 审批与提问 | 2 | 1 | 1 | 0 | 4 | 62% |
 | 6. 沙箱与进程 | 0 | 2 | 3 | 0 | 5 | 20% |
 | 7. 文件系统 | 3 | 0 | 3 | 0 | 6 | 50% |
 | 8. 技能/目标/计划/子agent | 0 | 1 | 3 | 0 | 4 | 12% |
-| 9. 任务与调度 | 0 | 1 | 4 | 0 | 5 | 10% |
+| 9. 任务与调度 | 0 | 1 | 5 | 0 | 6 | 8% |
 | 10. 网络与外部 | 2 | 1 | 2 | 1 | 6 | 50% |
 | 11. 配置与凭据 | 2 | 3 | 1 | 0 | 6 | 58% |
-| **合计** | **20** | **19** | **41** | **6** | **86** | **37%** |
+| **合计** | **21** | **20** | **43** | **7** | **91** | **37%** |
 
 完成度算法：`(✅ + 🟡×0.5) / (✅+🟡+⬜)`，不含 `➖`。
-（`(20 + 9.5) / 80 = 37%`）
+（`(21 + 10.0) / 84 = 37%`）
 
 **统计口径**：这些数字是从下面第二部分的表格逐行数出来的，
 不是手填的。改了一行状态就要同步改这里——两处对不上说明漏改。
@@ -67,19 +67,20 @@
 
 | 实现方式 | 项数 | 占已实现 |
 |---|---|---|
-| `[自有]` | 31 | 78% |
-| `[库]` | 5 | 13% |
-| `[M.E.AI]` | 1 | 3% |
-| `[数据]` | 1 | 3% |
+| `[自有]` | 34 | 83% |
+| `[库]` | 5 | 12% |
+| `[M.E.AI]` | 1 | 2% |
+| `[数据]` | 1 | 2% |
 
+（"已实现"含 ✅ 与 🟡，共 41 项。）
 
-**这个分布值得注意**：已实现的 39 项里 **78% 是自己写的**。
+**这个分布值得注意**：**83% 是自己写的**。
 
 好在这些自研项都是"小而确定"的——事件词汇、schema 校验、资源闸门、
 token 估算、压缩选区。它们的共同点是**逻辑短、可确定性验证**，
 `agent` 与 `compaction` 套件逐条钉住了行为。
 
-真正需要外部依赖的地方我们都用了库：TOML（Tomlyn）、HTTP（`HttpClient`）、
+真正需要外部依赖的地方都用了库：TOML（Tomlyn）、HTTP（`HttpClient`）、
 MCP（官方 SDK）、JSON（`System.Text.Json`）。
 
 **将来补缺口时优先找库**：dsh 的很多能力背后有成熟实现
@@ -97,7 +98,8 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 |---|---|---|---|---|---|
 | ✅ | 循环与事件词汇 | `[自有]` | `dsh-agent`, `dsh-agent-loop` | `LoopAgentRuntime`, `AgentEvent` | 循环控制流自己写；事件词汇是 record 层级 |
 | ✅ | 默认模型选择 | `[自有]` | `dsh-agent-default-model` | `ProviderCatalog`, `default_provider` | |
-| ✅ | 上下文压缩接入 | `[自有]` | `dsh-compaction-basic` | `SlidingWindowCompactor` + 摘要 | 选区算法自研；摘要复用同一个 `IChatClient` |
+| ✅ | 压缩 seam | `[自有]` | `dsh-compaction` | `IContextCompactor` / `ICompactionTask` | 接口自己定；`dsh` 的 seam 在 `ctx.compaction` |
+| ✅ | 上下文压缩实现 | `[自有]` | `dsh-compaction-basic` | `SlidingWindowCompactor` + 摘要 | 选区算法自研；摘要复用同一个 `IChatClient` |
 | 🟡 | 系统提示组装 | `[自有]` | `dsh-system-prompt` | `LoopAgentRuntime.SystemPrompt` | **单值，无分节注册表**；且 CLI 主对话根本没设置它 |
 | ⬜ | 工作区指令加载 | `[—]` | `dsh-agent-instructions` | — | 不读 `AGENTS.md` / `CLAUDE.md` |
 | ⬜ | 部署人格段落 | `[—]` | `dsh-persona` | — | |
@@ -129,7 +131,8 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | 🟡 | 提交屏障 | `[自有]` | `dsh-session-checkpoint-policy` | 提交屏障（四处落点） | 有屏障，**无显式检查点策略** |
 | ➖ | 格式版本与迁移 | `[—]` | `dsh-session-format*` | — | **明确不做**，见 `compat-policy.md` §7.1 |
 | ⬜ | 会话状态投影 | `[—]` | `dsh-session-projection*` | — | 宿主各自从日志重算 |
-| ⬜ | 会话内容搜索 | `[—]` | `dsh-session-query-sqlite` | `SessionBranch.List` 只列文件 | dsh 用 SQLite FTS5 |
+| ⬜ | 会话查询 seam | `[—]` | `dsh-session-query` | `SessionBranch.List` 只列文件 | 无查询抽象，只有"列文件" |
+| ⬜ | 会话内容搜索 | `[—]` | `dsh-session-query-sqlite` | — | dsh 用 SQLite FTS5 |
 | ⬜ | 会话标题生成 | `[—]` | `dsh-session-title*` | — | |
 | ⬜ | 轮次大纲 | `[—]` | `dsh-session-turn-outline` | — | |
 | ⬜ | 跨会话引用 | `[—]` | `dsh-session-reference` | — | |
@@ -146,6 +149,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | 🟡 | 写文件 | `[自有]` | `dsh-tool-fs` | `WriteFileTool`（已进 SDK） | 走 seam；原子写 + 版本守卫 |
 | ⬜ | **glob / grep** | `[—]` | `dsh-tool-fs-search` | — | **P0**。dsh 打包 ripgrep；我们计划用 BCL |
 | ⬜ | **按内容替换编辑** | `[—]` | `dsh-tool-str-replace-editor` | — | **P0**，改一行要重写全文 |
+| 🟡 | shell 执行 seam | `[自有]` | `dsh-shell` | 无独立 seam，`ShellTool` 内直接建进程 | **缺抽象**：换沙箱实现要改工具本身 |
 | 🟡 | shell | `[自有]` | `dsh-tool-bash` | `ShellTool` | 用 `System.Diagnostics.Process`；**无沙箱**（`cd /` 可绕过）、无持久、无后台 |
 | ⬜ | PowerShell | `[—]` | `dsh-tool-pwsh*` | — | |
 | ⬜ | **工具超时** | `[—]` | `dsh-tool-call-timeout-policy` | — | **P0**，工具卡住挂住整轮 |
@@ -157,7 +161,8 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | ⬜ | 文件交付声明 | `[—]` | `dsh-tool-present` | — | |
 | ⬜ | 目标工具 | `[—]` | `dsh-tool-goal` | — | |
 | ⬜ | 重复调用提醒 | `[—]` | `dsh-repeat-tool-reminder` | — | |
-| ➖ | 工作流脚本 | `[—]` | `dsh-tool-workflow` | — | |
+| ➖ | 工作流引擎 | `[—]` | `dsh-workflow` | — | `goal.md` 把可视化编排列为反目标；脚本式也没做 |
+| ➖ | 工作流脚本工具 | `[—]` | `dsh-tool-workflow` | — | |
 | ➖ | 插件运行时探查 | `[—]` | `dsh-tool-cordis` | — | |
 | ➖ | Ralph 循环 | `[—]` | `dsh-tool-ralph` | — | |
 
@@ -205,6 +210,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | 状态 | 能力 | 实现方式 | dsh | 我们 | 备注 |
 |---|---|---|---|---|---|
 | 🟡 | 工具结果限制 | `[自有]` | `dsh-output-retention` | `ToolResultLimits` | 只有总量截断 |
+| ⬜ | 工具结果分区裁剪 | `[—]` | `dsh-compaction-tool-result-pruner` | — | dsh 做头/中/尾三段保留且可回放；我们只会截尾 |
 | ⬜ | 后台任务 | `[—]` | `dsh-jobs*` | — | |
 | ⬜ | 持久提醒 | `[—]` | `dsh-schedule` | — | |
 | ⬜ | 大结果落盘可取回 | `[—]` | `dsh-spill*` | — | 截断后取不回来 |

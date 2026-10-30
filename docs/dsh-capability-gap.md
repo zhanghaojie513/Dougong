@@ -9,8 +9,12 @@
 > dsh 有什么就抄什么——`goal.md` 的反目标仍然有效，只是那份反目标从没被
 > 逐项套到 dsh 的能力面上过。
 >
-> 核对日期 2026-10-30，dsh 共 **236 个包**（含 `cordis*` 等基础设施），
-> 本文件覆盖其中 117 个与 harness 能力直接相关的。
+> 核对日期 2026-10-31，dsh 共 **236 个包**（含 `cordis*` 等基础设施）。
+> 本文件逐项列出了其中 **90 个具体包 + 21 组通配条目**（后者是成族的能力，
+> 如 `dsh-session-format*`），覆盖与 harness 能力直接相关的部分。
+>
+> 未逐项列出的主要是：UI 包（约 40 个，属产品形态）、Cordis 基础设施、
+> Typert/Remote 协议栈。它们不构成 harness 能力，见 §十三 与"明确不做"。
 
 ---
 
@@ -93,10 +97,10 @@
 | dsh | 能力 | 我们 | 差距 |
 |---|---|---|---|
 | `dsh-tools` | 工具注册与执行管线 | `ToolDispatcher` | **已有** |
-| `dsh-tool-fs` | 读 / 写 / 编辑 | `ReadFileTool` / `WriteFileTool`**（在 CLI 项目，不在 SDK）** | **缺**：见下方"工具归属错位" |
+| `dsh-tool-fs` | 读 / 写 / 编辑 | `ReadFileTool` / `WriteFileTool`（**已进 SDK**，走 `IFileSystem`） | **部分**：读写有了，**缺 edit（按内容替换）** |
 | `dsh-tool-fs-search` | glob / grep（打包 ripgrep） | **无** | **缺**：模型不能搜代码 |
 | `dsh-tool-str-replace-editor` | view / create / 字面替换 / 行插入 | **无** | **缺** |
-| `dsh-tool-bash` / `-persistent` | shell，含后台任务与沙箱升级 | `ShellTool` | **部分**：无持久 shell、无后台 |
+| `dsh-tool-bash` / `-persistent` | shell，含后台任务与沙箱升级 | `ShellTool` | **部分**：无沙箱（`cd /` 可绕过）、无持久 shell、无后台 |
 | `dsh-tool-pwsh` / `-persistent` | PowerShell | **无** | **缺**（Windows 上更重要） |
 | `dsh-tool-todo` | `todo_write` | `TodoWriteTool` | **已有** |
 | `dsh-tool-ask-user` | `ask_user_question` | `AcpElicitationTool`（仅 ACP） | **缺**：REPL 里没有等价物 |
@@ -115,24 +119,23 @@
 **工具面缺口最大，也是桌面端最直接感受到的**：只有 read/write/shell/todo 四个，
 没有搜索、没有编辑、没有 web。做一个编码 agent 连 grep 都没有。
 
-### 工具归属错位（比缺工具更根本）
+### 工具归属错位（2026-10-31 已解决，留作记录）
 
-**`ReadFileTool` / `WriteFileTool` 定义在 `Dougong.Cli/FileTools.cs`，不是 SDK。**
+**当时的问题**：`ReadFileTool` / `WriteFileTool` 定义在 `Dougong.Cli/FileTools.cs`，
+不是 SDK。桌面端要用文件工具只能自己重写一遍——它也确实重写了，
+两个宿主的路径校验、编码、大小限制必然分叉。
 
-这意味着：
-- 桌面端要用文件工具，**只能自己重写一遍**——事实上它也确实重写了
-- 两个宿主的文件读写行为会分叉（路径校验、编码、大小限制）
-- 同一个"读写文件"能力，SDK 里没有位置
-
-`dsh` 的对应做法是把工具放在 `dsh-tool-fs`，**运行在 `ctx.fs` seam 之上**：
+**`dsh` 的对应做法**：工具放 `dsh-tool-fs`，运行在 `ctx.fs` seam 之上——
 工具只管协议形状，实际 IO 由可替换的 `dsh-fs-local` / `dsh-fs-sandbox` 提供。
 
-**这一条不是"缺一个工具"，是"缺一层"。** 补工具之前应先决定文件能力放哪：
-- 要么在 SDK 加 `Dougong.Agent.FileTools`（工具 + 内联 IO）
-- 要么照 dsh 加 `IFileSystem` seam（工具 + 可替换 IO）
+**我们怎么解决的（阶段 1）**：
+- 加了 `IFileSystem` seam + `LocalFileSystem`（四个方法）
+- 工具搬到 `Dougong.Agent` 并改为走 seam
+- CLI 改用 SDK 的工具，删掉自己那份
+- `filesystem` 套件断言三个类型都住在 `Dougong.Agent`——**防止将来又搬回去**
 
-前者快，后者才能支持沙箱与远程工作区。考虑到第 3 项沙箱也在 P0，
-建议直接做 seam——否则补完工具还要再改一遍。
+**现在剩下的**：按内容替换的 `edit`（P0 第 2 项）。它要建在同一个 seam 上，
+用 `FileWriteExpectation.MustMatchVersion` 做守卫。
 
 ---
 
@@ -172,12 +175,16 @@
 
 | dsh | 能力 | 我们 | 差距 |
 |---|---|---|---|
-| `dsh-fs` | 文件能力 seam（文本 IO + 版本守卫的原子变更） | **无 seam**：工具直接读文件 | **缺**：没有可替换的文件层 |
-| `dsh-fs-local` | 本地实现 | 工具内直接用 `File.*` | **部分** |
-| `dsh-fs-sandbox` | 沙箱内文件操作 | `WorkspacePathGuard` | **部分** |
-| `dsh-fs-observation-policy` | 观察态、读后写、版本守卫 | **部分**：`FileVersionSet` 只在审批时用 | **缺**：工具执行时无版本校验 |
-| `dsh-atomic-write` | 原子替换 | `WriteFileTool`（直接写） | **缺**：写一半崩溃会得到半个文件 |
+| `dsh-fs` | 文件能力 seam（文本 IO + 版本守卫的原子变更） | `IFileSystem` + `LocalFileSystem` | **已有**（2026-10-31） |
+| `dsh-fs-local` | 本地实现 | `LocalFileSystem` | **已有** |
+| `dsh-fs-sandbox` | 沙箱内文件操作 | `WorkspacePathGuard`（仅路径） | **缺**：写入不拦截，靠 §7 沙箱 |
+| `dsh-fs-observation-policy` | 观察态、读后写、版本守卫 | `FileWriteExpectation`（版本守卫） | **部分**：守卫有了，但不强制"先读后写"这条流程 |
+| `dsh-atomic-write` | 原子替换 | `LocalFileSystem` 同目录临时 + 改名 | **已有**（2026-10-31） |
 | `dsh-file-reference` / `-local` | `@file` 引用与模糊索引 | **无** | **缺** |
+
+> **这一节的状态在 2026-10-31 变了**：阶段 1 已完成文件能力归位。
+> 逐项状态以 [dsh-capability-progress.md](dsh-capability-progress.md) 为准，
+> 本文档只保留"缺什么、为什么"的判断。
 
 ---
 
@@ -252,13 +259,13 @@
 
 | # | 缺什么 | 影响 | 对应 dsh |
 |---|---|---|---|
-| 0 | **文件工具不在 SDK 里** | 桌面端必须自己重写，两宿主行为必然分叉 | `dsh-fs` + `dsh-tool-fs` |
+| ~~0~~ | ~~**文件工具不在 SDK 里**~~ | ~~桌面端必须自己重写~~ | `dsh-fs` + `dsh-tool-fs` — **已完成 2026-10-31** |
 | 1 | **文件搜索（glob / grep）** | 模型不能查代码，做不了编码 agent | `dsh-tool-fs-search` |
 | 2 | **文件编辑（按内容替换）** | 只能整文件重写，改一行要重写全文 | `dsh-tool-fs` / `dsh-tool-str-replace-editor` |
 | 3 | **shell 沙箱** | 模型可用 `cd /` 绕过工作区限制 | `dsh-sandbox*` |
 | 4 | **工具超时** | 工具卡住会挂住整轮，无恢复 | `dsh-tool-call-timeout-policy` |
-| 5 | **原子写** | 写一半崩溃得到半个文件 | `dsh-atomic-write` |
-| 6 | **会话格式版本** | 格式一变革旧会话打不开 | `dsh-session-format*` |
+| ~~5~~ | ~~**原子写**~~ | ~~写一半崩溃得到半个文件~~ | `dsh-atomic-write` — **已完成 2026-10-31** |
+| ~~6~~ | ~~会话格式版本~~ | ~~格式一变革旧会话打不开~~ | `dsh-session-format*` — **决策不做**，见 `compat-policy.md` §7.1（0.x 明确不承诺会话兼容） |
 
 ### P1 — 明显影响体验
 
