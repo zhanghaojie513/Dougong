@@ -52,6 +52,12 @@ for suite in $suites; do
         -c Release --no-build -- "$suite" 2>&1); then
     failed=$((failed + 1))
     failed_names="$failed_names $suite"
+    # **失败时必须把每条 FAIL 打出来。**
+    # 原先只 echo tail -1，于是 CI 日志里永远只有 "N FAILURE(S)"，
+    # 看不到是哪一条——2026-10-31 查 ubuntu 上的 doctor 失败时，
+    # 完整日志里翻不到任何单条 FAIL，只能靠猜。
+    # 汇总行不够用，失败详情才是排查的起点。
+    echo "$output" | grep -E '^FAIL ' || true
   fi
   echo "$output" | tail -1
 done
