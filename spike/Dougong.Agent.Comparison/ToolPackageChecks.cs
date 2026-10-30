@@ -41,6 +41,7 @@ public static class ToolPackageChecks
         failures += Check("changelog-heading-matches-version", ChangelogMatchesVersion);
         failures += Check("readme-test-count-matches-reality", ReadmeTestCount);
         failures += Check("docs-have-no-broken-relative-links", NoBrokenDocLinks);
+        failures += Check("capability-progress-counts-are-consistent", ProgressCountsConsistent);
         failures += Check("no-hardcoded-version-in-sources", NoHardcodedVersion);
         failures += await CheckAsync("version-is-consistent-across-outputs", VersionConsistentAsync);
 
@@ -646,6 +647,52 @@ public static class ToolPackageChecks
 
         return null;
     }
+    /// <summary>
+    /// 能力对照清单的总览统计必须与逐项表格一致。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么这条值得自检</b>：那份文档有两处统计——总览表与逐项清单。
+    /// 手改一行状态时很容易只改一处，而两处对不上时**没有任何迹象**：
+    /// 总览是个正常的百分比，清单看起来也在，只有数一遍才露馅。
+    ///
+    /// 交给 <c>scripts/check-capability-progress.py</c> 数，这里只跑它并断言退出码。
+    /// 重写一遍统计逻辑会引入第二份实现——那正是这类文档最容易出的问题。
+    /// </remarks>
+    private static string? ProgressCountsConsistent()
+    {
+        var root = FindRepoRoot();
+        var script = Path.Combine(root, "scripts", "check-capability-progress.py");
+        if (!File.Exists(script)) return $"找不到核对脚本：{script}";
+
+        var startInfo = new System.Diagnostics.ProcessStartInfo("python")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            WorkingDirectory = root,
+        };
+        startInfo.ArgumentList.Add("-I");
+        startInfo.ArgumentList.Add(script);
+
+        try
+        {
+            using var process = System.Diagnostics.Process.Start(startInfo)!;
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit(30_000);
+
+            // 脚本失败时不要假通过——那会让这条检查变成装饰。
+            if (process.ExitCode != 0)
+                return $"能力清单统计不一致：{(stderr + stdout).Trim()}";
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return $"无法运行核对脚本（{ex.GetType().Name}）：{ex.Message}";
+        }
+    }
+
     /// <summary>
     /// 所有 Markdown 里的相对链接都必须指向真实存在的文件。
     /// </summary>

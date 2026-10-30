@@ -30,6 +30,7 @@
 | [design.md](design.md) | 为什么这样设计：生态位、里程碑、MAF 复用决策 |
 | [goal.md](goal.md) | **四条不可让渡的性质与反目标**。决定"要不要做某件事"时的判据 |
 | [host-layering-decision.md](host-layering-decision.md) | 宿主分层：什么进 SDK、什么留在宿主，以及为什么 |
+| [dsh-capability-progress.md](dsh-capability-progress.md) | **能力对照进度清单**：逐项状态（✅/🟡/⬜/➖）与统计，可勾选可数。改状态时两处统计有自检核对 |
 | [dsh-capability-gap.md](dsh-capability-gap.md) | **dsh 236 个包的能力全景与我们实现的逐项对照**，含按优先级排序的缺失清单。决定"下一步做什么"前先看这里 |
 | [desktop-capability-feedback.md](desktop-capability-feedback.md) | 桌面端提的能力需求，SDK 逐条核对后的回应：哪些成立、哪些理由要修正、哪些明确不做 |
 | [kernel-vs-cordis.md](kernel-vs-cordis.md) | 与 dsh/Cordis 内核的一手对比：租约/排空/超时/变化传播逐项对照，以及已定的取舍 |
