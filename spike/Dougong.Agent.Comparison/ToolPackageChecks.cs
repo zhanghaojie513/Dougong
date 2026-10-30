@@ -892,6 +892,17 @@ public static class ToolPackageChecks
     /// </remarks>
     private static string? VersionNotAlreadyPublished()
     {
+        // **CI 上跳过这条。**
+        //
+        // 它查的是"这个版本号在 nuget.org 上被占用了吗"——那是**发布前**
+        // 才要确认的事。开发中必然有未发布的改动，于是 CI 每次推送都红，
+        // 而这红与"代码坏了"无关。红得太频繁的检查，人就会开始无视它，
+        // 那时真正的回归也会被当成噪音。
+        //
+        // 本地跑（不含 CI）时仍然生效：准备发布前它会拦住重复的版本号。
+        // GitHub Actions 会自动设 CI=true。
+        if (Environment.GetEnvironmentVariable("CI") is "true" or "1") return null;
+
         var root = FindRepoRoot();
         var props = Path.Combine(root, "Directory.Build.props");
         if (!File.Exists(props)) return null;
