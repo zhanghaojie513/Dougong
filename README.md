@@ -20,7 +20,7 @@
   <a href="https://github.com/zhanghaojie513/Dougong"><img src="https://img.shields.io/badge/repository-Dougong-2f6f5e?style=flat-square" alt="Repository"></a>
   <a href="https://github.com/zhanghaojie513/Dougong/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/zhanghaojie513/Dougong/build.yml?style=flat-square&label=build" alt="Build"></a>
   <a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-10.0-512bd4?style=flat-square" alt=".NET 10"></a>
-  <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.1.6--alpha.1-orange?style=flat-square" alt="Version 0.1.6-alpha.1"></a>
+  <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.1.8--alpha.1-orange?style=flat-square" alt="Version 0.1.8-alpha.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f883d?style=flat-square" alt="MIT License"></a>
 </p>
 
@@ -43,7 +43,7 @@
 
 ## 当前状态
 
-目标框架 `net10.0`，版本 `0.1.6-alpha.1`，**已发布到 nuget.org**（2026-10-30）。
+目标框架 `net10.0`，版本 `0.1.8-alpha.1`，**已发布到 nuget.org**（2026-10-30）。
 四条设计承诺（可组合、完整生命周期、故障可解释、真实可用）均已达成，
 见 [设计承诺](docs/goal.md)。
 
@@ -148,7 +148,7 @@ Dougong 关注的是 Agent 的**承托层**，而不是某一个模型或某一�
 **命令走工具**（不需要 clone 仓库）：
 
 ```bash
-dotnet tool install --global Dougong.Cli --version 0.1.6-alpha.1
+dotnet tool install --global Dougong.Cli --version 0.1.8-alpha.1
 dougong --doctor      # 先确认环境，它会逐项检查并给出下一步
 dougong               # 开始对话（需要配置模型）
 ```
@@ -168,7 +168,7 @@ dougong --version     # 确认升到了哪个版本
 > `dotnet tool update` 默认只在**稳定版**里挑；稳定版列表为空，于是说找不到。
 > 详见 [从零开始 §0.2](docs/getting-started.md)。
 
-> `0.1.6-alpha.1` 的命令功能是完整的（`--doctor`、`--report`、`--help`、REPL、
+> `0.1.8-alpha.1` 的命令功能是完整的（`--doctor`、`--report`、`--help`、REPL、
 > `--acp` 都实测过，行为由 46 个自检套件钉住），但**终端呈现与提示文案仍在打磨**，
 > 后续版本会变。
 
@@ -285,7 +285,7 @@ dougong model
 
 四步走，每步都有默认值，回车即接受：
 
-1. **选 provider** —— 内置预设（deepseek / openai / anthropic）与配置里已有的项一起列出
+1. **选 provider** —— 19 家内置预设与配置里已有的项一起列出，每行显示主机名与密钥状态
 2. **确认端点** —— 显示默认 `base_url`，方括号内回车接受；换端点直接输入
 3. **确认密钥** —— 说清需要哪个环境变量、当前有没有、怎么设；未设置时可选择先跳过
 4. **选模型** —— 先从端点拉 `/v1/models` 列出可选项，拉不到再手填
@@ -334,8 +334,15 @@ export DOUGONG_PROVIDER_KEY=sk-...
 
 **密钥只从环境变量读，任何文件都不保存它。** 配置文件里只有变量名
 （`key_env`）；写成密钥值会被硬拒并提示改写。因此配置文件可以进 git、进备份。
-内置预设 `deepseek` / `openai` / `anthropic` 只有端点与变量名，**没有模型名**
-——同一端点的可用模型会变，写死会让你拿到 404。
+
+**内置 19 家预设**，每条只有端点、线协议与密钥变量名，**没有模型名**
+——同一端点的可用模型会变，写死会让你拿到 404：
+
+| 分类 | provider |
+|---|---|
+| 国内 | `deepseek` `glm`（智谱）`kimi` `kimi-intl`（月之暗面）`mimo`（小米）`minimax` `minimax-cn` `stepfun`（阶跃）`qwen`（百炼）`doubao`（豆包） |
+| 国际 | `openai` `anthropic` `gemini` `xai` `mistral` `groq` |
+| 聚合 / 本地 | `openrouter` · `ollama` `lmstudio`（本地，无需密钥） |
 
 会话内用 `/model` 列出全部 provider 并切换（切换只在本次会话有效）：
 

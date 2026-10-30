@@ -36,6 +36,17 @@ public sealed record ChatProviderConfig
     public WireCompat Compat { get; init; } = WireCompat.Default;
 
     /// <summary>
+    /// 上下文窗口（token）。null 表示未配置——**不是 0**：
+    /// 0 在上下文压缩里意味着"不启用"，与"还不知道"是两件事。
+    /// </summary>
+    public int? ContextWindowTokens { get; init; }
+
+    /// <summary>
+    /// 单次回复的输出上限。null 表示未配置，沿用端点默认。
+    /// </summary>
+    public int? MaxOutputTokens { get; init; }
+
+    /// <summary>
     /// Anthropic 兼容层的端点路径覆盖。多数是 <c>/v1/messages</c>；
     /// DeepSeek 挂在 <c>/anthropic/v1/messages</c>。仅对 <see cref="ChatProtocol.AnthropicMessages"/> 有效。
     /// </summary>

@@ -19,35 +19,31 @@ namespace Dougong.Ai;
 public sealed class ProviderCatalog
 {
     /// <summary>
-    /// 内置预设：只有端点、线协议与密钥变量名，不含任何厂商特例逻辑。
+    /// 内置预设：端点、线协议与模型能力表，不含任何厂商特例逻辑。
     /// </summary>
     /// <remarks>
-    /// <b>为什么内置但没有模型名</b>：同一个端点的可用模型会变（新增、下线、改名），
-    /// 把它写死会让用户拿到一个 404 且看不出原因。模型名必须由用户或配置给。
+    /// <b>数据来自 models.dev，由 <c>scripts/sync-provider-presets.py</c> 生成</b>
+    /// （<see cref="ProviderPresets"/>）。不手写这张表：42 家以上的端点、协议、
+    /// 上下文窗口、输出上限、推理档位都是会变的事实，手写必然漂移，
+    /// 而漂移的表现是"配置看起来正常，只是连到了错的地方"或"上下文永远不触发压缩"。
     /// <para>
-    /// <b>为什么这几家</b>：三家都在实际使用中出现过（DeepSeek 走 OpenAI 兼容端点
-    /// 是本项目一直以来的默认路径）。**只列用过的**，不按"主流"凑数——
-    /// 凑出来的条目没有验证过，反而是负担。
+    /// <b>为什么预设里没有密钥变量名</b>：各家的环境变量名不像端点那样有统一来源，
+    /// 猜一个会给出一个"设了也没用"的提示。所以预设只带端点与模型能力，
+    /// 密钥变量名由用户配置或 <see cref="ChatClientFactory"/> 的环境变量路径给。
+    /// </para>
+    /// <para>
+    /// <b>仍然不是 provider 矩阵</b>：每条只是一行数据，没有厂商特例代码。
+    /// 协议差异收敛在三种 wire format 与 <see cref="WireCompat"/>。判据见 <c>goal.md</c> §3。
     /// </para>
     /// </remarks>
     private static readonly Dictionary<string, ProviderPreset> BuiltInPresets =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["deepseek"] = new(
-                BaseUrl: "https://api.deepseek.com",
-                Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "DEEPSEEK_API_KEY"),
-
-            ["openai"] = new(
-                BaseUrl: "https://api.openai.com/v1",
-                Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "OPENAI_API_KEY"),
-
-            ["anthropic"] = new(
-                BaseUrl: "https://api.anthropic.com",
-                Protocol: ChatProtocol.AnthropicMessages,
-                ApiKeyEnvironmentVariable: "ANTHROPIC_API_KEY"),
-        };
+        ProviderPresets.All.ToDictionary(
+            entry => entry.Key,
+            entry => new ProviderPreset(
+                BaseUrl: entry.Value.BaseUrl,
+                Protocol: entry.Value.Protocol,
+                ApiKeyEnvironmentVariable: entry.Value.ApiKeyEnvironmentVariable),
+            StringComparer.OrdinalIgnoreCase);
 
     private readonly Dictionary<string, ChatProviderConfig> _providers;
 
@@ -202,6 +198,27 @@ public sealed class ProviderCatalog
     public ChatProviderConfig? Find(string name) =>
         _providers.TryGetValue(name, out var config) ? config : null;
 
+    /// <summary>
+    /// 查一个模型的能力数据（上下文窗口、输出上限、推理档位）。
+    /// </summary>
+    /// <remarks>
+    /// <b>宿主需要它才能不问用户已知的事实</b>：选完模型后上下文窗口不该让人手填。
+    /// 填错的代价不对称——填大则压缩永不触发（撞上 provider 上限才失败），
+    /// 填小则过早压缩（历史被无谓地摘掉），两种都不报错。
+    /// <para>
+    /// 查不到时返回 null，调用方应当如实说"未知"，不要编一个默认值——
+    /// 一个看起来精确的错数字比"未知"更糟。
+    /// </para>
+    /// </remarks>
+    /// <param name="providerName">provider 名。</param>
+    /// <param name="modelId">模型标识。</param>
+    public static ModelCapabilities? FindModelCapabilities(string providerName, string modelId) =>
+        ProviderPresets.FindModel(providerName, modelId);
+
+    /// <summary>全部内置预设的模型能力表，供宿主渲染模型选择器。</summary>
+    public static IReadOnlyDictionary<string, ProviderPresetData> AllPresets =>
+        ProviderPresets.All;
+
     /// <summary>内置预设的一条。</summary>
     /// <param name="BaseUrl">API 基地址。</param>
     /// <param name="Protocol">线协议。</param>
@@ -209,5 +226,5 @@ public sealed class ProviderCatalog
     public sealed record ProviderPreset(
         string BaseUrl,
         ChatProtocol Protocol,
-        string ApiKeyEnvironmentVariable);
+        string? ApiKeyEnvironmentVariable);
 }

@@ -8,7 +8,7 @@
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <Version>0.1.6-alpha.1</Version>
+    <Version>0.1.8-alpha.1</Version>
     <Authors>Haojie Zhang</Authors>
     <RepositoryUrl>https://github.com/zhanghaojie513/Dougong</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

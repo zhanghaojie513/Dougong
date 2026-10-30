@@ -34,9 +34,11 @@ public static class ProviderConfigWriter
     /// <param name="model">新的模型名；null 表示不改。</param>
     /// <param name="setAsDefault">是否把 <c>default_provider</c> 指到它。</param>
     /// <param name="baseUrl">新的端点地址；null 表示不改。</param>
+    /// <param name="contextWindow">上下文窗口；null 表示不改。0 或负数表示删除该项。</param>
+    /// <param name="maxOutputTokens">输出上限；null 表示不改。</param>
     public static WriteResult UpdateProvider(
         string path, string providerName, string? model, bool setAsDefault,
-        string? baseUrl = null)
+        string? baseUrl = null, int? contextWindow = null, int? maxOutputTokens = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
@@ -44,7 +46,8 @@ public static class ProviderConfigWriter
         // 文件不存在时新建：首次配置就是这个路径，让用户手写一整份 TOML
         // 是不必要的门槛。
         if (!File.Exists(path))
-            return Create(path, providerName, model, setAsDefault, baseUrl);
+            return Create(path, providerName, model, setAsDefault, baseUrl,
+                contextWindow, maxOutputTokens);
 
         string text;
         try
@@ -145,6 +148,12 @@ public static class ProviderConfigWriter
             }
         }
 
+        // 数值字段：0 或负数表示"用户明确清掉"，写回时移除该键。
+        // 这不是多余的分支——上下文窗口是压缩的触发基础，
+        // 写一个 0 进去会让压缩在运行期算出一个负预算，报错却看不出根因。
+        changed |= ApplyNumeric(providerTable, "context_window", contextWindow);
+        changed |= ApplyNumeric(providerTable, "max_output_tokens", maxOutputTokens);
+
         if (model is not null)
         {
             var key = FindKey(providerTable, "model");
@@ -231,7 +240,8 @@ public static class ProviderConfigWriter
 
     /// <summary>新建一份最小配置。</summary>
     private static WriteResult Create(
-        string path, string providerName, string? model, bool setAsDefault, string? baseUrl)
+        string path, string providerName, string? model, bool setAsDefault, string? baseUrl,
+        int? contextWindow, int? maxOutputTokens)
     {
         // 新文件只写用户要的那个 provider。预设里有的端点信息从 ProviderCatalog 取，
         // 免得用户为了"先跑起来"还要去查一遍 base_url。
@@ -260,7 +270,16 @@ public static class ProviderConfigWriter
         text.AppendLine($"base_url = \"{baseUrl ?? preset.BaseUrl}\"");
         text.AppendLine($"wire_api = \"{WireApiName(preset.Protocol)}\"");
         text.AppendLine($"model = \"{model}\"");
-        text.AppendLine($"key_env = \"{preset.ApiKeyEnvironmentVariable}\"");
+        if (preset.ApiKeyEnvironmentVariable is { Length: > 0 } keyEnv)
+            text.AppendLine($"key_env = \"{keyEnv}\"");
+
+        // 上下文与输出上限：从能力表带出来的值必须**真的写进文件**，
+        // 否则下次启动读不到，压缩就永远不启用——而界面上刚显示过它。
+        // 这正是"显示的与文件里的不一致"那类错误的翻版。
+        if (contextWindow is > 0)
+            text.AppendLine($"context_window = {contextWindow.Value}");
+        if (maxOutputTokens is > 0)
+            text.AppendLine($"max_output_tokens = {maxOutputTokens.Value}");
 
         try
         {
@@ -344,6 +363,40 @@ public static class ProviderConfigWriter
         }
 
         return null;
+    }
+
+    /// <summary>写入或移除一个整数键。返回是否改动过。</summary>
+    private static bool ApplyNumeric(TableSyntax table, string keyName, int? value)
+    {
+        if (value is null) return false;
+
+        var existing = FindKey(table, keyName);
+
+        if (value <= 0)
+        {
+            if (existing is null) return false;
+            // 用 RemoveChild 而不是 Items.Remove：SyntaxList 只暴露
+            // Add / GetChild / RemoveChild / RemoveChildAt（实测确认）。
+            table.Items.RemoveChild(existing);
+            return true;
+        }
+
+        var text = value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        if (existing is null)
+        {
+            table.Items.Add(new KeyValueSyntax
+            {
+                Key = new KeySyntax(keyName),
+                EqualToken = SyntaxFactory.Token(TokenKind.Equal),
+                Value = new IntegerValueSyntax(value.Value),
+                EndOfLineToken = SyntaxFactory.NewLine(),
+            });
+            return true;
+        }
+
+        existing.Value = new IntegerValueSyntax(value.Value);
+        return true;
     }
 
     private static KeyValueSyntax? FindKey(TableSyntax table, string keyName) =>

@@ -51,7 +51,13 @@ public static class ProviderConfigFile
 
     /// <summary>provider 段允许出现的键。</summary>
     private static readonly string[] AllowedProviderKeys =
-        ["base_url", "wire_api", "key_env", "model", "messages_path"];
+    [
+        "base_url", "wire_api", "key_env", "model", "messages_path",
+        // 上下文与输出上限：**必须能被读回来**。写进去却解析不了，
+        // 就成了"向导显示 1M 上下文、配置文件里有、但程序读不到"——
+        // 压缩永远不启用且没有任何提示。实测踩到过。
+        "context_window", "max_output_tokens",
+    ];
 
     /// <summary>解析选项。未知键由我们自己报，所以不禁用它们的读取。</summary>
     private static readonly TomlSerializerOptions SerializerOptions = new();
@@ -212,6 +218,14 @@ public static class ProviderConfigFile
                 + "配置里只能写变量名（例如 DEEPSEEK_API_KEY），密钥值放进环境变量。";
         }
 
+        // 数值字段：给了就必须是正整数。0 或负数视为配置错误而不是"未设置"——
+        // 静默当成未设置会让用户以为写进去了。
+        var error = ReadPositiveInt(table, "context_window", name, out var contextWindow);
+        if (error is not null) return error;
+
+        error = ReadPositiveInt(table, "max_output_tokens", name, out var maxOutputTokens);
+        if (error is not null) return error;
+
         config = new ChatProviderConfig
         {
             Name = name,
@@ -221,9 +235,27 @@ public static class ProviderConfigFile
             Protocol = protocol.Value,
             ApiKeyEnvironmentVariable = keyEnv,
             MessagesPath = ReadString(table, "messages_path"),
+            ContextWindowTokens = contextWindow,
+            MaxOutputTokens = maxOutputTokens,
         };
 
         return null;
+    }
+
+    /// <summary>读一个可选的正整数字段；给了就必须合法。</summary>
+    private static string? ReadPositiveInt(
+        TomlTable table, string key, string providerName, out int? value)
+    {
+        value = null;
+        if (!table.TryGetValue(key, out var raw) || raw is null) return null;
+
+        if (raw is long number && number is > 0 and <= int.MaxValue)
+        {
+            value = (int)number;
+            return null;
+        }
+
+        return $"provider '{providerName}' 的 {key}='{raw}' 必须是正整数。";
     }
 
     private static string? ReadString(TomlTable table, string key) =>

@@ -21,6 +21,88 @@
 
 ## [Unreleased]
 
+## [0.1.8-alpha.1] — 2026-10-30
+
+**预设表改为从 models.dev 生成，模型能力自动带出。**
+
+### Added
+
+- **`ProviderPresets.g.cs`：20 家 provider、605 个模型的能力表**，由
+  `scripts/sync-provider-presets.py` 从 models.dev 生成。此前是我手写的 19 家、
+  零模型数据，被指出"glm、kimi、mimo、minimax 呢"——现在这些都在，
+  且每个模型带上下文窗口、输出上限、推理字段名、推理档位。
+- **`dougong model` 选完模型直接带出上下文与输出上限**，写进配置文件的
+  `context_window` / `max_output_tokens`。这是能力表真正的价值：
+  用户不知道 MiniMax-M3 是 1M 上下文，让他手填等于把可查的事实变成一道考题；
+  填错的代价不对称——填大则压缩永不触发（撞上 provider 上限才失败），
+  填小则过早压缩（历史被无谓摘掉），两种都不报错。
+- **`ProviderCatalog.FindModelCapabilities`** 与 **`AllPresets`**：宿主
+  （桌面端 ModelPicker）可以直接拿能力表渲染模型选择器，不必自己维护。
+
+### Changed
+
+- **数据源从 pi.net 改为 models.dev**。核实过三件事：
+  - pi 的 `catalog/` 是它的加工层，不是事实来源（它自己的 README 写着
+    `sources/models-dev.ts` normalizes the models.dev catalog）。
+  - 它的 `baseUrl` 有 6/25 家是变量而非字面量（`baseUrl: BASE_URL`），
+    正则解析拿不全，且上游一改写法就失效。
+  - 它的 `compat` 里是私有枚举（`thinkingFormat: "zai"`），语义只有它自己懂；
+    照抄进我们的 `WireCompat` 是错的——我们的开关是**字段名**，不是标签。
+  - models.dev 反而更全：233 家、`interleaved.field` 直接就是推理字段名、
+    `reasoning_options` 直接就是档位、`env` 直接就是密钥变量名。
+
+### 加工层的三层处理
+
+- **机械映射**：`limit` / `api` / `env` / `interleaved` 原样搬运，零判断。
+  源哈希记在生成文件头部，出问题能追到是哪天的数据。
+- **实测修正**：脚本里有一个 `CORRECTIONS` 表，**目前为空**。空着是正确状态——
+  models.dev 会错（pi 源码里记着 `gpt-5-pro` 的输出上限被报成 272000，
+  实际 128000），但我们还没有一次真实调用能证明哪条错。填进去的每一条
+  都必须是自己测出来的结论，否则就是拿别人的实测冒充自己的验证。
+- **明确不抄**：`promptCache` / `maxRequestBytes` / `inputLimits` /
+  `zaiToolStream`——那些服务于 pi 自己的缓存与图片卸载策略，
+  我们的运行时没有对应机制，抄过来是死字段。
+
+### Fixed
+
+- **写进配置的 `context_window` 读不回来**。向导显示 1M 上下文、
+  文件里也写了，但解析器不认识这两个键，直接报未知键——压缩因此永远不会启用，
+  而界面上刚显示过它。这类"显示的与文件里的不一致"是最难自查的一类错误。
+
+### Breaking
+
+- **`ProviderConfigWriter.UpdateProvider` 增加 `contextWindow` / `maxOutputTokens` 参数**；
+  **`ChatProviderConfig` 增加 `ContextWindowTokens` / `MaxOutputTokens`**；
+  **`ProviderPresetData` / `ModelCapabilities` 为公开类型**。ApiCompat 已检出并更新基线。
+- **`ProviderPreset.ApiKeyEnvironmentVariable` 重新有值**：此前因预设不带密钥变量名
+  而为 null，现在从 models.dev 的 `env` 字段取，不再靠猜。
+
+## [0.1.7-alpha.1] — 2026-10-30
+
+**内置 provider 从 3 家扩到 19 家。**
+
+### Added
+
+- **预设表补齐国内可用厂商**。此前只有 `openai` / `anthropic` / `deepseek` 三家，
+  而 `glm`、`kimi`、`mimo`、`minimax` 这些国内实际在用的根本不在列表里——
+  列表的作用就是"选得到"，选不到等于没有。
+  - 国内（10）：`deepseek` `glm` `kimi` `kimi-intl` `mimo` `minimax` `minimax-cn`
+    `stepfun` `qwen` `doubao`
+  - 国际（6）：`openai` `anthropic` `gemini` `xai` `mistral` `groq`
+  - 聚合 / 本地（3）：`openrouter` · `ollama` `lmstudio`（本地，无需密钥）
+  - **每条都实测核对过端点**：各端点返回 401/403/404 而非 DNS 失败，
+    说明主机与路径存在。写了但连不上的条目比不写更糟——用户会以为是自己配错了。
+  - `minimax` 只提供 **Anthropic Messages** 兼容端点（路径里就带 `/anthropic`），
+    不是 chat-completions。协议写错会得到一个含糊的 404，很难自查，所以单独标注。
+  - 本地服务（`ollama` / `lmstudio`）的 `key_env` 为 null，表示不鉴权。
+- **列表行显示主机名与密钥状态**：`glm  api.z.ai  密钥✓`。此前只显示名字与模型，
+  用户不知道会连到哪里、也不知道密钥缺不缺。
+
+### Fixed
+
+- **`presets-are-data-only` 补上覆盖度断言**：`glm` / `kimi` / `mimo` / `minimax`
+  等必须存在。防止以后列表又被"精简"回三家。
+
 ## [0.1.6-alpha.1] — 2026-10-30
 
 **修 `dougong model` 的两个实测 bug，并补齐 Hermes 式的完整流程。**

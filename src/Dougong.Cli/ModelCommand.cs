@@ -176,9 +176,17 @@ public static class ModelCommand
             return 0;
         }
 
+        // 能力表：选完模型直接把上下文窗口与输出上限带出来。
+        // **这是预设表真正的价值**——用户不知道 MiniMax-M3 是 1M 上下文，
+        // 让他手填等于把可查的事实变成一道考题；填错的代价是压缩永不触发
+        // （填大）或过早压缩（填小），两种都不报错。
+        var capabilities = ProviderCatalog.FindModelCapabilities(chosen, model);
+
         // 选中的 provider 就设成默认：这个命令的意图是"以后用这个"。
         var result = ProviderConfigWriter.UpdateProvider(
-            path, chosen, model, setAsDefault: true, baseUrl: baseUrl);
+            path, chosen, model, setAsDefault: true, baseUrl: baseUrl,
+            contextWindow: capabilities?.ContextWindow,
+            maxOutputTokens: capabilities?.MaxOutputTokens);
         if (!result.Succeeded)
         {
             Console.Error.WriteLine(result.Error);
@@ -190,6 +198,16 @@ public static class ModelCommand
         Output.Line($"  provider: {chosen}（已设为 default_provider）");
         Output.Line($"  base_url: {baseUrl}");
         Output.Line($"  model   : {model}");
+        if (capabilities is not null)
+        {
+            Output.Line($"  上下文  : {capabilities.ContextWindow:N0} tokens"
+                + $"（输出上限 {capabilities.MaxOutputTokens:N0}）"
+                + "  ← 取自内置能力表，可手工改");
+        }
+        else
+        {
+            Output.Line("  上下文  : 未知（内置表未收录该模型，压缩不会自动启用）");
+        }
         if (keyEnv is { Length: > 0 }) Output.Line($"  key_env : {keyEnv}");
         if (result.BackupPath is not null)
             Output.Line($"  备份    : {result.BackupPath}");
@@ -203,6 +221,19 @@ public static class ModelCommand
         Output.Line();
         Output.Line("下一步：dougong --doctor 确认配置可用。");
         return 0;
+    }
+
+    /// <summary>从 URL 取主机名（含端口），失败时原样返回。</summary>
+    /// <remarks>
+    /// 列表里只放主机名：完整 URL 太长会挤掉状态列，而用户辨认 provider
+    /// 靠的正是主机名（<c>api.deepseek.com</c> 一眼认得出）。
+    /// </remarks>
+    private static string TryHost(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return "(无)";
+        return Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            ? uri.Host + (uri.IsDefaultPort ? string.Empty : $":{uri.Port}")
+            : url;
     }
 
     /// <summary>提示端点，方括号里是默认值，回车接受。返回 null 表示取消。</summary>
@@ -374,14 +405,31 @@ public static class ModelCommand
         {
             var name = items[i];
             var configured = catalog?.Find(name);
-            var model = configured is null || string.IsNullOrWhiteSpace(configured.Model)
-                ? "未配置模型"
-                : configured.Model;
+
+            // 端点优先显示配置里的（用户改过就以配置为准），否则显示预设。
+            var baseUrl = configured?.BaseUrl
+                ?? (ProviderCatalog.Presets.TryGetValue(name, out var preset) ? preset.BaseUrl : null);
+
+            // **只显示主机名**：完整 URL 太长会挤掉状态列，而用户辨认 provider
+            // 靠的正是主机名（api.deepseek.com 一眼认得出）。
+            var host = TryHost(baseUrl);
+
+            // 密钥状态：已设置 / 未设置 / 无需密钥。
+            var keyEnv = configured?.ApiKeyEnvironmentVariable
+                ?? (ProviderCatalog.Presets.TryGetValue(name, out var kp) ? kp.ApiKeyEnvironmentVariable : null);
+            var keyState = keyEnv switch
+            {
+                null or "" => "无需密钥",
+                { } n when Environment.GetEnvironmentVariable(n) is { Length: > 0 } => "密钥✓",
+                _ => "密钥未设",
+            };
+
             var marker = string.Equals(name, current, StringComparison.OrdinalIgnoreCase) ? "▶" : " ";
-            Output.Line($"  {marker} {i + 1,2}. {name,-14} {model}");
+            Output.Line($"  {marker} {i + 1,2}. {name,-12} {host,-34} {keyState}");
         }
         Output.Line();
-        Output.Line($"   0. 取消");
+        Output.Line("   0. 取消");
+        Output.Line("      （输入名字也可以，例如 glm）");
 
         while (true)
         {
@@ -398,7 +446,6 @@ public static class ModelCommand
             var byName = items.FirstOrDefault(n =>
                 string.Equals(n, input, StringComparison.OrdinalIgnoreCase));
             if (byName is not null) return byName;
-
             Output.Line($"  没有 {input} 这一项。");
         }
     }

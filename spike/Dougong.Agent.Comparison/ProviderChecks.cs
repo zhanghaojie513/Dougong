@@ -380,16 +380,31 @@ public static class ProviderChecks
                 return Task.FromResult<string?>($"预设 '{name}' 的 base_url 不是合法地址：{preset.BaseUrl}");
             }
 
-            // 变量名必须像变量名。预设里出现密钥值是最严重的配置事故。
+            // 密钥变量名可以为 null（本地服务无需鉴权），但给了就必须像变量名。
+            // 预设里出现密钥**值**是最严重的配置事故。
             var keyName = preset.ApiKeyEnvironmentVariable;
-            if (keyName.Length == 0
-                || !(char.IsAsciiLetter(keyName[0]) || keyName[0] == '_')
-                || keyName.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '_'))
+            if (keyName is not null
+                && (keyName.Length == 0
+                    || !(char.IsAsciiLetter(keyName[0]) || keyName[0] == '_')
+                    || keyName.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '_')))
             {
                 return Task.FromResult<string?>(
                     $"预设 '{name}' 的密钥变量名不像变量名：'{keyName}'");
             }
         }
+
+        // **覆盖度**：列表的作用是"选得到"。此前只有 openai/anthropic/deepseek 三家，
+        // 被指出"glm、kimi、mimo、minimax 呢"——国内可用的大模型根本不在列表里。
+        // 这条钉住那几家必须存在，防止以后又被精简掉。
+        string[] mustExist =
+            ["deepseek", "glm", "kimi", "mimo", "minimax", "qwen", "doubao", "stepfun"];
+
+        var missing = mustExist
+            .Where(n => !ProviderCatalog.Presets.ContainsKey(n))
+            .ToArray();
+
+        if (missing.Length > 0)
+            return Task.FromResult<string?>($"预设缺少国内常用厂商：{string.Join(", ", missing)}");
 
         // 预设必须真的被应用（否则上面那圈是空转）。
         var catalog = ProviderCatalog.WithOverrides([], null, "test");
