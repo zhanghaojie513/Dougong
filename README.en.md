@@ -20,7 +20,7 @@
   <a href="https://github.com/zhanghaojie513/Dougong"><img src="https://img.shields.io/badge/repository-Dougong-2f6f5e?style=flat-square" alt="Repository"></a>
   <a href="https://github.com/zhanghaojie513/Dougong/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/zhanghaojie513/Dougong/build.yml?style=flat-square&label=build" alt="Build"></a>
   <a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-10.0-512bd4?style=flat-square" alt=".NET 10"></a>
-  <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.1.3--alpha.1-orange?style=flat-square" alt="Version 0.1.3-alpha.1"></a>
+  <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.1.4--alpha.1-orange?style=flat-square" alt="Version 0.1.4-alpha.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f883d?style=flat-square" alt="MIT License"></a>
 </p>
 
@@ -50,7 +50,7 @@ organised into action through clear connections.
 
 ## Current Status
 
-Targeting `net10.0`, version `0.1.3-alpha.1`, **published to nuget.org** (2026-10-30).
+Targeting `net10.0`, version `0.1.4-alpha.1`, **published to nuget.org** (2026-10-30).
 All four design commitments — composability, lifecycle integrity, explainable failure,
 actually usable — are met; see [design commitments](docs/goal.md).
 
@@ -154,7 +154,7 @@ Dougong focuses on the **supporting layer** for agents — not on any particular
 **As a tool** (no need to clone the repo):
 
 ```bash
-dotnet tool install --global Dougong.Cli --version 0.1.3-alpha.1
+dotnet tool install --global Dougong.Cli --version 0.1.4-alpha.1
 dougong --doctor      # check the environment first; it reports each item and the next step
 dougong               # start a conversation (model config required)
 ```
@@ -162,7 +162,20 @@ dougong               # start a conversation (model config required)
 The package is `Dougong.Cli`; the command is `dougong`. The names differ on purpose:
 packages follow the `Dougong.*` convention, commands stay short.
 
-> In `0.1.3-alpha.1` the command surface is complete (`--doctor`, `--report`, `--help`,
+**Upgrading** (note the `--prerelease` flag):
+
+```bash
+dotnet tool update --global Dougong.Cli --prerelease
+dougong --version     # confirm which version you landed on
+```
+
+> **`--prerelease` is required.** Without it you get "cannot find dougong.cli" —
+> that error is misleading, the package is there. Every release carries an
+> `-alpha.N` prerelease tag, and `dotnet tool update` only considers **stable**
+> versions by default; the stable list is empty, hence "not found".
+> See [Getting started §0.2](docs/getting-started.md) (in Chinese).
+
+> In `0.1.4-alpha.1` the command surface is complete (`--doctor`, `--report`, `--help`,
 > REPL, `--acp` are all exercised, behavior pinned by 46 self-check suites), but the
 > **terminal presentation and wording are still being polished**.
 

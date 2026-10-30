@@ -21,6 +21,33 @@
 
 ## [Unreleased]
 
+## [0.1.4-alpha.1] — 2026-10-30
+
+**只改文档，无代码变更。**
+
+### Changed
+
+- **补上升级路径，修掉一个会踩到的坑**。此前文档只写了安装命令
+  （带 `--version`），没有写升级；而 `dotnet tool update` 不带
+  `--prerelease` 会报「找不到 dougong.cli」——这个报错是误导，包其实在
+  nuget.org 上。真实原因是所有版本都带 `-alpha.N` 预发布标签，
+  `dotnet tool update` 默认只在**稳定版**里挑；稳定版列表为空，于是说找不到。
+  现在 `getting-started.md`、`README.md`、`README.en.md` 都写清了这一点，
+  并注明**不要中途改成 `preview`**（SemVer 里 `preview` > `alpha`，
+  改了之后所有后续 `alpha` 都会被判成降级、被工具拒绝）。
+- **`troubleshooting.md` 新增 §3.2「找不到 dougong.cli」**，
+  并重写 §3.1：原文还写着「缺少三个环境变量」，那是多 provider 之前的报错，
+  已过期。同时补了一张配置报错对照表（`key_env` 写成密钥值、未知键、
+  非法地址、`default_provider` 指向不存在的段、预设未填模型）。
+- **自检套件数从 45 更正为 46**（新增的 `provider` 套件）。
+
+### 为什么升版本号而不是复用在 0.1.3-alpha.1
+
+`0.1.3-alpha.1` 已经发布到 nuget.org，包内容与本仓库 `374e766` 的构建产物
+**哈希完全一致**。版本号一经发布就不能重用——继续在它下面改并打包，
+推送会被 nuget.org 拒绝。`version-not-already-published` 这条自检就是拦这个的，
+本次回归里它确实亮了，是正确的拦截。
+
 ## [0.1.3-alpha.1] — 2026-10-30
 
 本版做两件事：把三处「配置错要到运行时才炸」的静默失效改成装配期失败，

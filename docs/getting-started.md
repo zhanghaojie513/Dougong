@@ -60,7 +60,7 @@ Visual Studio Code：<https://code.visualstudio.com/>
 如果你不想克隆仓库，只想装上命令行工具用起来——两条命令：
 
 ```bash
-dotnet tool install --global Dougong.Cli --version 0.1.3-alpha.1
+dotnet tool install --global Dougong.Cli --version 0.1.4-alpha.1
 dougong --help
 ```
 
@@ -73,10 +73,10 @@ dougong --help
 > **装的是包 `Dougong.Cli`，命令是 `dougong`。** 两个名字不一样是刻意的：
 > 包名跟项目命名约定（`Dougong.*`），命令名短，方便敲。
 
-**已经发布到 NuGet**（`0.1.3-alpha.1`，2026-10-30）。上面的命令可以直接用。
+**已经发布到 NuGet**（`0.1.4-alpha.1`，2026-10-30）。上面的命令可以直接用。
 
 > **关于 `alpha` 的预期**：命令行功能是完整的——`--doctor`、`--report`、
-> `--help`、REPL、`--acp` 都实测过，行为由 45 个自检套件钉住。
+> `--help`、REPL、`--acp` 都实测过，行为由 46 个自检套件钉住。
 > **但交互体验（终端呈现、提示文案）仍在打磨**，后续版本会变。
 > 这是 `alpha` 的正常状态，不是"装了个半成品"。
 
@@ -90,9 +90,33 @@ dougong              # 开始对话
 升级与卸载：
 
 ```bash
-dotnet tool update --global Dougong.Cli
+dotnet tool update --global Dougong.Cli --prerelease
 dotnet tool uninstall --global Dougong.Cli
 ```
+
+> **升级必须带 `--prerelease`。** 不带的话报「找不到 dougong.cli」，
+> 但**这个报错是误导**——包明明在 nuget.org 上。真正的原因是：
+> 当前所有版本都带预发布标签（`-alpha.N`），而 `dotnet tool update`
+> 默认只在**稳定版**里挑最新版；稳定版列表为空，于是它说"找不到"。
+> 2026-10-30 实测：不带 `--prerelease` 失败，带上后从 `0.1.2-alpha.1`
+> 一次升到 `0.1.4-alpha.1`，不需要写 `--version`。
+>
+> **确认升到了哪个版本**：`dougong --version`。`dotnet tool list --global`
+> 也能看，但它显示的是包版本，与命令输出应当一致。
+>
+> 想回到某个具体版本就加 `--version`（降级还要 `--allow-downgrade`）：
+>
+> ```bash
+> dotnet tool update --global Dougong.Cli --version 0.1.2-alpha.1 --allow-downgrade
+> ```
+
+> **为什么不发稳定版号**：稳定版能让升级免去 `--prerelease`，但代价是
+> 承诺"可以用了"。本项目 `goal.md` 明确把「跨大版本 API 稳定」列为反目标，
+> 且命令面与文案仍在打磨，所以继续用 `alpha`。等这两点稳定后再发无后缀版本。
+>
+> **中途不要改成 `preview`。** SemVer 里 `preview` > `alpha`，改了之后
+> 所有后续 `alpha` 都会被判成降级、被 `dotnet tool` 拒绝。要脱离 prerelease
+> 就一步到位发无后缀版本。
 
 > **这一节和后面的区别**：这里只装工具、不碰源码，适合"先试试能做什么"。
 > §1–§7 是给"想改代码或写插件"的人看的——那些需要 clone 仓库。

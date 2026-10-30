@@ -109,11 +109,28 @@ dotnet test Dougong.slnx -c Release --no-build --output Detailed
 
 ### 3.1 `缺少 provider 配置`
 
-**现象**：`缺少 provider 配置。请设置 DOUGONG_PROVIDER_BASE / KEY / MODEL 环境变量。`
+**现象**：`缺少 provider 配置：没有任何可用的 provider`
 
-**原因**：三个必需的环境变量没设全。
+**原因**：既没有配置文件，也没有设全三个环境变量。
 
-**做法**：先跑 `dougong --doctor`，它会点出具体缺哪一个。
+**做法**：先跑 `dougong --doctor`，它会把缺什么和下一步一起打出来。
+
+**推荐用配置文件**（可以配多个 provider）：`~/.dougong/config.toml`
+
+```toml
+default_provider = "deepseek"
+
+[providers.deepseek]
+base_url = "https://api.deepseek.com"
+model    = "deepseek-chat"
+key_env  = "DEEPSEEK_API_KEY"    # 变量名，不是密钥本身
+```
+
+```bash
+export DEEPSEEK_API_KEY='<密钥>'   # 密钥只进环境变量
+```
+
+**或者全用环境变量**（优先级最高，会覆盖配置文件的选中项）：
 
 ```bash
 export DOUGONG_PROVIDER_BASE=https://api.example.com/v1
@@ -124,10 +141,50 @@ export DOUGONG_PROVIDER_KEY=<密钥>
 ```
 
 > 密钥只从环境变量读取，本项目的任何文件都不会保存它。
-> 配置文件 `~/.dougong/config.toml` 里只有密钥的**变量名**（`key_env`），
-> 写成密钥值会被硬拒。
+> 配置文件里只有密钥的**变量名**（`key_env`），写成密钥值会被硬拒。
 
-### 3.2 `401` / `403`：密钥无效或无权限
+**配置写错了会怎么报**：`--doctor` 会点名到具体键，不静默忽略。
+
+| 现象 | 原因 |
+|---|---|
+| `key_env='sk-...' 看起来是一个密钥值而不是变量名` | 把密钥写进配置了，改成变量名 |
+| `有未知的键 'api_key'` | 字段名拼错，支持 `base_url` / `wire_api` / `key_env` / `model` / `messages_path` |
+| `base_url 不是合法的 http(s) 地址` | 缺 `https://` 前缀 |
+| `选中的 provider 'x' 不存在` | `default_provider` 指向了没有定义的段 |
+| `provider 'x' 没有配置 model` | 内置预设不带模型名，必须自己填 |
+
+### 3.2 `找不到 dougong.cli`（安装 / 升级时）
+
+**现象**：
+
+```text
+dotnet tool update --global Dougong.Cli
+在 NuGet 源 https://api.nuget.org/v3/index.json 中找不到 dougong.cli。
+```
+
+**原因**：当前所有版本都带预发布标签（`-alpha.N`），而
+`dotnet tool update`/`install` 默认只在**稳定版**里挑最新版。
+稳定版列表为空，于是报"找不到"——**这个报错是误导**，包确实在 nuget.org 上。
+
+**做法**：加 `--prerelease`。
+
+```bash
+dotnet tool update --global Dougong.Cli --prerelease
+dougong --version
+```
+
+**为什么 `search` 也搜不到**：`dotnet tool search Dougong` 返回空。
+实测 2026-10-30：nuget.org 的 `flatcontainer` 与 `registration` 索引都能列出全部版本
+（返回 200），但搜索 API 的 `totalHits` 是 0。**不影响安装与升级**——那两个走
+registration 索引。搜索索引的收录条件没有验证到，不猜。
+
+**要装指定版本**（降级需额外 `--allow-downgrade`）：
+
+```bash
+dotnet tool update --global Dougong.Cli --version 0.1.2-alpha.1 --allow-downgrade
+```
+
+### 3.3 `401` / `403`：密钥无效或无权限
 
 **现象**：`provider 返回 401：{"error":{"message":"Authentication Fails ..."}}`
 
@@ -143,7 +200,7 @@ export DOUGONG_PROVIDER_KEY=<密钥>
 实际是密钥已失效——装置把 401 当成了"未遵循"。这是个假结论，已修：
 现在请求失败会明确报错，不计入统计。
 
-### 3.3 `429`：限流或余额不足
+### 3.4 `429`：限流或余额不足
 
 **现象**：`HTTP 429`，或 `已达到速率限制`。
 
@@ -154,7 +211,7 @@ export DOUGONG_PROVIDER_KEY=<密钥>
 **这一条怎么发现的**：并行跑多家 provider 的验收时，同一家的两个协议同时跑会触发限流。
 现在的矩阵脚本按 provider 分组，组内串行、组间并行。
 
-### 3.4 连接被拒绝 / 超时
+### 3.5 连接被拒绝 / 超时
 
 **现象**：`Failed to connect`、`Connection was reset`、`Recv failure`。
 
@@ -169,7 +226,7 @@ export DOUGONG_PROVIDER_KEY=<密钥>
 GIT_HTTP_LOW_SPEED_LIMIT=1 GIT_HTTP_LOW_SPEED_TIME=60 git fetch origin
 ```
 
-### 3.5 会话目录不可写
+### 3.6 会话目录不可写
 
 **现象**：`无法创建或写入：<路径>`
 
