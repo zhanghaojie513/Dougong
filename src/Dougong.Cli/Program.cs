@@ -68,6 +68,16 @@ public static class Program
         if (args.Contains("--acp"))
             return await RunAcpAgentAsync();
 
+        // 子命令 `dougong model`：配置模型并写回配置文件。
+        //
+        // **必须排在 --help 与未知参数检查之前**：
+        //  · 排后 → `dougong model --help` 会打出主帮助，用户看不到子命令的用法
+        //  · 排后 → `model` 会被当成未知参数拒掉（它不是以 - 开头的开关）
+        //  · 排后 → 没有任何 provider 时无法运行，而这个命令正是用来
+        //    从零创建配置的，那是最需要它的场景
+        if (args.Length > 0 && args[0] == "model")
+            return ModelCommand.Run(args[1..]);
+
         if (args.Contains("--version") || args.Contains("-v"))
         {
             Output.Line($"dougong {ProductInfo.Version}");
@@ -804,6 +814,7 @@ public static class Program
         Output.Line();
         Output.Line("用法：");
         Output.Line("  dougong                      启动对话（需要 provider 配置）");
+        Output.Line("  dougong model                选择 provider 与模型，写回配置文件");
         Output.Line("  dougong --doctor             启动自检：逐项检查环境并给出下一步");
         Output.Line("  dougong --report             输出诊断信息包（不含密钥与对话内容）");
         Output.Line("  dougong --version            显示版本");

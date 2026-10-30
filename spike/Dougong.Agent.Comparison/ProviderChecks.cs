@@ -27,6 +27,9 @@ public static class ProviderChecks
         failures += await CheckAsync("model-command-lists-and-switches", ModelCommandAsync);
         failures += await CheckAsync("secret-never-appears-in-doctor-output", SecretNeverPrintedAsync);
         failures += await CheckAsync("presets-are-data-only", PresetsAreDataOnly);
+        failures += await CheckAsync("model-command-preserves-comments", PreservesCommentsAsync);
+        failures += await CheckAsync("model-command-creates-config", CreatesConfigAsync);
+        failures += await CheckAsync("model-command-refuses-broken-config", RefusesBrokenConfigAsync);
 
         Console.WriteLine(failures == 0
             ? "PROVIDER: ALL PASS"
@@ -407,8 +410,171 @@ public static class ProviderChecks
         return Task.FromResult<string?>(null);
     }
 
-    // ── 支撑 ─────────────────────────────────────────────────────
+    /// <summary>
+    /// <c>dougong model</c> 改值时必须**完整保留注释、空行与字段顺序**。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么这条是硬要求而不是"尽量"</b>：配置文件是用户手写的，注释往往记着
+    /// "为什么这么配"。如果一条配置命令顺手抹掉它们，用户会不敢再跑这个命令——
+    /// 而"改模型"恰恰是最常做的事。
+    /// <para>
+    /// <b>为什么不能只断言"值改对了"</b>：整体重新序列化也能把值改对，
+    /// 同时把注释全丢掉。所以这里逐条比对注释、空行位置与未触碰的键。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> PreservesCommentsAsync()
+    {
+        const string original = """
+            # 顶部说明：这段注释必须活着
+            default_provider = "alpha"
 
+            [providers.alpha]
+            base_url = "https://a.example.com/v1"   # 行尾注释也要保留
+            # 换模型前先确认这个值
+            model = "old-model"
+            key_env = "ALPHA_KEY"
+
+            [providers.beta]
+            base_url = "https://b.example.com/v1"
+            model = "beta-model"
+            """;
+
+        var path = WriteTempConfig(original);
+        try
+        {
+            var result = await RunCliAsync(
+                ["model", "--set", "alpha", "--model", "new-model"],
+                new Dictionary<string, string?> { ["DOUGONG_PROVIDER_CONFIG"] = path });
+
+            if (result.ExitCode != 0)
+                return $"退出码 {result.ExitCode}，stderr={Trim(result.Stderr)}";
+
+            var after = await File.ReadAllTextAsync(path);
+
+            if (!after.Contains("new-model", StringComparison.Ordinal))
+                return $"值没改成功：{Trim(after)}";
+
+            if (after.Contains("old-model", StringComparison.Ordinal))
+                return $"旧值没被替换：{Trim(after)}";
+
+            // 逐一断言用户写下的三处注释都还在。
+            foreach (var comment in new[]
+                     {
+                         "顶部说明：这段注释必须活着",
+                         "行尾注释也要保留",
+                         "换模型前先确认这个值",
+                     })
+            {
+                if (!after.Contains(comment, StringComparison.Ordinal))
+                    return $"注释被删掉了：「{comment}」。改动后={Trim(after)}";
+            }
+
+            // 空行数量不能变：整段重新序列化通常会把它们压掉。
+            var blankBefore = original.Split('\n').Count(l => l.Trim().Length == 0);
+            var blankAfter = after.Split('\n').Count(l => l.Trim().Length == 0);
+            if (blankBefore != blankAfter)
+                return $"空行数从 {blankBefore} 变成 {blankAfter}，格式被重排了";
+
+            // 没碰的 provider 必须原样不动。
+            if (!after.Contains("beta-model", StringComparison.Ordinal))
+                return "未触碰的 provider 被改动了";
+
+            // 改后的文件必须仍能解析，且解析出的值正确。
+            var parseError = ProviderConfigFile.TryLoad(path, out var catalog);
+            if (parseError is not null)
+                return $"改完的配置解析失败：{parseError}";
+
+            if (catalog!.Find("alpha")?.Model != "new-model")
+                return $"解析出的 model 不是 new-model，而是 {catalog.Find("alpha")?.Model}";
+
+            return null;
+        }
+        finally { File.Delete(path); }
+    }
+
+    /// <summary>
+    /// 配置文件不存在时，<c>dougong model</c> 必须能建出一份可用的。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么这条重要</b>：新用户的第一步就是它。要求他先手写一份 TOML
+    /// 才能用上"配置模型"的命令，等于把这个命令的用途倒过来了。
+    /// </remarks>
+    private static async Task<string?> CreatesConfigAsync()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"dougong-new-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "config.toml");
+
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+
+            // 交互式：选第 1 项（anthropic），输入模型名。
+            var result = await RunCliAsync(
+                ["model"],
+                new Dictionary<string, string?> { ["DOUGONG_PROVIDER_CONFIG"] = path },
+                stdin: "1\nmy-test-model\n");
+
+            if (!File.Exists(path))
+                return $"没有创建配置文件。stdout={Trim(result.Stdout)} stderr={Trim(result.Stderr)}";
+
+            var parseError = ProviderConfigFile.TryLoad(path, out var catalog);
+            if (parseError is not null) return $"新建的配置解析失败：{parseError}";
+            if (catalog is null) return "新建的配置没有解析出目录";
+
+            if (catalog.Selected.Model != "my-test-model")
+                return $"模型名没写进去：{catalog.Selected.Model}";
+
+            if (string.IsNullOrWhiteSpace(catalog.Selected.BaseUrl))
+                return "新建的配置缺 base_url";
+
+            // 缺密钥必须当场提示，不能等下次对话才 401。
+            if (!result.Stdout.Contains("还差密钥", StringComparison.Ordinal))
+                return $"没有提示缺少密钥。stdout={Trim(result.Stdout)}";
+
+            return null;
+        }
+        finally
+        {
+            try { File.Delete(path); Directory.Delete(dir, recursive: true); } catch { /* 清理失败不影响结论 */ }
+        }
+    }
+
+    /// <summary>
+    /// 配置文件有语法错时必须拒绝改动，而不是"照着自己的理解重写一份"。
+    /// </summary>
+    /// <remarks>
+    /// 原文件坏了还去写回，会把错误固化下来，用户再也分不清是自己写错的
+    /// 还是工具改坏的。
+    /// </remarks>
+    private static async Task<string?> RefusesBrokenConfigAsync()
+    {
+        const string broken = "[providers.x\nbase_url =";
+        var path = WriteTempConfig(broken);
+        try
+        {
+            var result = await RunCliAsync(
+                ["model", "--set", "x", "--model", "m"],
+                new Dictionary<string, string?> { ["DOUGONG_PROVIDER_CONFIG"] = path });
+
+            if (result.ExitCode == 0)
+                return "配置有语法错却返回成功";
+
+            // 文件必须一个字节都没变。
+            var after = await File.ReadAllTextAsync(path);
+            if (after != broken)
+                return $"坏掉的配置被改写了：{Trim(after)}";
+
+            var combined = result.Stdout + result.Stderr;
+            if (!combined.Contains("TOML", StringComparison.Ordinal))
+                return $"没说明是 TOML 语法问题：{Trim(combined)}";
+
+            return null;
+        }
+        finally { File.Delete(path); }
+    }
+
+    // ── 支撑 ─────────────────────────────────────────────────────
     private static string WriteTempConfig(string toml)
     {
         var path = Path.Combine(
