@@ -327,7 +327,10 @@ public static class Program
             sessionId, workspace, swappable, approver,
             SessionComposition.MemoryDirectoryFromEnvironment(sessionDir),
             contextWindow: config.ContextWindowTokens,
-            maxOutputTokens: config.MaxOutputTokens);
+            // **不传 config.MaxOutputTokens**：那是模型的输出容量上限，
+            // 不是单次请求预留。传进去会在 kimi-k3 这类
+            // （1048576/1048576）模型上算出负预算。
+            requestOutputReserve: null);
         // 内核接线（G14）：默认启用——运行能力由内核解析，宿主不直接持有
         // dispatcher/runtime 实例。DOUGONG_KERNEL=0 可退回直连路径，
         // 保留给"怀疑内核接线本身有问题"时的对照手段。

@@ -123,7 +123,7 @@ public static class CompactionWiringChecks
 
         var runtime = new LoopAgentRuntime(
             client, new ToolDispatcher(),
-            limits: new ContextLimits { ContextWindowTokens = 4_000, MaxOutputTokens = 500 },
+            limits: new ContextLimits { ContextWindowTokens = 4_000, RequestOutputReserve = 500 },
             compactor: new SlidingWindowCompactor(preservedHead: 2, preservedTail: 4),
             summarize: (_, _) => ValueTask.FromResult("SUMMARY"));
 
@@ -146,7 +146,7 @@ public static class CompactionWiringChecks
 
         var runtime = new LoopAgentRuntime(
             client, new ToolDispatcher(),
-            limits: new ContextLimits { ContextWindowTokens = 4_000, MaxOutputTokens = 500 },
+            limits: new ContextLimits { ContextWindowTokens = 4_000, RequestOutputReserve = 500 },
             compactor: new SlidingWindowCompactor(preservedHead: 2, preservedTail: 4),
             summarize: (_, _) => ValueTask.FromResult("SUMMARY"));
 
@@ -183,7 +183,7 @@ public static class CompactionWiringChecks
         var client = new ScriptedChatClient(new ScriptedTurn(new ScriptedUpdate(Text: "ok")));
         var runtime = new LoopAgentRuntime(
             client, new ToolDispatcher(),
-            limits: new ContextLimits { ContextWindowTokens = 5_000, MaxOutputTokens = 500 },
+            limits: new ContextLimits { ContextWindowTokens = 5_000, RequestOutputReserve = 500 },
             compactor: new SlidingWindowCompactor(preservedHead: 1, preservedTail: 3),
             summarize: (_, _) => ValueTask.FromResult("SUMMARY"));
 
@@ -220,7 +220,7 @@ public static class CompactionWiringChecks
 
         var runtime = new LoopAgentRuntime(
             client, new ToolDispatcher(),
-            limits: new ContextLimits { ContextWindowTokens = 4_000, MaxOutputTokens = 500 },
+            limits: new ContextLimits { ContextWindowTokens = 4_000, RequestOutputReserve = 500 },
             compactor: new SlidingWindowCompactor(preservedHead: 2, preservedTail: 4),
             summarize: (_, _) => throw new InvalidOperationException("summary boom"));
 
@@ -247,7 +247,7 @@ public static class CompactionWiringChecks
 
         var runtime = new LoopAgentRuntime(
             client, new ToolDispatcher(),
-            limits: new ContextLimits { ContextWindowTokens = 4_000, MaxOutputTokens = 500 },
+            limits: new ContextLimits { ContextWindowTokens = 4_000, RequestOutputReserve = 500 },
             compactor: new SlidingWindowCompactor(preservedHead: 2, preservedTail: 4));
 
         var events = new List<AgentEvent>();

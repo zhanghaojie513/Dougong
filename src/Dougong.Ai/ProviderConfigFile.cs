@@ -238,22 +238,22 @@ public static class ProviderConfigFile
         error = ReadPositiveInt(table, "max_output_tokens", name, out var maxOutputTokens);
         if (error is not null) return error;
 
-        // 预算可行性：**必须在解析期拦住，不能等到装配期抛异常**。
-        // 上下文窗口装不下输出与预留时，ContextLimits.Validate() 会抛
-        // "上下文窗口配置不可行"，而那个报错发生在启动流程里——
-        // 用户看到的是应用起不来，完全看不出是配置文件里两个数字的问题。
-        // 在这里拦下，--doctor 能把两个数字和怎么改一起说出来。
-        if (contextWindow is > 0)
+        // 预算可行性：**只看窗口本身能否容纳固定预留**。
+        //
+        // **不把 max_output_tokens 算进来**：那是模型的输出容量上限，
+        // 可以等于甚至大于上下文窗口（kimi-k3 是 1048576/1048576，那是
+        // "输入输出共享这一个窗口"）。它只用于构造请求的 max_tokens，
+        // 不参与压缩预算——参与预算的是单次请求预留（见
+        // ContextLimits.RequestOutputReserve）。
+        //
+        // 此前把两者混为一谈，导致这条校验在合法配置上报"预算不可行"，
+        // 用户看到的是应用起不来，而报错指向的是两个都没问题的数字。
+        if (contextWindow is > 0
+            && contextWindow.Value - TokenBudget.DefaultOverheadTokens <= 0)
         {
-            var output = maxOutputTokens ?? 0;
-            var effective = contextWindow.Value - output - TokenBudget.DefaultOverheadTokens;
-            if (effective <= 0)
-            {
-                return $"provider '{name}' 的预算不可行：context_window {contextWindow} "
-                    + $"减去 max_output_tokens {output} 与预留 "
-                    + $"{TokenBudget.DefaultOverheadTokens} 后为 {effective}，必须为正。"
-                    + "把 max_output_tokens 调小，或把 context_window 调大。";
-            }
+            return $"provider '{name}' 的 context_window {contextWindow} 太小："
+                + $"减去固定预留 {TokenBudget.DefaultOverheadTokens} 后不是正数。"
+                + "填模型的实际上下文窗口（通常几十万到上百万 token）。";
         }
 
         config = new ChatProviderConfig

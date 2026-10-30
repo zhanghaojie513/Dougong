@@ -117,7 +117,7 @@ public sealed class SlidingWindowCompactor(
     {
         ArgumentNullException.ThrowIfNull(input);
         var effective = TokenBudget.EffectiveInput(
-            input.ContextWindowTokens, input.MaxOutputTokens, input.EstimateErrorTokens);
+            input.ContextWindowTokens, input.RequestOutputReserve, input.EstimateErrorTokens);
 
         var before = TokenBudget.Estimate(input.CommittedHistory);
         var trigger = (int)(effective * _triggerRatio);

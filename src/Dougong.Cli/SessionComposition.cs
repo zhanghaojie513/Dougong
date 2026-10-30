@@ -26,7 +26,7 @@ public sealed class SessionComposition
     private readonly IToolApprover _approver;
     private readonly bool _shellEnabled;
     private readonly int _contextWindow;
-    private readonly int _maxOutputTokens;
+    private readonly int _requestOutputReserve;
     private readonly IReadOnlyList<McpServerSpec> _mcpServers;
 
     private SessionComposition(
@@ -36,7 +36,7 @@ public sealed class SessionComposition
         IToolApprover approver,
         bool shellEnabled,
         int contextWindow,
-        int maxOutputTokens,
+        int requestOutputReserve,
         IReadOnlyList<McpServerSpec> mcpServers,
         IMemoryInjector? memory = null,
         MemoryStore? memoryStore = null)
@@ -47,7 +47,7 @@ public sealed class SessionComposition
         _approver = approver;
         _shellEnabled = shellEnabled;
         _contextWindow = contextWindow;
-        _maxOutputTokens = maxOutputTokens;
+        _requestOutputReserve = requestOutputReserve;
         _mcpServers = mcpServers;
         Memory = memory;
         MemoryStore = memoryStore;
@@ -175,11 +175,15 @@ public sealed class SessionComposition
     /// 的 context_window 真正生效的路径**：装配本身不持有 ChatProviderConfig，
     /// 它只认调用方给的数。
     /// </param>
-    /// <param name="maxOutputTokens">输出上限；null 表示按环境变量与默认值决定。</param>
+    /// <param name="requestOutputReserve">
+    /// 单次请求的输出预留；null 表示按环境变量与默认值决定。
+    /// **注意是预留，不是模型容量上限**——两者的区别见
+    /// <see cref="ContextLimits.RequestOutputReserve"/>。
+    /// </param>
     public static async Task<SessionComposition> CreateAsync(
         string sessionId, string workspace, IChatClient client, IToolApprover approver,
         string? memoryDirectory = null, CancellationToken cancellationToken = default,
-        int? contextWindow = null, int? maxOutputTokens = null)
+        int? contextWindow = null, int? requestOutputReserve = null)
     {
         // 记忆按工作区分文件：跨工作区默认不传播（skills-evolution.md §3）。
         // 用路径哈希而不是文件名，避免不同工作区撞到同一个文件。
@@ -197,13 +201,13 @@ public sealed class SessionComposition
 
         return Create(
             sessionId, workspace, client, approver, memory, memoryStore,
-            contextWindow, maxOutputTokens);
+            contextWindow, requestOutputReserve);
     }
 
     private static SessionComposition Create(
         string sessionId, string workspace, IChatClient client, IToolApprover approver,
         IMemoryInjector? memory, MemoryStore? memoryStore,
-        int? configuredContextWindow = null, int? configuredMaxOutput = null)
+        int? configuredContextWindow = null, int? configuredOutputReserve = null)
     {
         var shellEnabled = Environment.GetEnvironmentVariable("DOUGONG_SHELL") is "1" or "true";
 
@@ -221,16 +225,12 @@ public sealed class SessionComposition
                 ? window
                 : 0;
 
-        // 输出上限同理。**此前这里是常量 4096，配置文件里的 max_output_tokens
-        // 写了也不生效**——CLI 用 4096、桌面端读配置，同一个文件在两边算出
-        // 不同的压缩预算，而两边都不报错。这类差异最难查。
-        var maxOutput = configuredMaxOutput is > 0
-            ? configuredMaxOutput.Value
-            : int.TryParse(
-                Environment.GetEnvironmentVariable("DOUGONG_MAX_OUTPUT_TOKENS"), out var mo)
-                && mo > 0
-                ? mo
-                : DefaultMaxOutputTokens;
+        // 请求输出预留同理。**取值来源与模型容量上限无关**：
+        // 模型容量（配置里的 max_output_tokens）只用于构造请求的 max_tokens，
+        // 不参与压缩预算——那是 dsh 的 reservedCompletionTokens 角色。
+        var outputReserve = configuredOutputReserve is > 0
+            ? configuredOutputReserve.Value
+            : EffectiveRequestOutputReserve();
 
         // 比例配置错要在装配时炸，不能带病启动：
         // 保留 ≥ 触发时压缩后仍在阈值之上，表现是每轮都压一次——
@@ -240,7 +240,7 @@ public sealed class SessionComposition
 
         return new SessionComposition(
             sessionId, workspace, client, approver,
-            shellEnabled, contextWindow, maxOutput, ParseMcpServers(), memory, memoryStore)
+            shellEnabled, contextWindow, outputReserve, ParseMcpServers(), memory, memoryStore)
         {
             TriggerRatio = triggerRatio,
             RetainRatio = retainRatio,
@@ -257,29 +257,33 @@ public sealed class SessionComposition
     public bool ShellEnabled => _shellEnabled;
 
     /// <summary>
-    /// 单次回复的输出上限。**装配与 <c>--doctor</c> 必须用同一个数**，
+    /// 单次请求的输出预留。**装配与 <c>--doctor</c> 必须用同一个数**，
     /// 否则诊断报"配置可行"而实际跑起来不可行——那比不检查更糟。
     /// </summary>
-    public const int DefaultMaxOutputTokens = 4_096;
-
-    /// <summary>本次会话的输出上限：配置里给了就用配置的，否则用默认值。</summary>
     /// <remarks>
-    /// <b>此前这里是个常量 4096，配置里的 max_output_tokens 写了也不生效。</b>
-    /// 后果是两边不一致：桌面端读配置，CLI 读常量，同一个配置文件在两边
-    /// 算出不同的压缩预算——而这类差异最难查，因为两边都不报错。
+    /// <b>这是"我方准备让模型写多少"，不是"这个模型最多能吐多长"。</b>
+    /// 后者（配置里的 <c>max_output_tokens</c>）可能是 1048576，与上下文窗口同大；
+    /// 拿它算压缩预算会得出负数，装配期抛异常、应用起不来。
+    /// <para>
+    /// 4096 是保守值：绝大多数回复远短于此，而预留越小、可用历史越多。
+    /// 需要更长回复时用 <c>DOUGONG_MAX_OUTPUT_TOKENS</c> 调，代价是压缩更早触发。
+    /// </para>
     /// </remarks>
-    public int MaxOutputTokens => _maxOutputTokens;
+    public const int DefaultRequestOutputReserve = 4_096;
+
+    /// <summary>本次会话的单次请求输出预留。</summary>
+    public int RequestOutputReserve => _requestOutputReserve;
 
     /// <summary>
-    /// 装配用的输出上限。**装配与 --doctor 必须取同一个值**，
+    /// 装配用的请求输出预留。**装配与 --doctor 必须取同一个值**，
     /// 否则诊断报配置可行而实际跑起来不可行——那比不检查更糟。
     /// </summary>
-    public static int EffectiveMaxOutputTokens() =>
+    public static int EffectiveRequestOutputReserve() =>
         int.TryParse(
-            Environment.GetEnvironmentVariable("DOUGONG_MAX_OUTPUT_TOKENS"), out var value)
+            Environment.GetEnvironmentVariable("DOUGONG_REQUEST_OUTPUT_RESERVE"), out var value)
         && value > 0
             ? value
-            : DefaultMaxOutputTokens;
+            : DefaultRequestOutputReserve;
 
     /// <summary>本次会话的上下文窗口；0 表示不压缩。</summary>
     public int ContextWindow => _contextWindow;
@@ -383,7 +387,11 @@ public sealed class SessionComposition
             new ContextLimits
             {
                 ContextWindowTokens = _contextWindow,
-                MaxOutputTokens = MaxOutputTokens,
+                // **这里传的是单次请求预留，不是模型的输出容量上限。**
+                // 配置里的 max_output_tokens 是"这个模型最多能吐多长"，
+                // 可以是 1048576 与窗口同大；拿它算预算会算出负数。
+                // 请求预留是我方准备让模型写多少，与模型容量无关。
+                RequestOutputReserve = RequestOutputReserve,
             },
             // 头尾条数用默认值（结构约束），比例用装配期读到的值——
             // 不在这里重新读环境变量，否则 --doctor 校验的和实际用的可能不是同一组数。

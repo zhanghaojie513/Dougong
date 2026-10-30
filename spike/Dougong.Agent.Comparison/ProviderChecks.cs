@@ -886,59 +886,75 @@ public static class ProviderChecks
     }
 
     /// <summary>
-    /// 预设表里**不许出现**装不下输出的模型。
+    /// 预设表里的输出容量上限**不参与压缩预算**，所以它可以等于上下文窗口。
     /// </summary>
     /// <remarks>
-    /// <b>这是桌面端实测到的致命问题</b>：models.dev 的 <c>limit.output</c> 是
-    /// "输出方向的容量上限"，不是"单次回复该配多少"。1176 条模型的 output >= context
-    /// （kimi-k3 是 1048576/1048576，doubao 是 256000/256000）。照抄后
-    /// <c>ctx - out - 512 &lt;= 0</c>，<c>ContextLimits.Validate()</c> 抛异常，
-    /// **应用无法启动**，而用户看到的报错是"上下文窗口配置不可行"——
-    /// 完全看不出是我们的预设数据有问题。
+    /// <b>这条断言以前守的是相反的规则</b>：曾要求 out &lt; ctx - 512，
+    /// 因为当时把"模型输出容量上限"当成了"单次请求预留"来算预算。
+    /// kimi-k3 的 1048576/1048576（输入输出共享同一个窗口）因此被误判为非法，
+    /// 生成脚本还额外编了个 25% 的收敛值。
     /// <para>
-    /// 这条断言跑在生成产物上，所以任何一次重新生成后数据回退都会立刻变红。
+    /// 概念拆开之后（<c>ContextLimits.RequestOutputReserve</c> 与
+    /// <c>max_output_tokens</c> 各管一件事），约束变成：
+    /// <b>真正参与预算的是请求预留，而它是个固定小值</b>，与模型容量无关。
+    /// 所以这里改成断言"配置能构造成功"，而不是断言数值关系。
     /// </para>
     /// </remarks>
     private static Task<string?> PresetsFitTheirBudgetAsync()
     {
-        var offenders = new List<string>();
+        // 用预设表里最极端的条目（输出等于上下文）构造一次真实配置。
+        var extremes = ProviderCatalog.AllPresets
+            .SelectMany(kv => kv.Value.Models.Select(m => (Provider: kv.Key, Model: m)))
+            .Where(x => x.Model.MaxOutputTokens >= x.Model.ContextWindow)
+            .Take(3)
+            .ToArray();
 
-        foreach (var (name, preset) in ProviderCatalog.AllPresets)
-        {
-            foreach (var model in preset.Models)
-            {
-                if (model.MaxOutputTokens <= 0) continue;
-
-                var effective = model.ContextWindow
-                    - model.MaxOutputTokens
-                    - TokenBudget.DefaultOverheadTokens;
-
-                if (effective <= 0)
-                {
-                    offenders.Add(
-                        $"{name}/{model.Id} ctx={model.ContextWindow} "
-                        + $"out={model.MaxOutputTokens} → 有效预算 {effective}");
-                }
-            }
-        }
-
-        if (offenders.Count > 0)
+        if (extremes.Length == 0)
         {
             return Task.FromResult<string?>(
-                $"{offenders.Count} 条模型的输出上限挤占了整个上下文窗口，"
-                + "会让 Validate() 抛异常、应用起不来："
-                + string.Join("；", offenders.Take(5)));
+                "预设表里没有输出 ≥ 上下文的条目——"
+                + "如果上游本来有，说明数据被收敛过（旧规则残留）");
+        }
+
+        foreach (var (provider, model) in extremes)
+        {
+            try
+            {
+                // 请求预留用默认值（4096），模型容量如实传入。
+                var limits = new ContextLimits(
+                    model.ContextWindow, ContextLimits2DefaultReserve);
+
+                if (limits.EffectiveInputTokens <= 0)
+                {
+                    return Task.FromResult<string?>(
+                        $"{provider}/{model.Id}: 有效输入预算为 {limits.EffectiveInputTokens}");
+                }
+            }
+            catch (Exception ex)
+            {
+                return Task.FromResult<string?>(
+                    $"{provider}/{model.Id} ctx={model.ContextWindow} "
+                    + $"out={model.MaxOutputTokens} 构造失败：{ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         return Task.FromResult<string?>(null);
     }
 
+    /// <summary>请求输出预留的参考值，与 CLI 的默认值一致。</summary>
+    private const int ContextLimits2DefaultReserve = 4_096;
+
     /// <summary>
-    /// 配置里写了装不下输出的组合时，**解析期就要报错**，不能等到装配期抛异常。
+    /// 窗口本身装不下固定预留时，**解析期就要报错**。
     /// </summary>
     /// <remarks>
-    /// 装配期抛异常的后果是应用起不来，而报错看不出是配置文件里两个数字的问题。
-    /// 解析期拦下，<c>--doctor</c> 才能把两个数字和怎么改一起说出来。
+    /// <b>判据与旧的相反</b>：旧版把 <c>max_output_tokens</c> 算进预算，
+    /// 于是 <c>ctx=1000, out=900</c> 被判非法。现在 <c>out</c> 只是模型的
+    /// 输出容量、不参与预算，真正的判据是"窗口本身能否容纳固定预留"。
+    /// <para>
+    /// 保留这条的意义：窗口填成几百 token 一定是配置错误（那不是一个能用的
+    /// 上下文），必须早报。
+    /// </para>
     /// </remarks>
     private static Task<string?> ImpossibleBudgetIsRejectedAtParseAsync()
     {
@@ -948,30 +964,31 @@ public static class ProviderChecks
             [providers.x]
             base_url = "https://api.example.com/v1"
             model = "m"
-            context_window = 1000
-            max_output_tokens = 900
+            context_window = 100
             """, "t.toml", out var catalog);
 
         if (error is null || catalog is not null)
             return Task.FromResult<string?>(
-                "context_window=1000 减去 output=900 与预留后为负，解析却成功了");
+                "context_window=100 装不下固定预留，解析却成功了");
 
-        if (!error.Contains("预算不可行", StringComparison.Ordinal))
-            return Task.FromResult<string?>($"报错了但没说清是预算问题：{error}");
+        if (!error.Contains("太小", StringComparison.Ordinal))
+            return Task.FromResult<string?>($"报错了但没说清是窗口太小：{error}");
 
-        // 反向对照：合法组合必须能解析，否则这个校验会挡住正常配置。
-        var ok = ProviderConfigFile.TryParse("""
+        // 反向对照：输出容量等于甚至大于窗口必须能解析——
+        // 那是"输入输出共享窗口"的合法表达（kimi-k3 就是 1048576/1048576）。
+        var shared = ProviderConfigFile.TryParse("""
             default_provider = "x"
 
             [providers.x]
             base_url = "https://api.example.com/v1"
             model = "m"
-            context_window = 1000
-            max_output_tokens = 400
-            """, "t.toml", out var okCatalog);
+            context_window = 1048576
+            max_output_tokens = 1048576
+            """, "t.toml", out var sharedCatalog);
 
-        if (ok is not null || okCatalog is null)
-            return Task.FromResult<string?>($"合法组合被拒了：{ok}");
+        if (shared is not null || sharedCatalog is null)
+            return Task.FromResult<string?>(
+                $"输出容量等于窗口是合法的，却被拒了：{shared}");
 
         return Task.FromResult<string?>(null);
     }

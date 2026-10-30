@@ -47,11 +47,43 @@ public interface IContextCompactor
 }
 
 /// <summary>压缩输入：已提交的历史切面与预算参数。</summary>
-public sealed record CompactionInput(
-    IReadOnlyList<AgentMessage> CommittedHistory,
-    int ContextWindowTokens,
-    int MaxOutputTokens,
-    int EstimateErrorTokens = TokenBudget.DefaultOverheadTokens);
+/// <remarks>
+/// <b>第三个参数以前叫 <c>MaxOutputTokens</c>，是本版改名</b>：那个名字混了
+/// "模型输出容量上限"与"单次请求预留"两个概念，导致过真实故障
+/// （kimi-k3 的 1048576/1048576 算出负预算，应用起不来）。
+/// 项目还没有外部调用者，所以直接改名、不留弃用别名——
+/// 留一个语义错误的名字在公开 API 上，下一个人还会踩同一个坑。
+/// </remarks>
+public sealed record CompactionInput
+{
+    /// <summary>构造一次压缩输入。</summary>
+    [System.Diagnostics.CodeAnalysis.SetsRequiredMembers]
+    public CompactionInput(
+        IReadOnlyList<AgentMessage> committedHistory,
+        int contextWindowTokens,
+        int requestOutputReserve,
+        int estimateErrorTokens = TokenBudget.DefaultOverheadTokens)
+    {
+        CommittedHistory = committedHistory;
+        ContextWindowTokens = contextWindowTokens;
+        RequestOutputReserve = requestOutputReserve;
+        EstimateErrorTokens = estimateErrorTokens;
+    }
+
+    /// <summary>已提交的一致历史切面。</summary>
+    public required IReadOnlyList<AgentMessage> CommittedHistory { get; init; }
+
+    /// <summary>模型上下文窗口。</summary>
+    public required int ContextWindowTokens { get; init; }
+
+    /// <summary>单次请求的输出预留。</summary>
+    public required int RequestOutputReserve { get; init; }
+
+
+    /// <summary>估算误差预留。</summary>
+    public int EstimateErrorTokens { get; init; } = TokenBudget.DefaultOverheadTokens;
+
+}
 
 /// <summary>
 /// 上下文预算。宿主按所用模型的上下文窗口构造，循环据此判断是否需要压缩。
@@ -87,10 +119,13 @@ public sealed record ContextLimits
     /// 加 required 成员时必须同步改这个构造函数。
     /// </remarks>
     [System.Diagnostics.CodeAnalysis.SetsRequiredMembers]
-    public ContextLimits(int contextWindowTokens, int maxOutputTokens, int overheadTokens = TokenBudget.DefaultOverheadTokens)
+    public ContextLimits(
+        int contextWindowTokens,
+        int requestOutputReserve,
+        int overheadTokens = TokenBudget.DefaultOverheadTokens)
     {
         ContextWindowTokens = contextWindowTokens;
-        MaxOutputTokens = maxOutputTokens;
+        RequestOutputReserve = requestOutputReserve;
         OverheadTokens = overheadTokens;
 
         // 构造即校验：让"窗口装不下输出"在装配处暴露，而不是第一轮对话时崩。
@@ -99,25 +134,43 @@ public sealed record ContextLimits
 
     public required int ContextWindowTokens { get; init; }
 
-    public required int MaxOutputTokens { get; init; }
+    /// <summary>
+    /// **单次请求**预留给输出的 token 数。
+    /// </summary>
+    /// <remarks>
+    /// <b>这个名字以前叫 <c>MaxOutputTokens</c>，语义混了两个概念，导致过真实故障。</b>
+    /// <list type="bullet">
+    /// <item><b>模型输出容量上限</b>（models.dev 的 <c>limit.output</c>）：这个模型最多能吐多长。
+    /// 它可以是 1048576，与上下文窗口同大。</item>
+    /// <item><b>单次请求预留</b>：这一次调用准备让模型写多少。通常是几千 token。</item>
+    /// </list>
+    /// 把前者当后者算预算，<c>kimi-k3</c>（1048576/1048576）会算出负的
+    /// <c>effective</c>，装配期抛异常、应用起不来。
+    /// <para>
+    /// <b>与 dsh 的对应</b>：它的 <c>reservedCompletionTokens</c> 就是这个值——
+    /// 取自单次请求真正发的 <c>max_tokens</c>，不是模型容量。
+    /// </para>
+    /// </remarks>
+    public required int RequestOutputReserve { get; init; }
+
 
     /// <summary>估算误差与工具声明/系统指令的预留量。</summary>
     public int OverheadTokens { get; init; } = TokenBudget.DefaultOverheadTokens;
 
     /// <summary>构造压缩输入；历史在调用时给出。</summary>
     public CompactionInput ToInput(IReadOnlyList<AgentMessage> history) =>
-        new(history, ContextWindowTokens, MaxOutputTokens, OverheadTokens);
+        new(history, ContextWindowTokens, RequestOutputReserve, OverheadTokens);
 
     /// <summary>有效输入预算，必须为正；否则配置本身不可行。</summary>
     public int EffectiveInputTokens =>
-        TokenBudget.EffectiveInput(ContextWindowTokens, MaxOutputTokens, OverheadTokens);
+        TokenBudget.EffectiveInput(ContextWindowTokens, RequestOutputReserve, OverheadTokens);
 
     /// <summary>
     /// 主动校验。**对象初始化器写法必须调这一步**——那条路径绕过了构造校验。
     /// </summary>
     /// <remarks>
     /// 为什么校验不塞进 <c>init</c> 访问器：属性是逐个赋值的，
-    /// <c>ContextWindowTokens</c> 先赋、<c>MaxOutputTokens</c> 还没赋时
+    /// <c>ContextWindowTokens</c> 先赋、<c>RequestOutputReserve</c> 还没赋时
     /// 读数必然误判。只能等整个对象完成后再算。
     /// <para>
     /// 返回 <c>this</c> 便于链式使用；不合法时抛

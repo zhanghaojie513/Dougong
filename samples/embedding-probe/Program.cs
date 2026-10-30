@@ -46,7 +46,7 @@ finally { try { Directory.Delete(dir, true); } catch { } }
 
 // ===== §七 缺口 3：压缩三参数 =====
 var compacting = new LoopAgentRuntime(client, dispatcher, null,
-    limits: new ContextLimits { ContextWindowTokens = 128_000, MaxOutputTokens = 4_096 },
+    limits: new ContextLimits { ContextWindowTokens = 128_000, RequestOutputReserve = 4_096 },
     compactor: new SlidingWindowCompactor(preservedHead: 2, preservedTail: 6),
     summarize: (transcript, ct) => ValueTask.FromResult("summary"));
 Console.WriteLine("§七 压缩三参数构造成功");

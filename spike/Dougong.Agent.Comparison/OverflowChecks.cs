@@ -373,7 +373,7 @@ public static class OverflowChecks
             limits: new ContextLimits
             {
                 ContextWindowTokens = 2_000_000,
-                MaxOutputTokens = 1_000,
+                RequestOutputReserve = 1_000,
                 OverheadTokens = 200,
             },
             compactor: compactor,

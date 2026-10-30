@@ -178,43 +178,31 @@ LOCAL_PRESETS = [
 ]
 
 
-# 上下文压缩预留量，必须与 TokenBudget.DefaultOverheadTokens 保持一致。
-# 数据里不能出现让 ctx - out - overhead <= 0 的组合，否则装配期直接抛异常，
-# 用户看到的是"上下文窗口配置不可行"——而那是我们生成的数据有问题，
-# 不是他配错了。
-COMPACTION_OVERHEAD_TOKENS = 512
-
-# 输出上限占上下文窗口的最大比例。
-# 单次回复不可能用掉整个窗口：模型的输出额度是"这个模型最多能吐多长"，
-# 而一次对话里输入（历史 + 工具结果）也要占地方。取 1/4 是保守值——
-# 真实场景里一次回复很少超过上下文的 25%。
-MAX_OUTPUT_RATIO = 0.25
-
-
 def SafeOutputLimit(context: int, output: int) -> int:
-    """把上游的 output 限值收敛成一个能用于压缩预算的值。
+    """返回上游的输出容量上限，只做最基本的合法性过滤。
 
-    为什么必须收敛：models.dev 的 `limit.output` 是**输出方向的容量上限**，
-    不是"单次回复该配多少"。实测 1176 条模型的 output >= context
-    （kimi-k3 是 1048576/1048576，doubao 是 256000/256000），
-    照抄会让 ctx - out - 512 <= 0，Validate() 抛异常、应用无法启动，
-    而用户完全看不出这是预设表的问题。
+    **不再收敛到上下文的 25%**。之前那么做是因为我们的预算公式
+    （`ctx - out - 512`）把"模型输出容量上限"当成了"单次请求预留"，
+    于是 kimi-k3 的 1048576/1048576 算出负预算。
 
-    收敛规则（两条都要）：
-      1. 不超过上下文的 MAX_OUTPUT_RATIO；
-      2. 保证 ctx - out - 512 > 0，给压缩预算留出正数空间。
+    现在两个概念已经拆开（见 ContextLimits.RequestOutputReserve）：
+    这个字段只用于构造请求的 max_tokens，**不参与压缩预算**，
+    所以它可以如实等于上下文窗口。
 
-    不改 context：上下文窗口是实打实的事实，改了才是撒谎。
+    只保留两条最小约束：
+      · 非正数视为未披露，返回 0；
+      · 超过上下文窗口的视为上游笔误，收敛到窗口值——
+        发一个比窗口还大的 max_tokens 一定被拒。
     """
     if output <= 0 or context <= 0:
         return 0
+    return min(output, context)
 
-    ceiling = min(
-        int(context * MAX_OUTPUT_RATIO),
-        context - COMPACTION_OVERHEAD_TOKENS - 1,
-    )
-    return max(0, min(output, ceiling))
 
+# 上下文压缩预留量，必须与 TokenBudget.DefaultOverheadTokens 保持一致。
+# 用于生成后的自检：**预算公式用的是请求预留而不是输出容量**，
+# 所以这里只检查"窗口减去固定预留后仍为正"——这是任何模型都该满足的。
+COMPACTION_OVERHEAD_TOKENS = 512
 
 def fetch(url: str) -> bytes:
     """拉取 JSON。
@@ -382,8 +370,9 @@ def main() -> int:
     for name, entry in providers.items():
         for model in entry["models"]:
             ctx = model["contextWindow"]
-            out = model["maxOutputTokens"]
-            if out > 0 and ctx - out - COMPACTION_OVERHEAD_TOKENS <= 0:
+            # **用请求预留而不是输出容量**：输出容量与窗口同大是合法的
+            # （那是模型能力），真正决定预算是单次请求预留。
+            if ctx - COMPACTION_OVERHEAD_TOKENS <= 0:
                 raise SystemExit(
                     f"{name}/{model['id']}: context={ctx} 减去 "
                     f"output={out} 与预留 {COMPACTION_OVERHEAD_TOKENS} 后不是正数。\n"

@@ -72,7 +72,7 @@ public static class CompactionChecks
     /// </remarks>
     private static Task<string?> RuntimeRejectsImpossibleAsync()
     {
-        var limits = new ContextLimits { ContextWindowTokens = 4_000, MaxOutputTokens = 4_096 };
+        var limits = new ContextLimits { ContextWindowTokens = 4_000, RequestOutputReserve = 4_096 };
 
         try
         {
@@ -107,7 +107,7 @@ public static class CompactionChecks
             var viaInitializer = new ContextLimits
             {
                 ContextWindowTokens = 200_000,
-                MaxOutputTokens = 4_096,
+                RequestOutputReserve = 4_096,
             }.Validate();
 
             if (limits.EffectiveInputTokens != 1_000_000 - 4_096 - 512)
@@ -551,7 +551,7 @@ public static class CompactionChecks
         var limits = new ContextLimits
         {
             ContextWindowTokens = 1_000_000,
-            MaxOutputTokens = 8_000,
+            RequestOutputReserve = 8_000,
             OverheadTokens = 512,
         };
 
@@ -593,7 +593,7 @@ public static class CompactionChecks
         var limits = new ContextLimits
         {
             ContextWindowTokens = 1_000_000,
-            MaxOutputTokens = 1_000,
+            RequestOutputReserve = 1_000,
             OverheadTokens = 200,
         };
 

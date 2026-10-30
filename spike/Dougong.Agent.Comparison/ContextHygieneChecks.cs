@@ -474,7 +474,7 @@ public static class ContextHygieneChecks
         var budget = new ContextLimits
         {
             ContextWindowTokens = 128_000,
-            MaxOutputTokens = 4_096,
+            RequestOutputReserve = 4_096,
         }.OverheadTokens;
 
         if (declared > budget)
@@ -502,7 +502,7 @@ public static class ContextHygieneChecks
         var budget = new ContextLimits
         {
             ContextWindowTokens = 128_000,
-            MaxOutputTokens = 4_096,
+            RequestOutputReserve = 4_096,
         }.OverheadTokens;
 
         if (budget < declared * 1.5)

@@ -273,7 +273,7 @@ public static class Doctor
                 + "且保留 < 触发；删掉变量即用默认值。");
         }
 
-        var verdict = ContextBudgetValidation.Check(window, SessionComposition.EffectiveMaxOutputTokens());
+        var verdict = ContextBudgetValidation.Check(window, SessionComposition.EffectiveRequestOutputReserve());
 
         if (!verdict.IsUsable)
         {

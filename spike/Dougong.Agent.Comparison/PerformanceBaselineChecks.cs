@@ -353,7 +353,7 @@ public static class PerformanceBaselineChecks
             var input = new ContextLimits
             {
                 ContextWindowTokens = 100_000_000,
-                MaxOutputTokens = 1024,
+                RequestOutputReserve = 1024,
             }.ToInput(history);
 
             // 预热

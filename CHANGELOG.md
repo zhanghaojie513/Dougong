@@ -68,6 +68,36 @@
   现在写清分工：**数据找 models.dev，行为找 pi，契约措辞找 dsh，
   交互找 hermes，C# 写法找 pi.net**。同一问题两家冲突时，先看谁给了解释。
 
+### Changed
+
+- **拆开"输出容量上限"与"单次请求预留"两个概念**。
+  `ContextLimits.MaxOutputTokens` 改名为 `RequestOutputReserve`，
+  `CompactionInput` 的第三个参数同步改名。
+
+  **为什么必须拆**：一个字段承担了两个含义完全不同的数——
+  - **模型输出容量上限**（models.dev 的 `limit.output`）：这个模型最多能吐多长，
+    可以是 1048576，与上下文窗口同大（`kimi-k3` 就是 1048576/1048576，
+    那是"输入输出共享这一个窗口"）。
+  - **单次请求预留**：这一次调用准备让模型写多少，通常是几千 token。
+
+  预算公式 `窗口 − 输出 − 预留` 用的是后者，而之前传的是前者。
+  `kimi-k3` 因此算出 `1048576 − 1048576 − 512 = −512`，装配期抛异常、
+  **应用无法启动**，用户看到的报错是"上下文窗口配置不可行"——
+  完全看不出是我们把两个概念混了。
+
+  与 dsh 的对应：它的 `reservedCompletionTokens` 就是"单次请求预留"，
+  取自请求真正发的 `max_tokens`，不是模型容量。
+
+- **预设表恢复上游真值**。此前为了让旧公式不崩，生成脚本把输出上限
+  收敛到上下文的 25%（`kimi-k3` 被写成 262144，这是编的值）。
+  概念拆开后不再需要，现在如实等于上游给的容量上限。
+
+- **`DOUGONG_MAX_OUTPUT_TOKENS` 更名为 `DOUGONG_REQUEST_OUTPUT_RESERVE`**，
+  语义随之明确：它调的是单次请求预留，不是模型容量。
+
+- **解析期校验改判据**：从"窗口减去输出容量后为正"改成"窗口本身能容纳固定预留"。
+  输出容量等于甚至大于窗口是**合法**的，此前会被误判为配置错。
+
 **推理强度终于能发到端点上了。**
 
 ### Added
@@ -219,6 +249,11 @@ pi-ai 是同语言可选包。我们在 .NET 里，`Pi.Ai` 虽在 NuGet 上，�
 
 ### Breaking
 
+- **`ContextLimits.MaxOutputTokens` → `RequestOutputReserve`**、
+  **`CompactionInput.MaxOutputTokens` → `RequestOutputReserve`**、
+  **`ContextLimits` 三参数构造的第二个参数语义随之明确**。
+  项目还没有外部调用者，所以直接改名不留弃用别名——留一个语义错误的名字
+  在公开 API 上，下一个人还会踩同一个坑。
 - **`ProviderConfigWriter.UpdateProvider` 增加 `contextWindow` / `maxOutputTokens` 参数**；
   **`ChatProviderConfig` 增加 `ContextWindowTokens` / `MaxOutputTokens`**；
   **`ProviderPresetData` / `ModelCapabilities` 为公开类型**。ApiCompat 已检出并更新基线。
