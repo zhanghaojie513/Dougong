@@ -35,6 +35,11 @@ public sealed class ArchitectureBoundaryTests
     /// </remarks>
     private static readonly Dictionary<string, int> Layers = new(StringComparer.Ordinal)
     {
+        // HostProtocol 与 Kernel 同层（都 0）且互相不引用：
+        // 它是**宿主契约**，零依赖，不引用 Kernel 也不被 Kernel 引用。
+        // 放最底层是为了说明"它可以被任何东西引用，而它自己什么都不依赖"——
+        // 契约一旦依赖运行时实现，别人的宿主就用不了了。
+        ["Dougong.HostProtocol"] = 0,
         ["Dougong.Kernel"] = 0,
         ["Dougong.Agent"] = 1,
         ["Dougong.Hosting"] = 2,

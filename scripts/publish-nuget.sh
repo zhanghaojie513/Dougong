@@ -33,8 +33,9 @@ fi
 OUT="artifacts/final"
 SOURCE="https://api.nuget.org/v3/index.json"
 
-# 依赖顺序，不可调整：Hosting 依赖 Kernel+Agent；Cli 依赖其余全部。
-PACKAGES=(Kernel Agent Hosting Ai Mcp Acp Cli)
+# 依赖顺序，不可调整：HostProtocol 零依赖（契约包，不引用任何东西），
+# 因此排最前；Hosting 依赖 Kernel+Agent；Cli 依赖其余全部。
+PACKAGES=(HostProtocol Kernel Agent Hosting Ai Mcp Acp Cli)
 
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1

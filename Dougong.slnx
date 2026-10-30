@@ -17,7 +17,9 @@
   <Folder Name="/samples/singlefile-probe/">
     <Project Path="samples/singlefile-probe/SingleFileProbe.csproj" />
   </Folder>
-  <Folder Name="/src/" />
+  <Folder Name="/src/">
+    <Project Path="src/Dougong.HostProtocol/Dougong.HostProtocol.csproj" />
+  </Folder>
   <Project Path="samples/Dougong.Sample.Contracts/Dougong.Sample.Contracts.csproj" />
   <Project Path="samples/Dougong.Sample.Shared/Dougong.Sample.Shared.csproj" />
   <Project Path="samples/Dougong.Sample.Isolated/Dougong.Sample.Isolated.csproj" />

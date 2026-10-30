@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\src\Dougong.Acp\Dougong.Acp.csproj" />
     <ProjectReference Include="..\..\src\Dougong.Cli\Dougong.Cli.csproj" />
     <ProjectReference Include="..\..\src\Dougong.Hosting\Dougong.Hosting.csproj" />
+    <ProjectReference Include="..\..\src\Dougong.HostProtocol\Dougong.HostProtocol.csproj" />
   </ItemGroup>
 
 </Project>

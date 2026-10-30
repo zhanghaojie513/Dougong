@@ -198,6 +198,10 @@ public static class Program
         if (args.FirstOrDefault() == "filesystem")
             return await FileSystemChecks.RunAsync();
 
+        // 宿主协议：多态序列化往返、判别器登记、未知 method 处理。
+        if (args.FirstOrDefault() == "host-protocol")
+            return await HostProtocolChecks.RunAsync();
+
         if (args.FirstOrDefault() == "report")
             return await ReportChecks.RunAsync();
 

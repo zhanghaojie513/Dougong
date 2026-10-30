@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Dougong 宿主协议——宿主与 agent 运行时之间的会话契约：信封、会话、回合、条目、审批、引擎状态</Description>
+    <!-- API 兼容检查：这是**对外契约包**，公开 API 变更必须可见。
+         开源之后别人按它写客户端，删字段或改语义会让对方静默错。 -->
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselinePath>$(MSBuildThisFileDirectory)../../artifacts/baseline/$(AssemblyName).nupkg</PackageValidationBaselinePath>
+  </PropertyGroup>
+
+  <!-- 零依赖：只有 record 与 JsonSerializer 配置，不引用任何包。
+       刻意不依赖 Dougong.Agent——**契约不该绑运行时实现**。
+       宿主可以把这份契约用在任何后端上（我们的 agent、别人的 agent）。 -->
+
+</Project>
