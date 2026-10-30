@@ -33,8 +33,10 @@ public static class ProviderConfigWriter
     /// <param name="providerName">要改的 provider 名。</param>
     /// <param name="model">新的模型名；null 表示不改。</param>
     /// <param name="setAsDefault">是否把 <c>default_provider</c> 指到它。</param>
+    /// <param name="baseUrl">新的端点地址；null 表示不改。</param>
     public static WriteResult UpdateProvider(
-        string path, string providerName, string? model, bool setAsDefault)
+        string path, string providerName, string? model, bool setAsDefault,
+        string? baseUrl = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
@@ -42,7 +44,7 @@ public static class ProviderConfigWriter
         // 文件不存在时新建：首次配置就是这个路径，让用户手写一整份 TOML
         // 是不必要的门槛。
         if (!File.Exists(path))
-            return Create(path, providerName, model, setAsDefault);
+            return Create(path, providerName, model, setAsDefault, baseUrl);
 
         string text;
         try
@@ -67,26 +69,81 @@ public static class ProviderConfigWriter
         var providerTable = FindTable(document, providerName);
         if (providerTable is null)
         {
-            // 不自动新建段：往用户文件里凭空插入一张表，位置和字段都得猜，
-            // 猜出来的东西用户下次看文件时会困惑"这不是我写的"。
-            // 交互式流程会走 Create 分支新建整个文件；这里只报清楚可选项。
-            var existing = document.Tables is null
-                ? []
-                : document.Tables.OfType<TableSyntax>()
-                    .Select(t => t.Name?.ToString()?.Trim())
-                    .Where(n => n is not null && n.StartsWith("providers.", StringComparison.Ordinal))
-                    .Select(n => n!["providers.".Length..])
-                    .ToArray();
+            // 段不存在 = 用户选了一个还没写进配置的 provider（内置预设就是这种）。
+            // **必须能新建**：列表里既然把它列出来了，选中后报"没有这一段"
+            // 就是把选择权给了用户又收回去——实测被指出过，是主要问题。
+            if (!ProviderCatalog.Presets.TryGetValue(providerName, out var preset))
+            {
+                var known = string.Join(", ", ProviderCatalog.Presets.Keys);
+                return new WriteResult(false,
+                    $"'{providerName}' 不是内置预设，无法自动确定端点。"
+                    + $"内置：{known}。自定义端点请手工在配置文件里加一段 "
+                    + $"[providers.{providerName}]，再跑这个命令改模型。", null);
+            }
 
-            return new WriteResult(false,
-                $"配置里没有 [providers.{providerName}] 段，未改动。"
-                + (existing.Length > 0
-                    ? $"现有：{string.Join(", ", existing)}。"
-                    : "现有：无。")
-                + "要新增请手工加这一段，或用交互式 dougong model。", null);
+            if (string.IsNullOrWhiteSpace(model))
+            {
+                return new WriteResult(false,
+                    $"新建 provider '{providerName}' 需要模型名。", null);
+            }
+
+            var appended = AppendProviderTableText(text, providerName, model, preset);
+
+            // 拼接后必须重新 parse 校验：文本层拼接最怕引用/转义出错，
+            // 而写出一个坏配置比不写更糟——用户下次启动会看到看不懂的解析错误。
+            var check = SyntaxParser.Parse(appended, path, false);
+            if (check.HasErrors)
+            {
+                var firstError = check.Diagnostics.FirstOrDefault();
+                return new WriteResult(false,
+                    $"生成的新配置无法解析，未写入：{firstError?.Message ?? "未知错误"}", null);
+            }
+
+            var backupForNew = Backup(path, text);
+            try
+            {
+                var finalText = appended;
+                if (setAsDefault)
+                {
+                    var withDefault = SyntaxParser.Parse(appended, path, false);
+                    var rootKey = FindRootKey(withDefault, "default_provider");
+                    if (rootKey is null)
+                        withDefault.KeyValues.Add(NewKeyValue("default_provider", providerName));
+                    else
+                        rootKey.Value = new StringValueSyntax(providerName);
+                    finalText = withDefault.ToString() ?? appended;
+                }
+
+                WriteAtomic(path, finalText);
+            }
+            catch (Exception ex)
+            {
+                return new WriteResult(false,
+                    $"写回失败：{ex.GetType().Name}：{ex.Message}", backupForNew);
+            }
+
+            return new WriteResult(true, null, backupForNew);
         }
 
+
         var changed = false;
+
+        // 端点覆盖：交互式流程允许用户改端点，写回时也要跟着改。
+        // 端点填错是最难自己发现的错——表现出来只是 404 或连接超时。
+        if (baseUrl is not null)
+        {
+            var baseKey = FindKey(providerTable, "base_url");
+            if (baseKey is null)
+            {
+                providerTable.Items.Add(NewKeyValue("base_url", baseUrl));
+                changed = true;
+            }
+            else if (!string.Equals(ReadString(baseKey), baseUrl, StringComparison.Ordinal))
+            {
+                baseKey.Value = new StringValueSyntax(baseUrl);
+                changed = true;
+            }
+        }
 
         if (model is not null)
         {
@@ -138,9 +195,43 @@ public static class ProviderConfigWriter
         return new WriteResult(true, null, backup);
     }
 
+    /// <summary>
+    /// 往配置文本末尾追加一张 <c>[providers.&lt;name&gt;]</c> 表，返回新文本。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么在文本层拼接而不是在语法树里造节点</b>：Tomlyn 的表节点
+    /// 与其父文档强绑定（换父级会抛「already attached to another parent」，
+    /// <c>Parent</c> 还是只读的），手工 <c>new TableSyntax</c> 又拿不到方括号——
+    /// <c>Name</c> 的值本身就是 <c>[providers.x]</c>。实测两种造法都写出了
+    /// 坏文本。拼接后**整体重新 parse 一次**做校验，坏文本会被当场拦下。
+    /// <para>
+    /// 追加在文件末尾：TOML 的表顺序不影响语义，而末尾是唯一不会切断
+    /// 用户原有内容的位置。
+    /// </para>
+    /// </remarks>
+    private static string AppendProviderTableText(
+        string text, string providerName, string model, ProviderCatalog.ProviderPreset preset)
+    {
+        var newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+
+        // 末尾没有换行时先补一个，否则表头会粘到上一行末尾。
+        var builder = new StringBuilder(text);
+        if (builder.Length > 0 && !text.EndsWith('\n'))
+            builder.Append(newline);
+        builder.Append(newline);
+
+        builder.Append('[').Append("providers.").Append(providerName).Append(']').Append(newline);
+        builder.Append("base_url = \"").Append(preset.BaseUrl).Append('"').Append(newline);
+        builder.Append("wire_api = \"").Append(WireApiName(preset.Protocol)).Append('"').Append(newline);
+        builder.Append("model = \"").Append(model).Append('"').Append(newline);
+        builder.Append("key_env = \"").Append(preset.ApiKeyEnvironmentVariable).Append('"').Append(newline);
+
+        return builder.ToString();
+    }
+
     /// <summary>新建一份最小配置。</summary>
     private static WriteResult Create(
-        string path, string providerName, string? model, bool setAsDefault)
+        string path, string providerName, string? model, bool setAsDefault, string? baseUrl)
     {
         // 新文件只写用户要的那个 provider。预设里有的端点信息从 ProviderCatalog 取，
         // 免得用户为了"先跑起来"还要去查一遍 base_url。
@@ -164,7 +255,9 @@ public static class ProviderConfigWriter
         text.AppendLine($"default_provider = \"{providerName}\"");
         text.AppendLine();
         text.AppendLine($"[providers.{providerName}]");
-        text.AppendLine($"base_url = \"{preset.BaseUrl}\"");
+        // 端点优先用调用方传的：交互式流程允许用户改端点，
+        // 而忽略它会让向导显示的地址和写进文件的不一致——实测踩到过。
+        text.AppendLine($"base_url = \"{baseUrl ?? preset.BaseUrl}\"");
         text.AppendLine($"wire_api = \"{WireApiName(preset.Protocol)}\"");
         text.AppendLine($"model = \"{model}\"");
         text.AppendLine($"key_env = \"{preset.ApiKeyEnvironmentVariable}\"");

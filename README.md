@@ -20,7 +20,7 @@
   <a href="https://github.com/zhanghaojie513/Dougong"><img src="https://img.shields.io/badge/repository-Dougong-2f6f5e?style=flat-square" alt="Repository"></a>
   <a href="https://github.com/zhanghaojie513/Dougong/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/zhanghaojie513/Dougong/build.yml?style=flat-square&label=build" alt="Build"></a>
   <a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-10.0-512bd4?style=flat-square" alt=".NET 10"></a>
-  <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.1.5--alpha.1-orange?style=flat-square" alt="Version 0.1.5-alpha.1"></a>
+  <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.1.6--alpha.1-orange?style=flat-square" alt="Version 0.1.6-alpha.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f883d?style=flat-square" alt="MIT License"></a>
 </p>
 
@@ -43,7 +43,7 @@
 
 ## 当前状态
 
-目标框架 `net10.0`，版本 `0.1.5-alpha.1`，**已发布到 nuget.org**（2026-10-30）。
+目标框架 `net10.0`，版本 `0.1.6-alpha.1`，**已发布到 nuget.org**（2026-10-30）。
 四条设计承诺（可组合、完整生命周期、故障可解释、真实可用）均已达成，
 见 [设计承诺](docs/goal.md)。
 
@@ -148,7 +148,7 @@ Dougong 关注的是 Agent 的**承托层**，而不是某一个模型或某一�
 **命令走工具**（不需要 clone 仓库）：
 
 ```bash
-dotnet tool install --global Dougong.Cli --version 0.1.5-alpha.1
+dotnet tool install --global Dougong.Cli --version 0.1.6-alpha.1
 dougong --doctor      # 先确认环境，它会逐项检查并给出下一步
 dougong               # 开始对话（需要配置模型）
 ```
@@ -168,7 +168,7 @@ dougong --version     # 确认升到了哪个版本
 > `dotnet tool update` 默认只在**稳定版**里挑；稳定版列表为空，于是说找不到。
 > 详见 [从零开始 §0.2](docs/getting-started.md)。
 
-> `0.1.5-alpha.1` 的命令功能是完整的（`--doctor`、`--report`、`--help`、REPL、
+> `0.1.6-alpha.1` 的命令功能是完整的（`--doctor`、`--report`、`--help`、REPL、
 > `--acp` 都实测过，行为由 46 个自检套件钉住），但**终端呈现与提示文案仍在打磨**，
 > 后续版本会变。
 
@@ -283,8 +283,15 @@ dougong --doctor
 dougong model
 ```
 
-列出可选 provider，选一项、填模型名，然后写回 `~/.dougong/config.toml`。
-文件里已有注释和空行会**原样保留**，只改需要改的值。
+四步走，每步都有默认值，回车即接受：
+
+1. **选 provider** —— 内置预设（deepseek / openai / anthropic）与配置里已有的项一起列出
+2. **确认端点** —— 显示默认 `base_url`，方括号内回车接受；换端点直接输入
+3. **确认密钥** —— 说清需要哪个环境变量、当前有没有、怎么设；未设置时可选择先跳过
+4. **选模型** —— 先从端点拉 `/v1/models` 列出可选项，拉不到再手填
+
+写回 `~/.dougong/config.toml` 时，**已有注释和空行原样保留**，只改需要改的值。
+选到配置里还没有的 provider 时会新建那一段（端点取自预设）。
 
 非交互形式适合脚本：
 
@@ -292,6 +299,9 @@ dougong model
 dougong model --list                                            # 只看当前配置
 dougong model --set deepseek --model deepseek-chat              # 直接设置并设为默认
 ```
+
+> **密钥仍只从环境变量读**，向导不会把它写进配置文件——命令行键入的密钥会进
+> shell 历史，而进程也没法替父 shell 设环境变量。
 
 **② 手写配置文件**（可配多个 provider）：`~/.dougong/config.toml`
 

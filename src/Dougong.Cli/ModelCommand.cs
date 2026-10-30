@@ -140,8 +140,36 @@ public static class ModelCommand
             return 0;
         }
 
-        var existingModel = catalog?.Find(chosen)?.Model;
-        var model = PromptModel(chosen, existingModel);
+        // ── 端点：显示默认值，允许覆盖 ────────────────────────────
+        // 照 Hermes 的 Base URL 提示：方括号里是默认值，回车即接受。
+        // 不显示直接问模型名的话，用户不知道这个 provider 会连到哪里。
+        var existing = catalog?.Find(chosen);
+        var defaultBase = existing?.BaseUrl
+            ?? (ProviderCatalog.Presets.TryGetValue(chosen, out var p) ? p.BaseUrl : null);
+
+        var baseUrl = PromptBaseUrl(chosen, defaultBase);
+        if (baseUrl is null)
+        {
+            Output.Line("未改动。");
+            return 0;
+        }
+
+        // ── 密钥：流程内采集，不再只提示 export ─────────────────────
+        // Hermes 的关键一步：配模型时顺手把密钥处理掉。
+        // 只提示"你还需要 export"等于把活留给用户，而他刚打开这个界面
+        // 就是因为不知道要配什么。
+        var keyEnv = existing?.ApiKeyEnvironmentVariable
+            ?? (ProviderCatalog.Presets.TryGetValue(chosen, out var kp) ? kp.ApiKeyEnvironmentVariable : null);
+
+        var (keyOk, keyNote) = PromptApiKey(chosen, keyEnv);
+        if (!keyOk)
+        {
+            Output.Line("未改动。");
+            return 0;
+        }
+
+        // ── 模型：先试拉取，拉不到再手填 ───────────────────────────
+        var model = PromptModelWithDiscovery(baseUrl, keyEnv, existing?.Model);
         if (model is null)
         {
             Output.Line("未改动。");
@@ -149,7 +177,8 @@ public static class ModelCommand
         }
 
         // 选中的 provider 就设成默认：这个命令的意图是"以后用这个"。
-        var result = ProviderConfigWriter.UpdateProvider(path, chosen, model, setAsDefault: true);
+        var result = ProviderConfigWriter.UpdateProvider(
+            path, chosen, model, setAsDefault: true, baseUrl: baseUrl);
         if (!result.Succeeded)
         {
             Console.Error.WriteLine(result.Error);
@@ -159,25 +188,173 @@ public static class ModelCommand
         Output.Line();
         Output.Line($"已写入 {path}");
         Output.Line($"  provider: {chosen}（已设为 default_provider）");
+        Output.Line($"  base_url: {baseUrl}");
         Output.Line($"  model   : {model}");
+        if (keyEnv is { Length: > 0 }) Output.Line($"  key_env : {keyEnv}");
         if (result.BackupPath is not null)
             Output.Line($"  备份    : {result.BackupPath}");
 
-        // 密钥状态必须当场说：配好了模型却跑不起来，最常见的原因就是这个。
-        var presetKey = ProviderCatalog.Presets.TryGetValue(chosen, out var preset)
-            ? preset.ApiKeyEnvironmentVariable
-            : null;
-        if (presetKey is { Length: > 0 }
-            && Environment.GetEnvironmentVariable(presetKey) is not { Length: > 0 })
+        if (keyNote is not null)
         {
             Output.Line();
-            Output.Line($"⚠ 还差密钥：provider '{chosen}' 需要环境变量 {presetKey}，但它没有设置。");
-            Output.Line($"  export {presetKey}='<你的密钥>'");
+            Output.Line($"⚠ {keyNote}");
         }
 
         Output.Line();
         Output.Line("下一步：dougong --doctor 确认配置可用。");
         return 0;
+    }
+
+    /// <summary>提示端点，方括号里是默认值，回车接受。返回 null 表示取消。</summary>
+    /// <remarks>
+    /// 照 Hermes 的做法先显示默认端点：不说端点就直接问模型名，
+    /// 用户不知道这个 provider 会连到哪里，而端点填错是最难自己发现的错——
+    /// 表现出来只是 404 或连接超时。
+    /// </remarks>
+    private static string? PromptBaseUrl(string provider, string? defaultBase)
+    {
+        Output.Line();
+        if (string.IsNullOrWhiteSpace(defaultBase))
+        {
+            Output.Text($"  base_url（{provider} 的 API 地址，例如 https://api.example.com/v1）: ");
+            var raw = Console.ReadLine();
+            if (raw is null) return null;
+            raw = raw.Trim();
+            return raw.Length == 0 ? null : raw;
+        }
+
+        Output.Text($"  base_url [{defaultBase}]: ");
+        var input = Console.ReadLine();
+        if (input is null) return null;
+        input = input.Trim();
+        return input.Length == 0 ? defaultBase : input;
+    }
+
+    /// <summary>
+    /// 采集密钥。返回 (是否继续, 事后提示)。
+    /// </summary>
+    /// <remarks>
+    /// <b>密钥只进环境变量，绝不写配置文件</b>——这条红线不变。所以这里能做的是：
+    /// 说清需要哪个变量、现在有没有、以及怎么设。
+    /// <para>
+    /// <b>为什么不在这里收密钥值</b>：命令行里键入的密钥会进 shell 历史，
+    /// 而进程也没法替父 shell 设环境变量。收下来只能写进配置文件，
+    /// 那正好破坏这条红线。所以这里只确认"是否已设置"，未设置时给出可直接
+    /// 粘贴的一行命令。
+    /// </para>
+    /// </remarks>
+    private static (bool Proceed, string? Note) PromptApiKey(string provider, string? keyEnv)
+    {
+        Output.Line();
+
+        if (keyEnv is null or "")
+        {
+            Output.Line($"  {provider} 无需密钥。");
+            return (true, null);
+        }
+
+        if (Environment.GetEnvironmentVariable(keyEnv) is { Length: > 0 })
+        {
+            Output.Line($"  密钥：{keyEnv} 已设置 ✓");
+            return (true, null);
+        }
+
+        Output.Line($"  密钥：需要环境变量 {keyEnv}，当前未设置。");
+        Output.Line($"  设置方法（密钥只从环境变量读，不写进配置文件）：");
+        Output.Line($"      export {keyEnv}='<你的密钥>'");
+
+        // 也接受"我知道，先跳过"：用户可能想先把配置写好，稍后再设密钥。
+        Output.Line();
+        Output.Text("  先跳过并继续写配置？[Y/n]: ");
+        var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
+        if (answer is "n" or "no")
+            return (false, null);
+
+        return (true, $"还差密钥：设置 {keyEnv} 后才能对话（export {keyEnv}='<你的密钥>'）。");
+    }
+
+    /// <summary>
+    /// 选模型：先尝试从端点拉取可用列表，拉不到再让人手填。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么先试拉取</b>：Hermes 这么做，理由站得住——手打模型名最容易写错
+    /// （<c>deepseek-chat</c> 打成 <c>deepseek-chart</c>），而错误要到第一次对话
+    /// 才以 404 的形式出现，那时看不出是拼写问题。
+    /// <para>
+    /// <b>拉取失败不算错误</b>：很多端点不实现 <c>/v1/models</c>，或需要额外权限。
+    /// 失败就退回手填，并说清"没拉到，请手填"，而不是让整个流程失败。
+    /// </para>
+    /// </remarks>
+    private static string? PromptModelWithDiscovery(string baseUrl, string? keyEnv, string? existing)
+    {
+        Output.Line();
+        Output.Line("  正在查询端点可用模型…");
+
+        var models = ModelDiscovery.TryListModels(baseUrl, keyEnv);
+
+        if (models.Count == 0)
+        {
+            Output.Line("  没查到模型列表（端点可能不支持 /v1/models），请手填。");
+            return PromptModelText(existing);
+        }
+
+        Output.Line($"  查到 {models.Count} 个模型：");
+        Output.Line();
+
+        var shown = models.Take(40).ToList();
+        for (var i = 0; i < shown.Count; i++)
+        {
+            var marker = string.Equals(shown[i], existing, StringComparison.Ordinal) ? "▶" : " ";
+            Output.Line($"  {marker} {i + 1,2}. {shown[i]}");
+        }
+        if (models.Count > shown.Count)
+            Output.Line($"     …另有 {models.Count - shown.Count} 个，输入名字可直接指定");
+
+        Output.Line();
+        Output.Line("   0. 手动输入模型名");
+        Output.Line();
+
+        while (true)
+        {
+            Output.Text($"选择 [1-{shown.Count}]、输入模型名，或回车取消: ");
+            var input = Console.ReadLine();
+            if (input is null) return null;
+            input = input.Trim();
+            if (input.Length == 0) return null;
+            if (input == "0") return PromptModelText(existing);
+
+            if (int.TryParse(input, out var index) && index >= 1 && index <= shown.Count)
+                return shown[index - 1];
+
+            // 直接敲模型名也接受：列表可能很长，数序号不如打字快。
+            var byName = models.FirstOrDefault(m =>
+                string.Equals(m, input, StringComparison.OrdinalIgnoreCase));
+            if (byName is not null) return byName;
+
+            // 不在列表里不等于错——列出来的可能不全（分页、过滤）。
+            // 但必须让用户确认，否则拼错一个字母就成了一个"合法"的坏配置。
+            Output.Line($"  '{input}' 不在查到的列表里。用它？[y/N]: ");
+            Output.Text("  ");
+            var confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
+            if (confirm is "y" or "yes") return input;
+        }
+    }
+
+    /// <summary>纯手填模型名。</summary>
+    private static string? PromptModelText(string? existing)
+    {
+        if (string.IsNullOrWhiteSpace(existing))
+            Output.Text("  模型名: ");
+        else
+            Output.Text($"  模型名（当前 {existing}，回车保持不变）: ");
+
+        var input = Console.ReadLine();
+        if (input is null) return null;
+
+        input = input.Trim();
+        if (input.Length == 0) return string.IsNullOrWhiteSpace(existing) ? null : existing;
+
+        return input;
     }
 
     /// <summary>列出可选 provider，读一行选择。返回 null 表示取消。</summary>

@@ -30,6 +30,8 @@ public static class ProviderChecks
         failures += await CheckAsync("model-command-preserves-comments", PreservesCommentsAsync);
         failures += await CheckAsync("model-command-creates-config", CreatesConfigAsync);
         failures += await CheckAsync("model-command-refuses-broken-config", RefusesBrokenConfigAsync);
+        failures += await CheckAsync("model-command-adds-missing-provider", AddsMissingProviderAsync);
+        failures += await CheckAsync("model-command-writes-chosen-base-url", WritesChosenBaseUrlAsync);
 
         Console.WriteLine(failures == 0
             ? "PROVIDER: ALL PASS"
@@ -509,11 +511,13 @@ public static class ProviderChecks
         {
             if (File.Exists(path)) File.Delete(path);
 
-            // 交互式：选第 1 项（anthropic），输入模型名。
+            // 交互式现在是四步：选 provider → 端点 → 密钥（跳过确认）→ 模型。
+            // 选第 1 项（anthropic），端点回车接受默认，密钥那步回车接受跳过，
+            // 最后手填模型名（端点无密钥查不到列表，会走手填分支）。
             var result = await RunCliAsync(
                 ["model"],
                 new Dictionary<string, string?> { ["DOUGONG_PROVIDER_CONFIG"] = path },
-                stdin: "1\nmy-test-model\n");
+                stdin: "1\n\n\nmy-test-model\n");
 
             if (!File.Exists(path))
                 return $"没有创建配置文件。stdout={Trim(result.Stdout)} stderr={Trim(result.Stderr)}";
@@ -572,6 +576,158 @@ public static class ProviderChecks
             return null;
         }
         finally { File.Delete(path); }
+    }
+
+    /// <summary>
+    /// 选中一个配置里还没有的 provider（内置预设）时必须**新建那一段**。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是用户实际反馈的 bug</b>：列表把 <c>anthropic</c> 这类内置预设列出来了，
+    /// 选中后却报"配置里没有 [providers.anthropic] 段，未改动"，然后直接结束。
+    /// 表现出来就是"选完 provider 还没输入模型名就退出了"。
+    /// <para>
+    /// 把没配过的项列进菜单却不让选，等于把选择权给了用户又收回去。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> AddsMissingProviderAsync()
+    {
+        const string original = """
+            # 保留这句话
+            default_provider = "mine"
+
+            [providers.mine]
+            base_url = "https://mine.example.com/v1"
+            model = "mine-model"
+            """;
+
+        var path = WriteTempConfig(original);
+        try
+        {
+            var result = await RunCliAsync(
+                ["model", "--set", "anthropic", "--model", "claude-x"],
+                new Dictionary<string, string?> { ["DOUGONG_PROVIDER_CONFIG"] = path });
+
+            if (result.ExitCode != 0)
+                return $"退出码 {result.ExitCode}：{Trim(result.Stdout + result.Stderr)}";
+
+            var after = await File.ReadAllTextAsync(path);
+
+            if (!after.Contains("[providers.anthropic]", StringComparison.Ordinal))
+                return $"没有新建 [providers.anthropic] 段：{Trim(after)}";
+
+            if (!after.Contains("claude-x", StringComparison.Ordinal))
+                return $"模型名没写进去：{Trim(after)}";
+
+            // 原有内容与注释必须完好。
+            if (!after.Contains("保留这句话", StringComparison.Ordinal))
+                return "原有注释被删掉了";
+
+            if (!after.Contains("mine-model", StringComparison.Ordinal))
+                return "原有 provider 被破坏了";
+
+            // 新段必须能被真正解析出来（拼坏的表头会在这里暴露）。
+            var parseError = ProviderConfigFile.TryLoad(path, out var catalog);
+            if (parseError is not null)
+                return $"新增段后配置无法解析：{parseError}";
+
+            var added = catalog!.Find("anthropic");
+            if (added is null) return "解析不出新增的 anthropic";
+            if (added.Model != "claude-x") return $"新增段的模型是 {added.Model}";
+            if (string.IsNullOrWhiteSpace(added.BaseUrl)) return "新增段缺 base_url";
+
+            return null;
+        }
+        finally { File.Delete(path); }
+    }
+
+    /// <summary>
+    /// 交互式流程里用户改过的端点必须**写进文件**，不能继续用预设默认值。
+    /// </summary>
+    /// <remarks>
+    /// <b>实测踩到的 bug</b>：向导显示的 base_url 是用户输入的，
+    /// 但新建配置时仍写预设里的默认端点——用户看到的和文件里的不一致。
+    /// 这种错误极难自查：配置看起来正常，只是连到了错的地方。
+    /// </remarks>
+    private static async Task<string?> WritesChosenBaseUrlAsync()
+    {
+        using var server = new FakeModelsServer(Action: null);
+        var path = Path.Combine(
+            Path.GetTempPath(), $"dougong-base-{Guid.NewGuid():N}.toml");
+
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+
+            // 选第 1 项（anthropic，预设端点是 api.anthropic.com），
+            // 但把 base_url 改成假服务器；密钥那步回车接受跳过；
+            // 然后选第 1 个发现的模型。
+            var result = await RunCliAsync(
+                ["model"],
+                new Dictionary<string, string?>
+                {
+                    ["DOUGONG_PROVIDER_CONFIG"] = path,
+                    // 预设要求 ANTHROPIC_API_KEY；设一个假的让它往下走。
+                    ["ANTHROPIC_API_KEY"] = "sk-fake-for-test",
+                },
+                stdin: $"1\n{server.BaseUrl}\n1\n");
+
+            if (!File.Exists(path))
+                return $"没有创建配置。stdout={Trim(result.Stdout)}";
+
+            var after = await File.ReadAllTextAsync(path);
+
+            if (!after.Contains(server.BaseUrl, StringComparison.Ordinal))
+            {
+                return $"用户输入的端点没写进配置（仍是预设值）。文件={Trim(after)}";
+            }
+
+            return null;
+        }
+        finally { try { File.Delete(path); } catch { /* 清理失败不影响结论 */ } }
+    }
+
+    /// <summary>起一个只实现 <c>/models</c> 的本地端点，用于验证模型发现。</summary>
+    private sealed class FakeModelsServer : IDisposable
+    {
+        private readonly System.Net.HttpListener _listener;
+        private readonly Task _loop;
+
+        public FakeModelsServer(Action? Action)
+        {
+            // 端口用 0 让系统分配，避免与服务固定端口的检查抢端口。
+            var port = Random.Shared.Next(18100, 18999);
+            BaseUrl = $"http://127.0.0.1:{port}/v1";
+
+            _listener = new System.Net.HttpListener();
+            _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            _listener.Start();
+
+            _loop = Task.Run(async () =>
+            {
+                while (_listener.IsListening)
+                {
+                    System.Net.HttpListenerContext context;
+                    try { context = await _listener.GetContextAsync(); }
+                    catch { return; }
+
+                    const string body =
+                        """{"object":"list","data":[{"id":"model-a"},{"id":"model-b"}]}""";
+                    var bytes = System.Text.Encoding.UTF8.GetBytes(body);
+                    context.Response.ContentType = "application/json";
+                    context.Response.ContentLength64 = bytes.Length;
+                    await context.Response.OutputStream.WriteAsync(bytes);
+                    context.Response.Close();
+                }
+            });
+        }
+
+        public string BaseUrl { get; }
+
+        public void Dispose()
+        {
+            try { _listener.Stop(); _listener.Close(); } catch { /* 已关闭 */ }
+            try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { /* 忽略 */ }
+        }
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────
