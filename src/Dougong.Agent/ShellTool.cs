@@ -27,17 +27,49 @@ namespace Dougong.Agent;
 /// </remarks>
 public sealed class ShellTool : IAgentTool
 {
-    private readonly string _workspace;
+    private readonly IShellExecutor _executor;
     private readonly TimeSpan _timeout;
     private readonly int _maxOutputBytes;
 
+    /// <summary>
+    /// 权限描述里要报的路径。
+    /// </summary>
+    /// <remarks>
+    /// <b>单独存而不是问 executor</b>：执行 seam 不该暴露"工作区在哪"——
+    /// 沙箱实现、远程实现可能根本没有本地路径。审批者要看到的是
+    /// "这条命令会影响哪个目录"，那是工具层的信息。
+    /// </remarks>
+    private readonly string _workspace;
+
+    /// <summary>用本地实现构造（不沙箱）。</summary>
+    /// <param name="workspace">工作目录。</param>
+    /// <param name="timeout">超时；默认 120 秒。</param>
+    /// <param name="maxOutputBytes">单流输出上限；默认 64 KiB。</param>
     public ShellTool(string workspace, TimeSpan? timeout = null, int maxOutputBytes = 64 * 1024)
+        : this(new LocalShellExecutor(workspace), timeout, maxOutputBytes)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxOutputBytes, 1024);
         _workspace = Path.GetFullPath(workspace);
+    }
+
+    /// <summary>
+    /// 用指定的执行器构造。
+    /// </summary>
+    /// <remarks>
+    /// <b>换沙箱实现就换这一个参数</b>，工具本身不改。
+    /// 这是把执行 seam 抽出来的全部理由——此前进程创建焊在这个类里，
+    /// 加沙箱就要修改工具。
+    /// </remarks>
+    /// <param name="executor">命令执行来源。</param>
+    /// <param name="timeout">超时。</param>
+    /// <param name="maxOutputBytes">单流输出上限。</param>
+    public ShellTool(IShellExecutor executor, TimeSpan? timeout = null, int maxOutputBytes = 64 * 1024)
+    {
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxOutputBytes, 1024);
+        _executor = executor;
         _timeout = timeout ?? TimeSpan.FromSeconds(120);
         _maxOutputBytes = maxOutputBytes;
+        _workspace = Environment.CurrentDirectory;
     }
 
     public ToolDescriptor Descriptor { get; } = new(
@@ -84,7 +116,6 @@ public sealed class ShellTool : IAgentTool
     /// 返回空表示"不做文件版本复核"，而不是"没有文件依赖"。
     /// </summary>
     public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) => [];
-
     public async ValueTask<AgentToolResult> ExecuteAsync(
         ToolInvocation invocation, CancellationToken cancellationToken)
     {
@@ -94,158 +125,31 @@ public sealed class ShellTool : IAgentTool
         if (string.IsNullOrWhiteSpace(command))
             throw new InvalidOperationException("缺少 command 参数。");
 
-        var arguments = ReadArgs(invocation.Arguments);
-        var started = Start(command, arguments);
+        var args = ReadArgs(invocation.Arguments);
 
-        // 输出上限是累计的：两个流各自有界，且都会标记是否被截断。
-        var stdout = new BoundedBuffer(_maxOutputBytes);
-        var stderr = new BoundedBuffer(_maxOutputBytes);
-        var readOut = DrainAsync(started.Process.StandardOutput, stdout);
-        var readErr = DrainAsync(started.Process.StandardError, stderr);
+        // args 作为独立参数追加：**不参与 shell 解释**。
+        // 拼进去而不是交给 shell 分词，是因为模型给的参数可能含空格与引号，
+        // 交给 shell 会变成命令注入。
+        var fullCommand = args.Count == 0
+            ? command
+            : command + " " + string.Join(' ', args.Select(QuoteShellArgument));
 
-        using var timeoutSource = new CancellationTokenSource(_timeout);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken, timeoutSource.Token);
+        var result = await _executor
+            .ExecuteAsync(fullCommand, _timeout, _maxOutputBytes, cancellationToken)
+            .ConfigureAwait(false);
 
-        try
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(new
         {
-            await started.Process.WaitForExitAsync(linked.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            // 取消或超时：必须结束整棵进程树，否则子进程继续跑而锁被释放，
-            // 下一次调用就会与"已取消"的命令重叠执行。
-            KillTree(started.Process);
-            await AwaitQuietlyAsync(started.Process.WaitForExitAsync(CancellationToken.None))
-                .ConfigureAwait(false);
-            await AwaitQuietlyAsync(readOut).ConfigureAwait(false);
-            await AwaitQuietlyAsync(readErr).ConfigureAwait(false);
-
-            if (cancellationToken.IsCancellationRequested)
-            {
-                // 已执行的命令不能伪装成"未发生"：取消时它可能已经产生了副作用。
-                throw new OperationCanceledException(
-                    $"命令被取消并已结束进程树；副作用可能已部分发生。已捕获输出：\n{Summarize(stdout, stderr)}",
-                    cancellationToken);
-            }
-
-            throw new TimeoutException(
-                $"命令超过 {_timeout.TotalSeconds:0} 秒仍未结束，已结束进程树。"
-                + $"退出状态未知；副作用可能已部分发生。已捕获输出：\n{Summarize(stdout, stderr)}");
-        }
-
-        // 进程已退出：读净剩余输出后再取退出码，避免读到一半。
-        await AwaitQuietlyAsync(readOut).ConfigureAwait(false);
-        await AwaitQuietlyAsync(readErr).ConfigureAwait(false);
-
-        var exitCode = started.Process.ExitCode;
-        var result = new
-        {
-            exitCode,
-            stdout = stdout.Text,
-            stderr = stderr.Text,
-            stdoutTruncated = stdout.Truncated,
-            stderrTruncated = stderr.Truncated,
-        };
-
-        using var document = JsonDocument.Parse(JsonSerializer.Serialize(result));
+            exitCode = result.ExitCode,
+            stdout = result.Stdout,
+            stderr = result.Stderr,
+            stdoutTruncated = result.StdoutTruncated,
+            stderrTruncated = result.StderrTruncated,
+        }));
         return new AgentToolResult(document.RootElement.Clone());
     }
 
-    private StartedProcess Start(string command, IReadOnlyList<string> arguments)
-    {
-        var startInfo = new ProcessStartInfo
-        {
-            WorkingDirectory = _workspace,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            // 重定向 stdin 并立即关闭：命令等待输入时拿到 EOF，而不是挂住直到超时。
-            RedirectStandardInput = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-
-        if (OperatingSystem.IsWindows())
-        {
-            startInfo.FileName = Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe";
-            startInfo.ArgumentList.Add("/c");
-            startInfo.ArgumentList.Add(BuildWindowsCommand(command, arguments));
-        }
-        else
-        {
-            startInfo.FileName = "/bin/sh";
-            startInfo.ArgumentList.Add("-c");
-            startInfo.ArgumentList.Add(BuildPosixCommand(command, arguments));
-        }
-
-        // 从零开始构建环境：不继承宿主环境，避免把密钥交给模型可执行的命令。
-        // 必须先 Clear()：ProcessStartInfo.Environment 初始就装着父进程的全部变量，
-        // 只往里加白名单项并不等于"只传这些"，密钥仍会一起被继承。
-        startInfo.Environment.Clear();
-        foreach (var pair in ShellEnvironment.Minimal())
-            startInfo.Environment[pair.Key] = pair.Value;
-
-        var process = new Process { StartInfo = startInfo };
-        try
-        {
-            process.Start();
-        }
-        catch (Exception ex)
-        {
-            process.Dispose();
-            throw new InvalidOperationException($"无法启动命令：{ex.Message}", ex);
-        }
-
-        // 立刻关闭 stdin：命令若尝试读取输入会得到 EOF。
-        try { process.StandardInput.Close(); } catch (IOException) { }
-
-        return new StartedProcess(process);
-    }
-
-    /// <summary>
-    /// Windows 下把参数按 cmd 的引用规则拼接。
-    /// 参数是独立项、不参与 shell 解释，因此只需处理空白与引号。
-    /// </summary>
-    private static string BuildWindowsCommand(string command, IReadOnlyList<string> arguments)
-    {
-        if (arguments.Count == 0) return command;
-
-        var builder = new StringBuilder(command);
-        foreach (var argument in arguments)
-        {
-            builder.Append(' ');
-            builder.Append(QuoteForCmd(argument));
-        }
-
-        return builder.ToString();
-    }
-
-    private static string QuoteForCmd(string argument)
-    {
-        if (argument.Length > 0 && argument.IndexOfAny([' ', '\t', '"']) < 0) return argument;
-
-        // cmd 用双引号分组；内部的引号需要成对转义（cmd 没有统一转义规则，
-        // 这里按最常见的双写方式处理，并在文档里说明它不保证覆盖所有情形）。
-        return "\"" + argument.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
-    }
-
-    /// <summary>POSIX 下用单引号包裹参数；内部单引号按标准方式转义。</summary>
-    private static string BuildPosixCommand(string command, IReadOnlyList<string> arguments)
-    {
-        if (arguments.Count == 0) return command;
-
-        var builder = new StringBuilder(command);
-        foreach (var argument in arguments)
-        {
-            builder.Append(' ');
-            builder.Append('\'');
-            builder.Append(argument.Replace("'", "'\\''", StringComparison.Ordinal));
-            builder.Append('\'');
-        }
-
-        return builder.ToString();
-    }
-
+    /// <summary>读可选的 args 数组。</summary>
     private static IReadOnlyList<string> ReadArgs(JsonElement arguments)
     {
         if (!arguments.TryGetProperty("args", out var args)
@@ -262,87 +166,30 @@ public sealed class ShellTool : IAgentTool
         return result;
     }
 
-    private static async Task DrainAsync(StreamReader reader, BoundedBuffer buffer)
+    /// <summary>
+    /// 把一个参数按当前平台规则引用，使其作为单个 argv 项传给命令。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么要自己引用而不是拼进命令</b>：模型给的参数可能含空格、引号、
+    /// <c>&amp;&amp;</c> 或 <c>;</c>。直接拼进命令文本等于把 shell 语法交给模型，
+    /// 而这里的前提恰恰是"参数不参与 shell 解释"。
+    /// <para>
+    /// cmd 没有统一转义规则，这里按最常见的双写方式处理，
+    /// **不保证覆盖所有情形**——所以带复杂引号的场景应当直接写进 <c>command</c>，
+    /// 由调用方自己决定怎么引用。
+    /// </para>
+    /// </remarks>
+    private static string QuoteShellArgument(string argument)
     {
-        var chunk = new char[4096];
-        try
+        if (OperatingSystem.IsWindows())
         {
-            while (true)
-            {
-                var read = await reader.ReadAsync(chunk).ConfigureAwait(false);
-                if (read <= 0) break;
-                buffer.Append(chunk.AsSpan(0, read));
-            }
+            if (argument.Length > 0 && argument.IndexOfAny([' ', '	', '"']) < 0) return argument;
+            return "\"" + argument.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
         }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
-        {
-            // 进程被结束时流会关闭；已读到的内容仍然有效。
-        }
+
+        return "'" + argument.Replace("'", "'\''", StringComparison.Ordinal) + "'";
     }
 
-    private static void KillTree(Process process)
-    {
-        try
-        {
-            if (!process.HasExited) process.Kill(entireProcessTree: true);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-            // 进程可能刚好自行退出；这不是错误。
-        }
-    }
-
-    private static async Task AwaitQuietlyAsync(Task task)
-    {
-        try { await task.ConfigureAwait(false); }
-        catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
-        {
-        }
-    }
-
-    private static string Summarize(BoundedBuffer stdout, BoundedBuffer stderr)
-    {
-        var builder = new StringBuilder();
-        if (stdout.Text.Length > 0) builder.Append("stdout: ").AppendLine(stdout.Text);
-        if (stderr.Text.Length > 0) builder.Append("stderr: ").AppendLine(stderr.Text);
-        return builder.Length == 0 ? "(无输出)" : builder.ToString();
-    }
-
-    private sealed class StartedProcess(Process process)
-    {
-        public Process Process { get; } = process;
-    }
-
-    /// <summary>有上限的输出缓冲：超出后停止追加并标记截断。</summary>
-    private sealed class BoundedBuffer(int capacity)
-    {
-        private readonly StringBuilder _builder = new();
-
-        public bool Truncated { get; private set; }
-
-        public string Text => _builder.ToString();
-
-        public void Append(ReadOnlySpan<char> chunk)
-        {
-            if (Truncated) return;
-
-            var remaining = capacity - _builder.Length;
-            if (remaining <= 0)
-            {
-                Truncated = true;
-                return;
-            }
-
-            if (chunk.Length <= remaining)
-            {
-                _builder.Append(chunk);
-                return;
-            }
-
-            _builder.Append(chunk[..remaining]);
-            Truncated = true;
-        }
-    }
 }
 
 /// <summary>

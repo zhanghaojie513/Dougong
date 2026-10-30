@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dougong.Agent;
 
 namespace Dougong.Agent.Comparison;
@@ -26,6 +27,7 @@ public static class FileSystemChecks
         failures += await CheckAsync("directory-listing-is-stable", ListingStableAsync);
         failures += await CheckAsync("atomic-write-leaves-no-partial", NoPartialFileAsync);
         failures += await CheckAsync("file-tools-live-in-sdk", ToolsInSdkAsync);
+        failures += await CheckAsync("shell-executor-is-replaceable", ExecutorIsReplaceableAsync);
 
         Console.WriteLine(failures == 0
             ? "FILESYSTEM: ALL PASS"
@@ -225,6 +227,72 @@ public static class FileSystemChecks
             return Task.FromResult<string?>($"IFileSystem 住在 {seam}，应在 {expected}");
 
         return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>
+    /// 命令执行必须是可替换的 seam，而不是焊在工具里的进程创建。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么这条值得测</b>：此前 <see cref="ShellTool"/> 里直接
+    /// <c>new Process</c>，加沙箱就要改工具本身——而沙箱是"怎么起进程"，
+    /// 与"模型怎么调命令"无关。阶段 3 要加的沙箱必须从这一层进。
+    /// <para>
+    /// 更直接的好处：有了 seam，测试能替换执行器，不必真起进程。
+    /// 这条用例本身就是证据——它跑一次真实命令都不需要。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> ExecutorIsReplaceableAsync()
+    {
+        var executor = new RecordingExecutor();
+        var tool = new ShellTool(executor, timeout: TimeSpan.FromSeconds(5));
+
+        using var document = JsonDocument.Parse(
+            """{"command":"echo","args":["a b","c"]}""");
+
+        var result = await tool.ExecuteAsync(
+            new ToolInvocation("i1", "shell", document.RootElement.Clone()),
+            CancellationToken.None).ConfigureAwait(false);
+
+        if (executor.Calls.Count != 1)
+            return $"执行器应被调用 1 次，实际 {executor.Calls.Count} 次";
+
+        var command = executor.Calls[0];
+
+        // 参数必须作为独立 argv 项被引用，不能原样拼进命令文本——
+        // 那等于把 shell 语法交给模型。
+        //
+        // **引用符随平台不同**：cmd 用双引号，POSIX 用单引号。
+        // 只断言其中一种会让这条用例在另一个平台上失败，而失败原因与
+        // 它要防的问题无关。
+        var quoted = command.Contains("\"a b\"", StringComparison.Ordinal)
+            || command.Contains("'a b'", StringComparison.Ordinal);
+
+        if (!quoted)
+            return $"含空格的参数没有被引用：{command}";
+
+        if (!command.Contains("echo", StringComparison.Ordinal))
+            return $"命令丢失：{command}";
+
+        // 工具必须把执行结果原样返回，不做二次解释。
+        if (result.Content.GetRawText().Contains("stub-stdout", StringComparison.Ordinal) is false)
+            return $"执行器输出没有传给模型：{result.Content.GetRawText()}";
+
+        return null;
+    }
+
+    /// <summary>记录调用的替身执行器，不真起进程。</summary>
+    private sealed class RecordingExecutor : IShellExecutor
+    {
+        public List<string> Calls { get; } = [];
+
+        public ValueTask<ShellExecutionResult> ExecuteAsync(
+            string command, TimeSpan timeout, int maxOutputBytes,
+            CancellationToken cancellationToken = default)
+        {
+            Calls.Add(command);
+            return ValueTask.FromResult(
+                new ShellExecutionResult(0, "stub-stdout", "", false, false));
+        }
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────

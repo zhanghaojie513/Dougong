@@ -72,6 +72,36 @@
 
 ### Added
 
+- **`IShellExecutor`：命令执行的可替换 seam**，加 `LocalShellExecutor` 实现。
+
+  **为什么需要它**：进程创建此前焊在 `ShellTool` 里（直接 `new Process`）。
+  这带来两个后果：
+  - 换沙箱执行要**改工具本身**——而沙箱是"怎么起进程"的问题，
+    与"模型怎么调命令"无关，两者不该耦合。
+  - 测试里无法替换，跑一次就要真起进程，跑不了"命令被拒"这类分支。
+
+  与 dsh 的对应：它分的正是 `dsh-shell`（执行 seam）与 `dsh-tool-bash`（工具）。
+  我们此前把两者合成一个类，而阶段 3 的沙箱必须从这一层进。
+
+  接口只描述"起一个进程并等它结束"，**不含策略**：命令黑白名单、输出上限、
+  超时语义都不在 seam 里。把策略塞进去会让"换实现"变成"换语义"，那不是替换。
+
+  新增 `ShellTool(IShellExecutor, ...)` 重载；原 `ShellTool(string workspace, ...)`
+  保留，内部构造 `LocalShellExecutor`。换沙箱只换这一个参数。
+
+- **`filesystem` 套件加一项 `shell-executor-is-replaceable`**：用替身执行器
+  验证工具确实走 seam，且参数作为独立 argv 项被引用（不拼进命令文本——
+  那等于把 shell 语法交给模型）。反向对照确认：让工具忽略注入的执行器后，
+  该条准确报红。
+
+### 顺带修的一处测试缺陷
+
+`shell-executor-is-replaceable` 第一版只断言单引号引用，在 Windows 上失败——
+而失败原因与它要防的问题无关。改成接受两种平台的引用符：
+**只断言一种会让用例在另一个平台上假红，那种红会把真正的回归埋掉。**
+
+### Added
+
 - **`IFileSystem`：文件能力的可替换 seam**，加 `LocalFileSystem` 实现。
   ```csharp
   ValueTask<string> ReadTextAsync(path, ct);
