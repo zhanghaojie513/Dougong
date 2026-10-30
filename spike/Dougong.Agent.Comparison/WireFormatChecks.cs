@@ -38,6 +38,7 @@ public static class WireFormatChecks
         failures += Check("other-reasoning-field-names-are-dropped", OtherReasoningFieldsDropped);
         failures += Check("dialect-switch-round-trips-to-wire", DialectRoundTrip);
         failures += Check("max-output-tokens-is-configurable", MaxTokensConfigurable);
+        failures += Check("reasoning-effort-shapes", ReasoningEffortShapes);
         failures += await CheckAsync("runtime-history-carries-tool-result-text", RuntimeToolResultTextAsync);
         failures += await CheckAsync("reasoning-produces-live-event", ReasoningProducesEventAsync);
         failures += await CheckAsync("no-reasoning-yields-no-event", NoReasoningNoEventAsync);
@@ -615,6 +616,146 @@ public static class WireFormatChecks
             Console.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// 推理强度的四种请求体形状必须各自正确，且默认不发。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条测的是"结构对不对"，不是"端点接不接受"</b>，两者必须分清：
+    /// 结构错了（比如把档位词当 budget_tokens 发）是必然 400 的硬错误；
+    /// 结构对但某家实际不认，那是配置问题。没有真实密钥时只能测前者，
+    /// 所以这里不声明"已验证端点兼容"。
+    /// <para>
+    /// <b>为什么必须测"默认不发"</b>：发一个对方不认的字段，轻则被静默忽略
+    /// （用户以为设置生效了），重则 400 且错误信息看不出是哪个参数的问题。
+    /// 默认值必须是 None。
+    /// </para>
+    /// </remarks>
+    private static string? ReasoningEffortShapes()
+    {
+        var messages = new List<ChatMessage> { new(ChatRole.User, "hi") };
+        var options = new ChatOptions
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                [AgentPropertyKeys.ReasoningEffort] = "high",
+            },
+        };
+
+        // ① 默认 None：一个推理字段都不许发。
+        var plain = new OpenAiChatCompletionsFormat().BuildBody(
+            "m", messages, options, stream: false).ToJsonString();
+
+        if (plain.Contains("reasoning", StringComparison.Ordinal)
+            || plain.Contains("thinking", StringComparison.Ordinal)
+            || plain.Contains("enable_thinking", StringComparison.Ordinal))
+        {
+            return $"默认不该发任何推理参数，实际：{plain}";
+        }
+
+        // ② OpenAI 写法：扁平 reasoning_effort
+        var openai = new OpenAiChatCompletionsFormat(
+            new WireCompat { Thinking = WireCompat.ThinkingFormat.ReasoningEffort })
+            .BuildBody("m", messages, options, stream: false).ToJsonString();
+
+        if (!openai.Contains("\"reasoning_effort\":\"high\"", StringComparison.Ordinal))
+            return $"OpenAI 写法应是扁平 reasoning_effort，实际：{openai}";
+
+        // ③ DeepSeek：thinking 开关 + reasoning_effort
+        var deepseek = new OpenAiChatCompletionsFormat(
+            new WireCompat { Thinking = WireCompat.ThinkingFormat.DeepSeek })
+            .BuildBody("m", messages, options, stream: false).ToJsonString();
+
+        if (!deepseek.Contains("\"thinking\":{\"type\":\"enabled\"}", StringComparison.Ordinal))
+            return $"DeepSeek 写法应有 thinking.type=enabled，实际：{deepseek}";
+
+        // ④ GLM：带 clear_thinking 的 thinking 对象
+        var glm = new OpenAiChatCompletionsFormat(
+            new WireCompat { Thinking = WireCompat.ThinkingFormat.Zai })
+            .BuildBody("m", messages, options, stream: false).ToJsonString();
+
+        // 断言完整结构而不是字段名存在：只查 Contains("clear_thinking")
+        // 时，值写错也照样通过——反向对照实测抓到过这个漏洞。
+        const string glmExpected = """{"type":"enabled","clear_thinking":false}""";
+        if (!glm.Contains(glmExpected, StringComparison.Ordinal))
+            return $"GLM 写法应是 thinking.type=enabled + clear_thinking=false，实际：{glm}";
+
+        // ⑤ OpenRouter：嵌套 reasoning.effort
+        var or = new OpenAiChatCompletionsFormat(
+            new WireCompat { Thinking = WireCompat.ThinkingFormat.OpenRouter })
+            .BuildBody("m", messages, options, stream: false).ToJsonString();
+
+        if (!or.Contains("\"reasoning\":{\"effort\":\"high\"}", StringComparison.Ordinal))
+            return $"OpenRouter 写法应是嵌套 reasoning.effort，实际：{or}";
+
+        // ⑥ 档位映射：max 映射到该模型支持的 high
+        var mapped = new OpenAiChatCompletionsFormat(new WireCompat
+        {
+            Thinking = WireCompat.ThinkingFormat.ReasoningEffort,
+            ThinkingLevelMap = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["max"] = "high",
+            },
+        }).BuildBody("m", messages, new ChatOptions
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                [AgentPropertyKeys.ReasoningEffort] = "max",
+            },
+        }, stream: false).ToJsonString();
+
+        if (!mapped.Contains("\"reasoning_effort\":\"high\"", StringComparison.Ordinal))
+            return $"档位映射未生效（max 应映射为 high），实际：{mapped}";
+
+        // ⑦ 映射表里显式 null = 该档位不支持，此时不发这个字段。
+        // 这与"没配映射"不同：后者按同名透传。
+        var unsupported = new OpenAiChatCompletionsFormat(new WireCompat
+        {
+            Thinking = WireCompat.ThinkingFormat.ReasoningEffort,
+            ThinkingLevelMap = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["max"] = null,
+            },
+        }).BuildBody("m", messages, new ChatOptions
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                [AgentPropertyKeys.ReasoningEffort] = "max",
+            },
+        }, stream: false).ToJsonString();
+
+        if (unsupported.Contains("reasoning_effort", StringComparison.Ordinal))
+            return $"显式 null 应表示不支持、不发该字段，实际：{unsupported}";
+
+        // ⑧ Anthropic 预算制：档位词绝不能当 budget_tokens 发（字符串给整数字段 → 400）
+        var anthropic = new AnthropicMessagesFormat().BuildBody(
+            "m", messages, options, stream: false).ToJsonString();
+
+        if (anthropic.Contains("\"budget_tokens\":\"high\"", StringComparison.Ordinal))
+            return $"把档位词当预算发了（必然 400）：{anthropic}";
+
+        if (!anthropic.Contains("\"thinking\":{\"type\":\"enabled\"", StringComparison.Ordinal))
+            return $"Anthropic 应有 thinking.type=enabled，实际：{anthropic}";
+
+        // ⑨ Anthropic 自适应：thinking.type=adaptive + output_config.effort
+        var adaptive = new AnthropicMessagesFormat("/v1/messages", adaptiveThinking: true).BuildBody(
+            "m", messages, options, stream: false).ToJsonString();
+
+        if (!adaptive.Contains("\"type\":\"adaptive\"", StringComparison.Ordinal))
+            return $"自适应思考应有 thinking.type=adaptive，实际：{adaptive}";
+
+        if (!adaptive.Contains("\"effort\":\"high\"", StringComparison.Ordinal))
+            return $"自适应思考应有 output_config.effort，实际：{adaptive}";
+
+        // ⑩ Anthropic 没配档位：不发 thinking 块（它没有 disabled 这个值）
+        var noThinking = new AnthropicMessagesFormat().BuildBody(
+            "m", messages, new ChatOptions(), stream: false).ToJsonString();
+
+        if (noThinking.Contains("\"thinking\"", StringComparison.Ordinal))
+            return $"未配档位时 Anthropic 不该发 thinking，实际：{noThinking}";
+
+        return null;
     }
 
     private static async Task<int> CheckAsync(string name, Func<Task<string?>> action)

@@ -110,8 +110,23 @@ public sealed class OpenAiResponsesFormat : IChatWireFormat
             body["tools"] = tools;
         }
 
+        // 推理强度：Responses API 用嵌套的 reasoning.effort，
+        // 与 chat/completions 的扁平 reasoning_effort 不是同一个形状。
+        // 依据 pi 的 api/openai-responses.ts 与 OpenAI 官方文档。
+        if (ReadReasoningEffort(options) is { Length: > 0 } effort)
+        {
+            body["reasoning"] = new JsonObject { ["effort"] = effort };
+        }
+
         return body;
     }
+
+    /// <summary>从 <see cref="ChatOptions"/> 读中性键形式的推理档位。</summary>
+    private static string? ReadReasoningEffort(ChatOptions? options) =>
+        options?.AdditionalProperties is { } props
+        && props.TryGetValue(AgentPropertyKeys.ReasoningEffort, out var value)
+            ? value?.ToString()
+            : null;
 
     /// <summary>工具结果是 input 里的 <c>function_call_output</c> 条目，按 <c>call_id</c> 关联。</summary>
     private static void AppendToolOutput(JsonArray input, ChatMessage message)

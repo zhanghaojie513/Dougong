@@ -578,10 +578,16 @@ public static class DoctorChecks
     private static async Task<string?> ProtocolMismatchHintAsync()
     {
         // 地址带 /anthropic，但协议是 openai —— 必然 404。
-        // 用不可达的域名也可以：判断发生在异常提示里，不依赖真实响应。
+        //
+        // **用 127.0.0.1 上必然拒绝的端口**，不要用真实域名：
+        // 真实的 api.minimaxi.com 会如实返回 404（curl 0.97 秒到），
+        // 但 HttpClient 走它的路径时可能挂到 20 秒超时，于是落到
+        // "20 秒内没有响应"分支，ConnectivityHint 根本没被调用 ——
+        // 那时这条断言测的就不是提示逻辑，而是当时的网络状况。
+        // 实测踩到过：本机 curl 通、HttpClient 挂住，套件随机红绿。
         var result = await RunDoctorAsync(new Dictionary<string, string?>
         {
-            ["DOUGONG_PROVIDER_BASE"] = "https://api.minimaxi.com/anthropic",
+            ["DOUGONG_PROVIDER_BASE"] = "http://127.0.0.1:1/anthropic",
             ["DOUGONG_PROVIDER_MODEL"] = "m",
             ["DOUGONG_PROVIDER_KEY"] = "k",
             ["DOUGONG_PROVIDER_PROTOCOL"] = "openai",
@@ -597,7 +603,7 @@ public static class DoctorChecks
         // 反向对照：配套时不出现这条提示（避免"永远显示"的假通过）。
         var matched = await RunDoctorAsync(new Dictionary<string, string?>
         {
-            ["DOUGONG_PROVIDER_BASE"] = "https://api.minimaxi.com/anthropic",
+            ["DOUGONG_PROVIDER_BASE"] = "http://127.0.0.1:1/anthropic",
             ["DOUGONG_PROVIDER_MODEL"] = "m",
             ["DOUGONG_PROVIDER_KEY"] = "k",
             ["DOUGONG_PROVIDER_PROTOCOL"] = "anthropic",

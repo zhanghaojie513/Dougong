@@ -23,15 +23,31 @@ public sealed class AnthropicMessagesFormat : IChatWireFormat
     private const string AnthropicVersion = "2023-06-01";
 
     private readonly string _messagesPath;
+    private readonly bool _adaptiveThinking;
 
     /// <param name="messagesPath">
     /// messages 端点的相对路径。多数实现是 <c>/v1/messages</c>；
     /// DeepSeek 把 Anthropic 兼容层挂在 <c>/anthropic/v1/messages</c>，需显式传入。
     /// </param>
     public AnthropicMessagesFormat(string messagesPath = "/v1/messages")
+        : this(messagesPath, adaptiveThinking: false)
+    {
+    }
+
+    /// <param name="messagesPath">同单参数重载。</param>
+    /// <param name="adaptiveThinking">
+    /// 该模型是否用自适应思考（<c>thinking: {type:"adaptive"}</c> + <c>output_config.effort</c>）。
+    /// false 时用预算制（<c>thinking: {type:"enabled", budget_tokens}</c>）。
+    /// <para>
+    /// <b>两种形态不能混用</b>：把档位词当预算发过去会 400（字符串给整数字段），
+    /// 把预算当档位发过去也会 400（未知的 effort 值）。
+    /// </para>
+    /// </param>
+    public AnthropicMessagesFormat(string messagesPath, bool adaptiveThinking)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(messagesPath);
         _messagesPath = messagesPath;
+        _adaptiveThinking = adaptiveThinking;
     }
 
     public ChatProtocol Protocol => ChatProtocol.AnthropicMessages;
@@ -123,8 +139,22 @@ public sealed class AnthropicMessagesFormat : IChatWireFormat
             body["tools"] = tools;
         }
 
+        // 推理强度：Anthropic 的结构与 OpenAI 兼容族完全不同
+        // （thinking 对象 + output_config，不是扁平字段），所以走单独的方法。
+        // 没配档位时整块不发——Anthropic 没有 "disabled" 值，
+        // 不发 thinking 就是不思考。
+        ThinkingParameters.ApplyAnthropic(
+            body, ReadReasoningEffort(options), _adaptiveThinking);
+
         return body;
     }
+
+    /// <summary>从 <see cref="ChatOptions"/> 读中性键形式的推理档位。</summary>
+    private static string? ReadReasoningEffort(ChatOptions? options) =>
+        options?.AdditionalProperties is { } props
+        && props.TryGetValue(AgentPropertyKeys.ReasoningEffort, out var value)
+            ? value?.ToString()
+            : null;
 
     /// <summary>
     /// 工具结果必须作为 <c>user</c> 消息的 <c>tool_result</c> block 回填。

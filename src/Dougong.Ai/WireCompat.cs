@@ -16,6 +16,55 @@ namespace Dougong.Ai;
 /// </remarks>
 public sealed record WireCompat
 {
+    /// <summary>
+    /// 思考/推理参数在请求体里的写法。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么需要一个枚举而不是一个字段名</b>：这不是"字段叫什么"的问题，
+    /// 而是**参数结构完全不同**。同样是 high，各家要的分别是：
+    /// <list type="bullet">
+    /// <item>OpenAI：<c>reasoning_effort: "high"</c></item>
+    /// <item>DeepSeek / Kimi：<c>thinking: { type: "enabled" }</c> + <c>reasoning_effort: "high"</c></item>
+    /// <item>GLM：<c>thinking: { type: "enabled", clear_thinking: false }</c> + <c>reasoning_effort</c></item>
+    /// <item>Qwen：<c>enable_thinking: true</c> + <c>reasoning_effort</c></item>
+    /// <item>OpenRouter：<c>reasoning: { effort: "high" }</c>（嵌套对象）</item>
+    /// </list>
+    /// 用一个字段名表达不了这五种形状。
+    /// </remarks>
+    public enum ThinkingFormat
+    {
+        /// <summary>
+        /// OpenAI 官方写法：只发 <c>reasoning_effort</c> 一个字符串。
+        /// </summary>
+        ReasoningEffort,
+
+        /// <summary>
+        /// DeepSeek / Kimi 系：<c>thinking</c> 开关 + 可选 <c>reasoning_effort</c>。
+        /// </summary>
+        DeepSeek,
+
+        /// <summary>
+        /// 智谱 GLM：<c>thinking: { type, clear_thinking }</c> + <c>reasoning_effort</c>。
+        /// </summary>
+        Zai,
+
+        /// <summary>
+        /// 通义千问：<c>enable_thinking</c> 布尔 + 可选 <c>reasoning_effort</c>。
+        /// </summary>
+        Qwen,
+
+        /// <summary>
+        /// OpenRouter：嵌套的 <c>reasoning: { effort }</c> 对象。
+        /// </summary>
+        OpenRouter,
+
+        /// <summary>
+        /// 不发任何推理参数。默认值——**没配就不发，不会静默发一个对方不认的值**。
+        /// </summary>
+        None,
+    }
+
+
     /// <summary>默认值：与当前已实测通过的端点行为一致。</summary>
     public static WireCompat Default { get; } = new();
 
@@ -37,4 +86,27 @@ public sealed record WireCompat
     /// 避免改变已验证端点的行为。
     /// </remarks>
     public string? MaxTokensField { get; init; }
+
+    /// <summary>
+    /// 思考参数的写法。默认 <see cref="ThinkingFormat.None"/>（不发）。
+    /// </summary>
+    /// <remarks>
+    /// <b>默认不发是刻意的</b>：发一个对方不认的字段，轻则被忽略（用户以为设置生效了），
+    /// 重则 400 且错误信息看不出是哪个参数的问题。所以只有明确知道某家怎么写时才启用。
+    /// </remarks>
+    public ThinkingFormat Thinking { get; init; } = ThinkingFormat.None;
+
+    /// <summary>
+    /// 统一档位到该模型实际档位词的映射。null 表示直接透传档位词。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么需要映射而不是透传</b>：各家档位词不一样（有的只有 low/medium/high，
+    /// 有的支持 xhigh/max，GLM 用 <c>none</c> 表示关闭）。把 <c>max</c> 原样发给只认
+    /// <c>high</c> 的端点，会被 400 拒绝或静默忽略。
+    /// <para>
+    /// <b>值为 null 表示该档位不支持</b>，此时不发任何参数——而不是退化成"发一个相近的"。
+    /// 静默降级会让用户以为选的那个档位生效了。
+    /// </para>
+    /// </remarks>
+    public IReadOnlyDictionary<string, string?>? ThinkingLevelMap { get; init; }
 }

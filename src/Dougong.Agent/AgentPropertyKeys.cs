@@ -20,4 +20,21 @@ public static class AgentPropertyKeys
     /// 模型产出的思考内容（纯文本）。连接器写入、Agent 层读取并回传。
     /// </summary>
     public const string Reasoning = "dougong.reasoning";
+
+    /// <summary>
+    /// 推理强度档位（<c>minimal</c> / <c>low</c> / <c>medium</c> / <c>high</c> /
+    /// <c>xhigh</c> / <c>max</c>，或 <c>off</c> 表示关闭）。
+    /// </summary>
+    /// <remarks>
+    /// <b>由宿主写进 <see cref="Microsoft.Extensions.AI.ChatOptions.AdditionalProperties"/>，
+    /// 由连接器翻译成具体 provider 的参数。</b>
+    /// 和 <see cref="Reasoning"/> 一样用中性名：`reasoning_effort`、`thinking.type`、
+    /// `enable_thinking` 都是某一家或某一族的写法，写进 Agent 层就等于把这层绑死到具体 provider。
+    /// <para>
+    /// <b>档位词是统一词汇，不是各家的词</b>。映射到对方支持的子集是连接器的责任
+    /// （见 <c>WireCompat.ThinkingLevelMap</c>）——某家只认 low/medium/high 时，
+    /// 把 max 原样发过去会被 400 或静默忽略。
+    /// </para>
+    /// </remarks>
+    public const string ReasoningEffort = "dougong.reasoning-effort";
 }

@@ -21,6 +21,59 @@
 
 ## [Unreleased]
 
+**推理强度终于能发到端点上了。**
+
+### Added
+
+- **三种协议各自翻译推理强度**。此前能力表里有档位映射（662 个模型中带
+  `reasoning_options` 的都生成了），但 `BuildBody` 不读它——用户设了档位
+  **不会发出去**，静默无效果，正是我们一直在防的那类问题。
+
+  现在按各家实际结构发：
+
+  | 协议 / 家 | 请求体形状 |
+  |---|---|
+  | OpenAI 官方 | `reasoning_effort: "high"` |
+  | DeepSeek / Kimi | `thinking: {type:"enabled"}` + `reasoning_effort` |
+  | 智谱 GLM | `thinking: {type:"enabled", clear_thinking:false}` + `reasoning_effort` |
+  | 通义千问 | `enable_thinking: true` + `reasoning_effort` |
+  | OpenRouter | `reasoning: {effort: "high"}`（嵌套对象） |
+  | Anthropic 预算制 | `thinking: {type:"enabled", budget_tokens: N}` |
+  | Anthropic 自适应 | `thinking: {type:"adaptive"}` + `output_config:{effort}` |
+  | Responses | `reasoning: {effort: "high"}` |
+
+  **为什么必须按形状分而不是只换字段名**：同样一个 high，各家要的是
+  扁平字段、开关对象、嵌套对象或绝对 token 预算——用一个字段名表达不了。
+  把档位词当 `budget_tokens` 发会 400（字符串给整数字段）。
+
+- **`AgentPropertyKeys.ReasoningEffort`**：中性键，宿主写进
+  `ChatOptions.AdditionalProperties`，连接器翻译成具体 provider 参数。
+  和 `Reasoning` 一样用中性名——`reasoning_effort` / `thinking.type` /
+  `enable_thinking` 都是某一家或某族的写法，写进 Agent 层就把这层绑死了。
+
+- **`WireCompat.Thinking` 枚举与 `ThinkingLevelMap`**：
+  - 默认 `ThinkingFormat.None`（**不发**）。发一个对方不认的字段，
+    轻则静默忽略（用户以为生效了），重则 400 且看不出是哪个参数。
+  - `ThinkingLevelMap` 里显式 `null` 表示该档位不支持，此时不发——
+    而不是退化成"发一个相近的"。静默降级会让用户以为选的那个档位生效了。
+
+### 关于验证状态
+
+**结构已验证，端点兼容未验证。** 这两件事必须分清：
+
+- 结构错（比如把档位词当预算发）是**必然 400 的硬错误**，由
+  `wire` 套件的 `reasoning-effort-shapes` 逐条钉住——覆盖 10 种形状，
+  且做了反向对照（故意改坏 `clear_thinking` 的值，断言确实变红）。
+- 但**没有真实密钥逐家打通**，所以不声明"已验证端点兼容"。
+  规则形态取自 pi 的 `api/openai-completions.ts` 与 `api/anthropic-messages.ts`，
+  那是它在生产里跑出来的写法，但对我们自己仍未实测。
+
+### Fixed
+
+- **`AnthropicMessagesFormat` 加 `adaptiveThinking` 参数时保留了单参数重载**。
+  直接加可选参数会改变方法签名（ApiCompat `CP0002`），外部按单参数调用时
+  绑定会变。加重载既扩展了能力又没破坏旧签名。
+
 ## [0.1.9-alpha.1] — 2026-10-30
 
 **协议自动推断、上下文三层回退、收录 Gemini/Mistral。**

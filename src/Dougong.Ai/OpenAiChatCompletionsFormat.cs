@@ -66,8 +66,25 @@ public sealed class OpenAiChatCompletionsFormat : IChatWireFormat
             body[maxField] = maxTokens;
         }
 
+        // 推理强度：从 options 的中性键取，按 _compat.Thinking 翻译成各家写法。
+        // 没配 Thinking（默认 None）时什么都不发——发一个对方不认的字段，
+        // 轻则被静默忽略（用户以为生效了），重则 400 且看不出是哪个参数。
+        ThinkingParameters.Apply(body, _compat, ReadReasoningEffort(options));
+
         return body;
     }
+
+    /// <summary>从 <see cref="ChatOptions"/> 读中性键形式的推理档位。</summary>
+    /// <remarks>
+    /// 读的是 <c>AgentPropertyKeys.ReasoningEffort</c> 而不是任何 provider 字段名：
+    /// Agent 层与宿主只用中性词汇，翻译发生在这一层。
+    /// </remarks>
+    private static string? ReadReasoningEffort(ChatOptions? options) =>
+        options?.AdditionalProperties is { } props
+        && props.TryGetValue(AgentPropertyKeys.ReasoningEffort, out var value)
+            ? value?.ToString()
+            : null;
+
 
     private JsonObject ToWireMessage(ChatMessage message)
     {
