@@ -414,7 +414,26 @@ public static class DoctorChecks
     private static string Trim(string text)
     {
         var single = text.ReplaceLineEndings(" ").Trim();
-        return single.Length <= 300 ? single : single[..300] + "…";
+
+        // **截断上限从 300 提到 1200，并把完整文本落盘。**
+        // 300 字符时，provider 配置那项的 Hint 就把整屏占满了，
+        // 后面「上下文压缩」的输出完全看不到——2026-10-31 查 ubuntu 上
+        // 的失败时就卡在这里：失败消息里只有前 300 字符，没有关键那一段。
+        // 完整文本写进临时文件，需要时直接看。
+        try
+        {
+            // 按时间戳唯一化：一次跑里有多个检查会失败，共用一个文件名
+            // 只会留下最后一次，而排查要看的可能就是前一次。
+            var stamp = DateTime.UtcNow.ToString("HHmmss-fff");
+            File.WriteAllText(
+                Path.Combine(Path.GetTempPath(), $"dougong-doctor-{stamp}.txt"), text);
+        }
+        catch
+        {
+            // 落盘失败不影响断言结论。
+        }
+
+        return single.Length <= 1200 ? single : single[..1200] + "…";
     }
 
     private static async Task<int> CheckAsync(string name, Func<Task<string?>> action)

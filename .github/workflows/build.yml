@@ -72,6 +72,20 @@ jobs:
           done
           exit $missing
 
+      # 失败时把自检的诊断落盘文件带出来。
+      # 没有这个，失败详情只存在于 CI 的临时目录里，而日志又被
+      # 汇总行与 300 字符截断——2026-10-31 查 ubuntu 上的 doctor 失败时，
+      # 就是这样卡住了一轮。
+      - name: Upload self-check diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: diagnostics-${{ matrix.os }}
+          path: |
+            /tmp/dougong-doctor-*.txt
+            ${{ runner.temp }}/dougong-doctor-*.txt
+          if-no-files-found: ignore
+
       - name: Upload packages
         if: always()
         uses: actions/upload-artifact@v6
