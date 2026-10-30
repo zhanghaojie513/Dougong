@@ -35,6 +35,10 @@ public static class DoctorChecks
         failures += await CheckAsync("known-arg-forms-not-misjudged", KnownArgsAcceptedAsync);
         failures += await CheckAsync("connectivity-hint-diagnoses-protocol-mismatch",
             ProtocolMismatchHintAsync);
+        failures += await CheckAsync("doctor-flags-impossible-context-window",
+            ImpossibleWindowIsFlaggedAsync);
+        failures += await CheckAsync("doctor-rejects-malformed-context-window",
+            MalformedWindowIsRejectedAsync);
 
         Console.WriteLine(failures == 0
             ? "DOCTOR: ALL PASS"
@@ -281,12 +285,15 @@ public static class DoctorChecks
         startInfo.ArgumentList.Add(cliDll);
         startInfo.ArgumentList.Add("--doctor");
 
-        // 先清空，避免父进程的环境干扰
+        // 先清空，避免父进程的环境干扰。
+        // DOUGONG_CONTEXT_WINDOW 必须在这里——压缩配置检查读的就是它，
+        // 漏掉会让"配置合法"的断言在本机设了该变量时假通过。
         foreach (var name in new[]
                  {
                      "DOUGONG_PROVIDER_BASE", "DOUGONG_PROVIDER_MODEL",
                      "DOUGONG_PROVIDER_KEY", "DOUGONG_PROVIDER_PROTOCOL",
                      "DOUGONG_WORKSPACE", "DOUGONG_SESSION_DIR", "DOUGONG_MEMORY",
+                     "DOUGONG_CONTEXT_WINDOW",
                  })
         {
             startInfo.Environment.Remove(name);
@@ -592,6 +599,88 @@ public static class DoctorChecks
 
         if (matched.Stdout.Contains("这两者必须配套", StringComparison.Ordinal))
             return "协议与地址已配套，提示却仍在报不匹配。";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 窗口装不下输出预算时，自检必须报失败并给出可操作的修复建议。
+    /// </summary>
+    /// <remarks>
+    /// 这条防的是四处装配遗漏里的第 2 处：<c>EffectiveInput</c> 只在
+    /// 第一次压缩检查时才抛，用户视角是"对话崩了"。
+    /// <para>
+    /// <b>必须配正向对照</b>（窗口合法时不报失败）：否则"报失败"这件事
+    /// 可能只是因为自检压根没读到这个变量，而不是判据生效——
+    /// 那样两条断言都会通过，而实际什么都没验证。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> ImpossibleWindowIsFlaggedAsync()
+    {
+        // 窗口 4000、输出 4096 + 预留 512 → 有效预算为负，配置不可行。
+        var bad = await RunDoctorAsync(new Dictionary<string, string?>
+        {
+            ["DOUGONG_CONTEXT_WINDOW"] = "4000",
+        });
+
+        if (!bad.Stdout.Contains("上下文压缩", StringComparison.Ordinal))
+            return $"自检没有检查压缩配置。stdout={Trim(bad.Stdout)}";
+
+        if (!bad.Stdout.Contains("不可行", StringComparison.Ordinal))
+            return $"窗口 4000 装不下输出 4096，自检却没报不可行。stdout={Trim(bad.Stdout)}";
+
+        // 不在这里断言退出码：没配 provider 时它必然是 1，
+        // 那个 1 与本项无关。改用文本状态区分（见下方正向对照）。
+
+        // 正向对照：合法窗口必须不报不可行，且要报出算出的预算。
+        //
+        // **不能断言这里的退出码是 0**：本套件没配 provider，那一项必然失败，
+        // 整体退出码一定是 1。第一版写成 `good.ExitCode != 0` 就是踩了这个坑
+        // ——它测的是"provider 配好了"，与本项无关。
+        // 可区分的信号是：不可行路径下退出码为 1 且**两条**都可能为 1，
+        // 所以改用"是否出现不可行字样 + 是否报出预算"来判断。
+        var good = await RunDoctorAsync(new Dictionary<string, string?>
+        {
+            ["DOUGONG_CONTEXT_WINDOW"] = "1000000",
+        });
+
+        if (good.Stdout.Contains("不可行", StringComparison.Ordinal))
+            return $"窗口 1000000 是合法配置，却报不可行。stdout={Trim(good.Stdout)}";
+
+        if (!good.Stdout.Contains("有效输入预算", StringComparison.Ordinal))
+            return $"合法配置下没有报告算出的预算，本项可能没读到变量。stdout={Trim(good.Stdout)}";
+
+        // 合法配置下，压缩这一项本身必须是 [通过]。
+        if (!good.Stdout.Contains("[通过] 上下文压缩", StringComparison.Ordinal))
+            return $"合法配置下压缩项不是通过状态。stdout={Trim(good.Stdout)}";
+
+        // 非法配置下必须是 [失败]——与上面形成对照，证明判据真的在起作用。
+        if (!bad.Stdout.Contains("[失败] 上下文压缩", StringComparison.Ordinal))
+            return $"不可行配置下压缩项不是失败状态。stdout={Trim(bad.Stdout)}";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 非正整数的窗口值必须报错，而不是静默当成"未配置"。
+    /// </summary>
+    /// <remarks>
+    /// 静默回退到"不压缩"最危险：用户以为压缩开了，实际全程没压，
+    /// 直到撞上 provider 上限才失败，而那时早已无法追溯是配置写错了。
+    /// </remarks>
+    private static async Task<string?> MalformedWindowIsRejectedAsync()
+    {
+        var result = await RunDoctorAsync(new Dictionary<string, string?>
+        {
+            ["DOUGONG_CONTEXT_WINDOW"] = "abc",
+        });
+
+        if (!result.Stdout.Contains("不是正整数", StringComparison.Ordinal))
+            return $"窗口值 'abc' 没有被报为非法。stdout={Trim(result.Stdout)}";
+
+        // 必须是 [失败] 而不是 [通过]：静默回退到"未压缩"是本项要防的事。
+        if (!result.Stdout.Contains("[失败] 上下文压缩", StringComparison.Ordinal))
+            return $"非法窗口值没有报为失败项。stdout={Trim(result.Stdout)}";
 
         return null;
     }

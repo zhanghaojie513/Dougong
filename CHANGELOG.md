@@ -21,6 +21,58 @@
 
 ## [Unreleased]
 
+## [0.1.3-alpha.1] — 2026-10-30
+
+本版把三处「配置错要到运行时才炸」的静默失效改成装配期失败，
+并把压缩预算的判据收敛到单一来源。
+
+### Added
+
+- **`ContextBudgetValidation.Check`：压缩预算校验的可展示结论**。
+  返回 `ContextBudgetVerdict(IsUsable, IsEnabled, Detail, Hint)`，不抛异常。
+  - **存在的理由是两个宿主各写一遍会漂移**。实测到的活样本：桌面端为了
+    「配置错要在启动时炸」自己写了 `Validate()`，并在源码里硬编码了
+    `const int overhead = 512;`——SDK 改默认值时那个副本**不会报错**，
+    只会静默算出不同的预算。
+  - 与 `ContextLimits.Validate()` 的分工：那个用于装配期硬失败（抛），
+    这个用于诊断展示（返回结论）。**判据共享、控制流不同**，不是两份实现。
+  - 窗口为 0 时返回 `IsUsable: true, IsEnabled: false`——
+    「没配窗口 = 不压缩」是合法状态，不是错误。
+
+- **`TokenBudget.DefaultOverheadTokens`**：预留量的单一常量。
+  此前 `CompactionInput` 的参数默认值与 `ContextLimits.OverheadTokens`
+  各写了一个字面量 `512`，加上宿主抄的那一份共三处副本。
+
+- **`--doctor` 新增「上下文压缩」检查**：窗口装不下输出时报失败并给出
+  可操作的数字（「把窗口调到大于 4660」），窗口值非正整数时也报失败
+  而不是静默当成「未配置」——静默回退到不压缩最危险，用户以为开了。
+
+### Changed
+
+- **`ContextLimits` 增加三参数构造函数，构造时即校验**。
+  `new ContextLimits(4_000, 4_096)` 现在会在构造处抛
+  `ArgumentOutOfRangeException`，而不是等第一次对话。
+  - 带 `[SetsRequiredMembers]`：它让编译器**不再检查调用方**是否设置了
+    required 成员。将来加第五个 required 成员却忘了在构造函数里赋值，
+    编译器不会报错。这个代价已写进注释。
+  - `with` 表达式与无参构造（对象初始化器写法）均不受影响，已实测。
+
+- **`LoopAgentRuntime` 在装配时校验预算**（`limits?.Validate()`）。
+  对象初始化器写法绕过了构造校验，这条路必须在连接运行时补上，
+  否则配置错误仍会拖到第一轮对话才爆——那正是要修的场景。
+
+### 为什么不改「不传 = 不压缩」的默认值
+
+`LoopAgentRuntime` 的 `limits`/`compactor`/`summarize` 默认都是 `null`，
+`null` 就是关闭压缩。曾考虑把默认改成「自动压缩」，但：
+
+1. 这个语义**被测试钉住**——`CompactionWiringChecks.cs` 明确断言
+   「未配置预算时必须保持旧行为：完整历史送入模型（向后兼容契约）」
+2. SDK **猜不出模型窗口**。没有窗口就算不出阈值，猜一个必然错一半，
+   而错的两个方向代价不对称（填小过早压缩，填大永不触发）
+
+所以本版只硬化「配置不合法要早炸」，不动「没配置就不启用」。
+
 ## [0.1.2-alpha.2] — 2026-10-30
 
 **只改文档，无代码变更。**

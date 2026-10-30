@@ -1,4 +1,5 @@
 using Dougong.Ai;
+using Dougong.Agent;
 using Microsoft.Extensions.AI;
 
 using Dougong.Cli.Terminal;
@@ -45,6 +46,7 @@ public static class Doctor
             CheckWorkspace(),
             CheckSessionDirectory(),
             CheckMemorySwitch(),
+            CheckCompactionConfig(),
         };
 
         // 连通性检查放最后：它可能耗时，且前面有硬失败时它的价值下降。
@@ -201,6 +203,51 @@ public static class Doctor
                 $"记忆目录不可用：{dir}（{ex.GetType().Name}）",
                 "改用 DOUGONG_MEMORY=<一个可写目录>，或设 DOUGONG_MEMORY=0 关闭。");
         }
+    }
+
+    /// <summary>
+    /// 上下文压缩配置是否自洽。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么必须有这一项</b>：窗口填得比输出预算还小时，
+    /// 真正抛异常发生在每轮调模型之前的压缩检查里，用户视角是"对话崩了"，
+    /// 而报错完全看不出是配置问题。实测踩到过：桌面端为此自己写了一遍校验，
+    /// 并在源码里硬编码了一份预留量——宿主各写一遍就会漂移。
+    /// <para>
+    /// 判据统一走 <see cref="ContextBudgetValidation.Check"/>，
+    /// 与桌面端装配期用的是同一个方法，不是两份实现。
+    /// </para>
+    /// </remarks>
+    private static CheckResult CheckCompactionConfig()
+    {
+        const string name = "上下文压缩";
+
+        var raw = Environment.GetEnvironmentVariable("DOUGONG_CONTEXT_WINDOW");
+
+        // 设了但不是正整数：必须报出来，不能当成"未配置"。
+        // 静默回退到"不压缩"会让用户以为配置生效了。
+        if (!string.IsNullOrWhiteSpace(raw)
+            && (!int.TryParse(raw, out var parsed) || parsed <= 0))
+        {
+            return new(Level.Fail, name,
+                $"DOUGONG_CONTEXT_WINDOW='{raw}' 不是正整数",
+                "填模型的实际上下文窗口，例如 1000000；不想压缩就删掉这个变量。");
+        }
+
+        var window = int.TryParse(raw, out var value) ? value : 0;
+
+        var verdict = ContextBudgetValidation.Check(window, SessionComposition.MaxOutputTokens);
+
+        if (!verdict.IsUsable)
+        {
+            return new(Level.Fail, name, verdict.Detail,
+                verdict.Hint ?? "调整 DOUGONG_CONTEXT_WINDOW。");
+        }
+
+        // 未启用压缩是合法状态，但不是"通过"——用户可能以为自己开了。
+        return verdict.IsEnabled
+            ? new(Level.Pass, name, verdict.Detail)
+            : new(Level.Pass, name, verdict.Detail, verdict.Hint);
     }
 
     /// <summary>

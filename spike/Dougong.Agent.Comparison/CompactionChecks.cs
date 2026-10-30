@@ -31,11 +31,96 @@ public static class CompactionChecks
         failures += await CheckAsync("tail-retention-follows-token-ratio", TailFollowsRatio);
         failures += await CheckAsync("tail-retention-never-eats-whole-history", TailNeverEatsAll);
         failures += await CheckAsync("retain-ratio-must-be-below-trigger", RetainBelowTrigger);
+        failures += await CheckAsync("limits-reject-impossible-budget-at-construction",
+            LimitsRejectImpossibleBudgetAsync);
+        failures += await CheckAsync("runtime-rejects-impossible-budget", RuntimeRejectsImpossibleAsync);
+        failures += await CheckAsync("valid-limits-still-construct", ValidLimitsStillConstructAsync);
 
         Console.WriteLine(failures == 0
             ? "COMPACTION: ALL PASS"
             : $"COMPACTION: {failures} FAILURE(S)");
         return failures;
+    }
+
+    /// <summary>
+    /// 三参数构造必须在**构造时**就拒绝装不下输出的窗口。
+    /// </summary>
+    /// <remarks>
+    /// 真实缺口（P0）：<c>EffectiveInput</c> 原先只在压缩器第一次 <c>Plan</c>
+    /// 时被调用，于是"窗口 4000 + 输出 4096"能一路构造成功，
+    /// 直到第一次对话才崩，报错看不出是配置问题。
+    /// </remarks>
+    private static Task<string?> LimitsRejectImpossibleBudgetAsync()
+    {
+        try
+        {
+            _ = new ContextLimits(4_000, 4_096);
+            return Task.FromResult<string?>("窗口 4000 装不下输出 4096，构造却成功了");
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return Task.FromResult<string?>(null);
+        }
+    }
+
+    /// <summary>
+    /// 对象初始化器写法绕过构造校验，但**接进运行时那一刻**必须被拦下。
+    /// </summary>
+    /// <remarks>
+    /// 这条是配上一对：只测构造校验的话，初始化器路径仍然会让配置错误
+    /// 拖到第一轮对话才爆——那正是要修的场景。
+    /// </remarks>
+    private static Task<string?> RuntimeRejectsImpossibleAsync()
+    {
+        var limits = new ContextLimits { ContextWindowTokens = 4_000, MaxOutputTokens = 4_096 };
+
+        try
+        {
+            _ = new LoopAgentRuntime(
+                new ScriptedChatClient(new ScriptedTurn(new ScriptedUpdate(Text: "ok"))),
+                new ToolDispatcher(),
+                store: null,
+                limits,
+                new SlidingWindowCompactor());
+            return Task.FromResult<string?>("不可行预算接进运行时却没有报错");
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return Task.FromResult<string?>(null);
+        }
+    }
+
+    /// <summary>
+    /// 正向对照：合法配置不能被上面两道校验误伤。
+    /// </summary>
+    /// <remarks>
+    /// 没有这一条，"拒绝"类断言全都通过也可能只是因为校验永远在抛。
+    /// </remarks>
+    private static Task<string?> ValidLimitsStillConstructAsync()
+    {
+        try
+        {
+            var limits = new ContextLimits(1_000_000, 4_096);
+            _ = limits.Validate();
+
+            // 初始化器写法 + 显式 Validate 也必须可用。
+            var viaInitializer = new ContextLimits
+            {
+                ContextWindowTokens = 200_000,
+                MaxOutputTokens = 4_096,
+            }.Validate();
+
+            if (limits.EffectiveInputTokens != 1_000_000 - 4_096 - 512)
+                return Task.FromResult<string?>(
+                    $"有效预算算错：{limits.EffectiveInputTokens}");
+
+            return Task.FromResult<string?>(
+                viaInitializer.EffectiveInputTokens > 0 ? null : "初始化器路径算出非正预算");
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult<string?>($"合法配置被拒绝：{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private static Task<string?> NoPlanUnderBudget()

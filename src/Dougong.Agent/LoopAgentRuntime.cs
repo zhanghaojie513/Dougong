@@ -76,7 +76,10 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         _client = client;
         _dispatcher = dispatcher;
         _store = store;
-        _limits = limits;
+        // 装配即校验：配置写错（窗口装不下输出）应当在此刻炸，
+        // 而不是等用户第一次发消息、压缩器第一次算阈值时炸。
+        // 对象初始化器那条路径绕过了 ContextLimits 的构造校验，所以这里必须补。
+        _limits = limits?.Validate();
         _compactor = compactor;
         _summarize = summarize;
     }

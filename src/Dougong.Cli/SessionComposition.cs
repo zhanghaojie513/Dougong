@@ -139,6 +139,12 @@ public sealed class SessionComposition
     /// <summary>本次会话是否启用了 shell 工具。</summary>
     public bool ShellEnabled => _shellEnabled;
 
+    /// <summary>
+    /// 单次回复的输出上限。**装配与 <c>--doctor</c> 必须用同一个数**，
+    /// 否则诊断报"配置可行"而实际跑起来不可行——那比不检查更糟。
+    /// </summary>
+    public const int MaxOutputTokens = 4_096;
+
     /// <summary>本次会话的上下文窗口；0 表示不压缩。</summary>
     public int ContextWindow => _contextWindow;
 
@@ -241,7 +247,7 @@ public sealed class SessionComposition
             new ContextLimits
             {
                 ContextWindowTokens = _contextWindow,
-                MaxOutputTokens = 4_096,
+                MaxOutputTokens = MaxOutputTokens,
             },
             new SlidingWindowCompactor(preservedHead: 2, preservedTail: 6),
             (transcript, ct) => SummarizeAsync(effective, transcript, ct))
