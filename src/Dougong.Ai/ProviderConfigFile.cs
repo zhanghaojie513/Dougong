@@ -1,4 +1,5 @@
 using System.Globalization;
+using Dougong.Agent;
 using Tomlyn;
 using Tomlyn.Model;
 
@@ -236,6 +237,24 @@ public static class ProviderConfigFile
 
         error = ReadPositiveInt(table, "max_output_tokens", name, out var maxOutputTokens);
         if (error is not null) return error;
+
+        // 预算可行性：**必须在解析期拦住，不能等到装配期抛异常**。
+        // 上下文窗口装不下输出与预留时，ContextLimits.Validate() 会抛
+        // "上下文窗口配置不可行"，而那个报错发生在启动流程里——
+        // 用户看到的是应用起不来，完全看不出是配置文件里两个数字的问题。
+        // 在这里拦下，--doctor 能把两个数字和怎么改一起说出来。
+        if (contextWindow is > 0)
+        {
+            var output = maxOutputTokens ?? 0;
+            var effective = contextWindow.Value - output - TokenBudget.DefaultOverheadTokens;
+            if (effective <= 0)
+            {
+                return $"provider '{name}' 的预算不可行：context_window {contextWindow} "
+                    + $"减去 max_output_tokens {output} 与预留 "
+                    + $"{TokenBudget.DefaultOverheadTokens} 后为 {effective}，必须为正。"
+                    + "把 max_output_tokens 调小，或把 context_window 调大。";
+            }
+        }
 
         config = new ChatProviderConfig
         {

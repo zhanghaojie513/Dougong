@@ -256,11 +256,17 @@ public static class Program
 
         var shellEnabled = Environment.GetEnvironmentVariable("DOUGONG_SHELL") is "1" or "true";
 
-        // 上下文预算：按 DOUGONG_CONTEXT_WINDOW 配置；未配置时保持旧行为（不压缩）。
-        var contextWindow = int.TryParse(
-            Environment.GetEnvironmentVariable("DOUGONG_CONTEXT_WINDOW"), out var window) && window > 0
-            ? window
-            : 0;
+        // 上下文预算：**配置里的优先，其次环境变量**。
+        // 此前只看环境变量，于是 `dougong model` 写进配置的 context_window
+        // 在首页上显示为"未启用"——而 /status 读的是装配后的真实值，
+        // 两处打架。用户会以为自己配的没生效。
+        var contextWindow = config.ContextWindowTokens is { } configuredWindow and > 0
+            ? configuredWindow
+            : int.TryParse(
+                Environment.GetEnvironmentVariable("DOUGONG_CONTEXT_WINDOW"), out var window)
+                && window > 0
+                ? window
+                : 0;
 
         // 首页也报出压缩策略：默认值（75% / 16%）是一个具体选择，不是"没配置"。
         // 非法配置这里不报错——装配期会硬失败，--doctor 也会单独列出，不重复打扰。
@@ -284,7 +290,7 @@ public static class Program
                 $"shell 工具={(shellEnabled ? "已启用" : "未启用（DOUGONG_SHELL=1 开启）")}",
                 contextWindow > 0
                     ? $"上下文压缩=已启用（窗口 {contextWindow} tokens{policy}）"
-                    : "上下文压缩=未启用（DOUGONG_CONTEXT_WINDOW 开启）",
+                    : "上下文压缩=未启用（用 dougong model 选模型，或设 DOUGONG_CONTEXT_WINDOW）",
             ]);
 
         await using var store = await JsonlAgentStore.OpenAsync(sessionPath, sessionId)
@@ -314,10 +320,14 @@ public static class Program
         var models = catalog;
         var activeProvider = config.Name;
 
+        // 上下文与输出上限来自已解析的 provider 配置，不是环境变量。
+        // 配置里写了就传下去——否则用户在 `dougong model` 里看到
+        // "上下文 1,048,576 tokens"、文件里也写了，运行时用的却是别处的数。
         var composition = await SessionComposition.CreateAsync(
             sessionId, workspace, swappable, approver,
-            SessionComposition.MemoryDirectoryFromEnvironment(sessionDir));
-        // 内核接线（G14）：默认启用——运行能力由内核解析，宿主不直接持有
+            SessionComposition.MemoryDirectoryFromEnvironment(sessionDir),
+            contextWindow: config.ContextWindowTokens,
+            maxOutputTokens: config.MaxOutputTokens);
         // 内核接线（G14）：默认启用——运行能力由内核解析，宿主不直接持有
         // dispatcher/runtime 实例。DOUGONG_KERNEL=0 可退回直连路径，
         // 保留给"怀疑内核接线本身有问题"时的对照手段。

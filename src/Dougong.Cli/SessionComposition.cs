@@ -26,6 +26,7 @@ public sealed class SessionComposition
     private readonly IToolApprover _approver;
     private readonly bool _shellEnabled;
     private readonly int _contextWindow;
+    private readonly int _maxOutputTokens;
     private readonly IReadOnlyList<McpServerSpec> _mcpServers;
 
     private SessionComposition(
@@ -35,6 +36,7 @@ public sealed class SessionComposition
         IToolApprover approver,
         bool shellEnabled,
         int contextWindow,
+        int maxOutputTokens,
         IReadOnlyList<McpServerSpec> mcpServers,
         IMemoryInjector? memory = null,
         MemoryStore? memoryStore = null)
@@ -45,6 +47,7 @@ public sealed class SessionComposition
         _approver = approver;
         _shellEnabled = shellEnabled;
         _contextWindow = contextWindow;
+        _maxOutputTokens = maxOutputTokens;
         _mcpServers = mcpServers;
         Memory = memory;
         MemoryStore = memoryStore;
@@ -166,9 +169,17 @@ public sealed class SessionComposition
     /// 而"是否启用数据流"必须是显式决定，不能藏在第二个地方。
     /// </param>
     /// <param name="cancellationToken">取消令牌。</param>
+    /// <param name="contextWindow">
+    /// 上下文窗口；null 表示按环境变量与默认值决定。
+    /// 由调用方从已解析的 provider 配置传入——**这是唯一能让配置文件里
+    /// 的 context_window 真正生效的路径**：装配本身不持有 ChatProviderConfig，
+    /// 它只认调用方给的数。
+    /// </param>
+    /// <param name="maxOutputTokens">输出上限；null 表示按环境变量与默认值决定。</param>
     public static async Task<SessionComposition> CreateAsync(
         string sessionId, string workspace, IChatClient client, IToolApprover approver,
-        string? memoryDirectory = null, CancellationToken cancellationToken = default)
+        string? memoryDirectory = null, CancellationToken cancellationToken = default,
+        int? contextWindow = null, int? maxOutputTokens = null)
     {
         // 记忆按工作区分文件：跨工作区默认不传播（skills-evolution.md §3）。
         // 用路径哈希而不是文件名，避免不同工作区撞到同一个文件。
@@ -184,18 +195,42 @@ public sealed class SessionComposition
             memory = new StoreMemoryInjector(memoryStore);
         }
 
-        return Create(sessionId, workspace, client, approver, memory, memoryStore);
+        return Create(
+            sessionId, workspace, client, approver, memory, memoryStore,
+            contextWindow, maxOutputTokens);
     }
 
     private static SessionComposition Create(
         string sessionId, string workspace, IChatClient client, IToolApprover approver,
-        IMemoryInjector? memory, MemoryStore? memoryStore)
+        IMemoryInjector? memory, MemoryStore? memoryStore,
+        int? configuredContextWindow = null, int? configuredMaxOutput = null)
     {
         var shellEnabled = Environment.GetEnvironmentVariable("DOUGONG_SHELL") is "1" or "true";
-        var contextWindow = int.TryParse(
-            Environment.GetEnvironmentVariable("DOUGONG_CONTEXT_WINDOW"), out var window) && window > 0
-            ? window
-            : 0;
+
+        // 取值优先级：调用方传入（来自 provider 配置）> 环境变量 > 默认。
+        //
+        // **顺序不能反**：配置文件是用户明确的持久选择，环境变量是临时覆盖。
+        // 但这里让配置优先，因为 Claude Code 那条 `DOUGONG_CONTEXT_WINDOW`
+        // 是给"没配置文件"的旧用法留的——两处都设时，文件里那个是他真正想要的。
+        // 真正的临时覆盖用 DOUGONG_MAX_OUTPUT_TOKENS（见下面的审计说明）。
+        var contextWindow = configuredContextWindow is > 0
+            ? configuredContextWindow.Value
+            : int.TryParse(
+                Environment.GetEnvironmentVariable("DOUGONG_CONTEXT_WINDOW"), out var window)
+                && window > 0
+                ? window
+                : 0;
+
+        // 输出上限同理。**此前这里是常量 4096，配置文件里的 max_output_tokens
+        // 写了也不生效**——CLI 用 4096、桌面端读配置，同一个文件在两边算出
+        // 不同的压缩预算，而两边都不报错。这类差异最难查。
+        var maxOutput = configuredMaxOutput is > 0
+            ? configuredMaxOutput.Value
+            : int.TryParse(
+                Environment.GetEnvironmentVariable("DOUGONG_MAX_OUTPUT_TOKENS"), out var mo)
+                && mo > 0
+                ? mo
+                : DefaultMaxOutputTokens;
 
         // 比例配置错要在装配时炸，不能带病启动：
         // 保留 ≥ 触发时压缩后仍在阈值之上，表现是每轮都压一次——
@@ -205,7 +240,7 @@ public sealed class SessionComposition
 
         return new SessionComposition(
             sessionId, workspace, client, approver,
-            shellEnabled, contextWindow, ParseMcpServers(), memory, memoryStore)
+            shellEnabled, contextWindow, maxOutput, ParseMcpServers(), memory, memoryStore)
         {
             TriggerRatio = triggerRatio,
             RetainRatio = retainRatio,
@@ -225,7 +260,26 @@ public sealed class SessionComposition
     /// 单次回复的输出上限。**装配与 <c>--doctor</c> 必须用同一个数**，
     /// 否则诊断报"配置可行"而实际跑起来不可行——那比不检查更糟。
     /// </summary>
-    public const int MaxOutputTokens = 4_096;
+    public const int DefaultMaxOutputTokens = 4_096;
+
+    /// <summary>本次会话的输出上限：配置里给了就用配置的，否则用默认值。</summary>
+    /// <remarks>
+    /// <b>此前这里是个常量 4096，配置里的 max_output_tokens 写了也不生效。</b>
+    /// 后果是两边不一致：桌面端读配置，CLI 读常量，同一个配置文件在两边
+    /// 算出不同的压缩预算——而这类差异最难查，因为两边都不报错。
+    /// </remarks>
+    public int MaxOutputTokens => _maxOutputTokens;
+
+    /// <summary>
+    /// 装配用的输出上限。**装配与 --doctor 必须取同一个值**，
+    /// 否则诊断报配置可行而实际跑起来不可行——那比不检查更糟。
+    /// </summary>
+    public static int EffectiveMaxOutputTokens() =>
+        int.TryParse(
+            Environment.GetEnvironmentVariable("DOUGONG_MAX_OUTPUT_TOKENS"), out var value)
+        && value > 0
+            ? value
+            : DefaultMaxOutputTokens;
 
     /// <summary>本次会话的上下文窗口；0 表示不压缩。</summary>
     public int ContextWindow => _contextWindow;

@@ -5,6 +5,51 @@
 
 ---
 
+## 0. 参考项目：谁在哪方面权威
+
+**这一节是判断方法的说明，不是致谢名单。** 做任何一个决策前，先问"这件事上哪一家最可信"，
+而不是抓一个顺手的就用。
+
+漏查的代价是实打实发生过的：做多 provider 时先只读了 pi.net（二次移植的快照），
+后来才发现它的 `baseUrl` 有 6/25 家是变量、`compat` 里是私有枚举，而上游
+`models.dev` 反而更全更结构化；做推理强度时也只看了 pi 一家，没对照 dsh 的类型契约，
+结果把 `limit.output` 的语义理解错了（见 §5.1 那条"预算语义"）。
+
+| 项目 | 在什么问题上权威 | 不要指望它 |
+|---|---|---|
+| **[models.dev](https://models.dev)** | **事实数据**：端点、协议包名、上下文窗口、输出容量、推理档位、密钥变量名。233 家、schema 化 API | 行为细节（它只描述"是什么"，不说"怎么发"） |
+| **[pi](https://github.com/earendil-works/pi)**（earendil-works） | **协议行为的实测记录**：`thinkingFormat` 的七种写法、各家字段结构、`gpt-5-pro` 输出上限被上游报错的经过。它的 `catalog/providers/*.ts` 带机理注释 | 它不做本地预算计算，`maxTokens` 原样透传——所以预算类问题在它那里不出现 |
+| **[pi.net](https://github.com/AIDotNet/pi.net)**（AIDotNet） | **.NET 移植的工程细节**：某个 TS 惯用法在 C# 里怎么写、哪些约定要变通 | 数据与协议行为——它是二次移植，对齐的上游版本可能已落后 |
+| **[dsh](https://github.com/deepseek-ai)**（DeepSeek Harness） | **类型契约与边界定义**：字段语义的措辞、adapter 与 harness 的职责切分、"什么算配置错" | 多 provider 的数据（它只内置官方一家，靠 `dsh-llm-pi-ai` 外包） |
+| **[hermes](https://github.com/NousResearch/hermes-agent)** | **交互流程与推断规则**：provider 选择器的分组、API 协议的启发式、密钥轮换的交互 | 它的 `ProviderProfile` 私有枚举（`thinkingFormat: "zai"` 这种标签只有它自己懂） |
+
+### 三方对比的两个实例
+
+**① `contextWindow` 的语义，dsh 说得最准**
+
+- **models.dev**：`limit.context` 与 `limit.output` 并列，后者是**输出方向的容量上限**
+- **dsh**：`contextWindow` = "Maximum **combined** request and response context"
+- **pi**：`contextWindow` 上下文，`maxTokens` 直接透传，不做预算计算
+- **hermes**：`context_length` 是总窗口，输出上限"provider-owned，不是用户配置"
+
+教训：`kimi-k3` 的 `limit` 是 `{context: 1048576, output: 1048576}`——这是
+"输入输出共享那个窗口"，**不是"该预留 1M 给输出"**。把它当单次回复上限会
+算出负的压缩预算。这条语义我们一开始理解错了，是 dsh 的措辞纠正的。
+
+**② 协议推断，hermes 的规则最完整**
+
+它有 `_detect_api_mode_for_url` 做纯规则推断（`/anthropic` 后缀、`api.kimi.com/coding`、
+官方 OpenAI 主机 → responses），且明确用**精确主机名**匹配而不是子串
+（`api.anthropic.com.attacker.test` 骗不过它）。我们的实现照抄了这三条，
+但**不做 responses 推断**——只有官方主机确定用它，而官方主机在预设里已写死。
+
+### 一条判断口径
+
+**数据找 models.dev，行为找 pi，契约措辞找 dsh，交互找 hermes，C# 写法找 pi.net。**
+同一个问题如果两家说法冲突，先看谁给了解释——给了机理的那家更可信。
+
+---
+
 ## 1. 总览
 
 ```text

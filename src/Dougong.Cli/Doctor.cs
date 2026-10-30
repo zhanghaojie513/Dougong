@@ -80,7 +80,8 @@ public static class Doctor
         if (resolveError is not null)
         {
             return new(Level.Fail, "provider 配置", resolveError,
-                "修好配置文件后重跑 --doctor。未知键、非法地址、把密钥值写进 key_env 都会报在这里。");
+                "修好配置文件后重跑 --doctor。未知键、非法地址、把密钥值写进 key_env、"
+                + "上下文装不下输出，都会报在这里。");
         }
 
         if (catalog is null)
@@ -272,7 +273,7 @@ public static class Doctor
                 + "且保留 < 触发；删掉变量即用默认值。");
         }
 
-        var verdict = ContextBudgetValidation.Check(window, SessionComposition.MaxOutputTokens);
+        var verdict = ContextBudgetValidation.Check(window, SessionComposition.EffectiveMaxOutputTokens());
 
         if (!verdict.IsUsable)
         {

@@ -178,6 +178,44 @@ LOCAL_PRESETS = [
 ]
 
 
+# 上下文压缩预留量，必须与 TokenBudget.DefaultOverheadTokens 保持一致。
+# 数据里不能出现让 ctx - out - overhead <= 0 的组合，否则装配期直接抛异常，
+# 用户看到的是"上下文窗口配置不可行"——而那是我们生成的数据有问题，
+# 不是他配错了。
+COMPACTION_OVERHEAD_TOKENS = 512
+
+# 输出上限占上下文窗口的最大比例。
+# 单次回复不可能用掉整个窗口：模型的输出额度是"这个模型最多能吐多长"，
+# 而一次对话里输入（历史 + 工具结果）也要占地方。取 1/4 是保守值——
+# 真实场景里一次回复很少超过上下文的 25%。
+MAX_OUTPUT_RATIO = 0.25
+
+
+def SafeOutputLimit(context: int, output: int) -> int:
+    """把上游的 output 限值收敛成一个能用于压缩预算的值。
+
+    为什么必须收敛：models.dev 的 `limit.output` 是**输出方向的容量上限**，
+    不是"单次回复该配多少"。实测 1176 条模型的 output >= context
+    （kimi-k3 是 1048576/1048576，doubao 是 256000/256000），
+    照抄会让 ctx - out - 512 <= 0，Validate() 抛异常、应用无法启动，
+    而用户完全看不出这是预设表的问题。
+
+    收敛规则（两条都要）：
+      1. 不超过上下文的 MAX_OUTPUT_RATIO；
+      2. 保证 ctx - out - 512 > 0，给压缩预算留出正数空间。
+
+    不改 context：上下文窗口是实打实的事实，改了才是撒谎。
+    """
+    if output <= 0 or context <= 0:
+        return 0
+
+    ceiling = min(
+        int(context * MAX_OUTPUT_RATIO),
+        context - COMPACTION_OVERHEAD_TOKENS - 1,
+    )
+    return max(0, min(output, ceiling))
+
+
 def fetch(url: str) -> bytes:
     """拉取 JSON。
 
@@ -266,8 +304,9 @@ def main() -> int:
 
         models = []
         for model in (entry.get("models") or {}).values():
-            context = ((model.get("limit") or {}).get("context")) or 0
-            output = ((model.get("limit") or {}).get("output")) or 0
+            limit = model.get("limit") or {}
+            context = limit.get("context") or 0
+            output = limit.get("output") or 0
             if not model.get("id") or context <= 0:
                 # 没有上下文窗口的条目对我们没用：选完模型也算不出压缩阈值。
                 continue
@@ -280,7 +319,7 @@ def main() -> int:
             models.append({
                 "id": model["id"],
                 "contextWindow": context,
-                "maxOutputTokens": output,
+                "maxOutputTokens": SafeOutputLimit(context, output),
                 "supportsReasoning": bool(model.get("reasoning")),
                 "reasoningField": reasoning_field_of(model),
                 "reasoningEfforts": effort_map_of(model),
@@ -336,6 +375,20 @@ def main() -> int:
     if not providers:
         print("没有拉到任何 provider，放弃写文件。", file=sys.stderr)
         return 1
+
+    # 生成后自检：任何让压缩预算 <= 0 的组合都是硬错误，直接拒绝写文件。
+    # 这一层不能省——上面 SafeOutputLimit 只处理 limit 字段，
+    # 但 CORRECTIONS 表也可能把某个值改坏，而那种错更隐蔽。
+    for name, entry in providers.items():
+        for model in entry["models"]:
+            ctx = model["contextWindow"]
+            out = model["maxOutputTokens"]
+            if out > 0 and ctx - out - COMPACTION_OVERHEAD_TOKENS <= 0:
+                raise SystemExit(
+                    f"{name}/{model['id']}: context={ctx} 减去 "
+                    f"output={out} 与预留 {COMPACTION_OVERHEAD_TOKENS} 后不是正数。\n"
+                    "这会让 ContextLimits.Validate() 抛异常、应用无法启动，"
+                    "而用户看到的报错是「上下文窗口配置不可行」——那是我们的数据问题。")
 
     source = render(providers, digest)
 

@@ -29,6 +29,9 @@ public static class ProviderChecks
         failures += await CheckAsync("presets-are-data-only", PresetsAreDataOnly);
         failures += await CheckAsync("protocol-inference-three-levels", ProtocolInferenceAsync);
         failures += await CheckAsync("capabilities-and-fallback", CapabilitiesAndFallbackAsync);
+        failures += await CheckAsync("presets-fit-their-budget", PresetsFitTheirBudgetAsync);
+        failures += await CheckAsync("impossible-budget-rejected-at-parse", ImpossibleBudgetIsRejectedAtParseAsync);
+        failures += await CheckAsync("config-budgets-take-effect", ConfigBudgetsTakeEffectAsync);
         failures += await CheckAsync("model-command-preserves-comments", PreservesCommentsAsync);
         failures += await CheckAsync("model-command-creates-config", CreatesConfigAsync);
         failures += await CheckAsync("model-command-refuses-broken-config", RefusesBrokenConfigAsync);
@@ -880,6 +883,170 @@ public static class ProviderChecks
         }
 
         return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>
+    /// 预设表里**不许出现**装不下输出的模型。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是桌面端实测到的致命问题</b>：models.dev 的 <c>limit.output</c> 是
+    /// "输出方向的容量上限"，不是"单次回复该配多少"。1176 条模型的 output >= context
+    /// （kimi-k3 是 1048576/1048576，doubao 是 256000/256000）。照抄后
+    /// <c>ctx - out - 512 &lt;= 0</c>，<c>ContextLimits.Validate()</c> 抛异常，
+    /// **应用无法启动**，而用户看到的报错是"上下文窗口配置不可行"——
+    /// 完全看不出是我们的预设数据有问题。
+    /// <para>
+    /// 这条断言跑在生成产物上，所以任何一次重新生成后数据回退都会立刻变红。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> PresetsFitTheirBudgetAsync()
+    {
+        var offenders = new List<string>();
+
+        foreach (var (name, preset) in ProviderCatalog.AllPresets)
+        {
+            foreach (var model in preset.Models)
+            {
+                if (model.MaxOutputTokens <= 0) continue;
+
+                var effective = model.ContextWindow
+                    - model.MaxOutputTokens
+                    - TokenBudget.DefaultOverheadTokens;
+
+                if (effective <= 0)
+                {
+                    offenders.Add(
+                        $"{name}/{model.Id} ctx={model.ContextWindow} "
+                        + $"out={model.MaxOutputTokens} → 有效预算 {effective}");
+                }
+            }
+        }
+
+        if (offenders.Count > 0)
+        {
+            return Task.FromResult<string?>(
+                $"{offenders.Count} 条模型的输出上限挤占了整个上下文窗口，"
+                + "会让 Validate() 抛异常、应用起不来："
+                + string.Join("；", offenders.Take(5)));
+        }
+
+        return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>
+    /// 配置里写了装不下输出的组合时，**解析期就要报错**，不能等到装配期抛异常。
+    /// </summary>
+    /// <remarks>
+    /// 装配期抛异常的后果是应用起不来，而报错看不出是配置文件里两个数字的问题。
+    /// 解析期拦下，<c>--doctor</c> 才能把两个数字和怎么改一起说出来。
+    /// </remarks>
+    private static Task<string?> ImpossibleBudgetIsRejectedAtParseAsync()
+    {
+        var error = ProviderConfigFile.TryParse("""
+            default_provider = "x"
+
+            [providers.x]
+            base_url = "https://api.example.com/v1"
+            model = "m"
+            context_window = 1000
+            max_output_tokens = 900
+            """, "t.toml", out var catalog);
+
+        if (error is null || catalog is not null)
+            return Task.FromResult<string?>(
+                "context_window=1000 减去 output=900 与预留后为负，解析却成功了");
+
+        if (!error.Contains("预算不可行", StringComparison.Ordinal))
+            return Task.FromResult<string?>($"报错了但没说清是预算问题：{error}");
+
+        // 反向对照：合法组合必须能解析，否则这个校验会挡住正常配置。
+        var ok = ProviderConfigFile.TryParse("""
+            default_provider = "x"
+
+            [providers.x]
+            base_url = "https://api.example.com/v1"
+            model = "m"
+            context_window = 1000
+            max_output_tokens = 400
+            """, "t.toml", out var okCatalog);
+
+        if (ok is not null || okCatalog is null)
+            return Task.FromResult<string?>($"合法组合被拒了：{ok}");
+
+        return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>
+    /// 配置文件里的 context_window / max_output_tokens 必须真的被 CLI 用上。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是一处真实的"显示与生效不一致"</b>：<c>dougong model</c> 把能力表里的
+    /// 上下文写进配置，首页与 <c>/status</c> 也都显示它，但装配此前只读环境变量，
+    /// 于是运行时用的是常量 4096。用户看到 1M 上下文，实际压缩按另一个数算。
+    /// <para>
+    /// 更糟的是桌面端读配置、CLI 读常量，同一个文件在两边算出不同预算——
+    /// 而两边都不报错，这类差异最难查。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> ConfigBudgetsTakeEffectAsync()
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(), $"dougong-cfg-{Guid.NewGuid():N}.toml");
+
+        await File.WriteAllTextAsync(path, """
+            default_provider = "probe"
+
+            [providers.probe]
+            base_url = "https://probe.example.com/v1"
+            model = "m"
+            context_window = 1048576
+            max_output_tokens = 262144
+            key_env = "PROBE_KEY"
+            """);
+
+        try
+        {
+            // 不设 DOUGONG_CONTEXT_WINDOW：只能来自配置文件。
+            var result = await RunCliAsync(
+                [],
+                new Dictionary<string, string?>
+                {
+                    ["DOUGONG_PROVIDER_CONFIG"] = path,
+                    ["PROBE_KEY"] = "k",
+                    ["DOUGONG_KERNEL"] = "0",
+                },
+                stdin: "/status\n/exit\n");
+
+            var combined = result.Stdout + result.Stderr;
+
+            if (!combined.Contains("1048576", StringComparison.Ordinal))
+            {
+                return $"配置文件里的 context_window 没生效（应出现 1048576）。"
+                    + $"stdout={Trim(combined)}";
+            }
+
+            // 反向对照：环境变量不能盖掉配置文件——那是持久选择。
+            var withEnv = await RunCliAsync(
+                [],
+                new Dictionary<string, string?>
+                {
+                    ["DOUGONG_PROVIDER_CONFIG"] = path,
+                    ["PROBE_KEY"] = "k",
+                    ["DOUGONG_KERNEL"] = "0",
+                    ["DOUGONG_CONTEXT_WINDOW"] = "9999",
+                },
+                stdin: "/status\n/exit\n");
+
+            var envCombined = withEnv.Stdout + withEnv.Stderr;
+            if (envCombined.Contains("9999 tokens", StringComparison.Ordinal))
+            {
+                return "环境变量盖掉了配置文件里的 context_window——"
+                    + "配置文件是用户的持久选择，不该被临时变量顶掉";
+            }
+
+            return null;
+        }
+        finally { try { File.Delete(path); } catch { /* 清理失败不影响结论 */ } }
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────
