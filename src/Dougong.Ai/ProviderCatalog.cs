@@ -215,6 +215,27 @@ public sealed class ProviderCatalog
     public static ModelCapabilities? FindModelCapabilities(string providerName, string modelId) =>
         ProviderPresets.FindModel(providerName, modelId);
 
+    /// <summary>表里没有该模型时给出的上下文窗口起点。</summary>
+    /// <remarks>
+    /// <b>这是"可改的起点"，不是"猜一个值"。</b>两者的区别在于是否告诉用户这是估计。
+    /// 没有它时的结果是"上下文未知 → 压缩永不启用"，而长会话一定会撞上 provider 上限，
+    /// 那时报的是 provider 的原始错误，完全看不出是配置缺失。
+    /// <para>
+    /// <b>262144 的来历</b>：它是 dsh 的默认值，也是我们表里常见窗口的中位数量级
+    /// （Qwen 系列 262144、Kimi 262144、Anthropic 200000–1M）。
+    /// 取中位数而不是取最大值，是因为填大的代价更糟——压缩永不触发，
+    /// 直到撞上真上限才失败；填小只是多压几次，有代价但可恢复。
+    /// </para>
+    /// </remarks>
+    public const int FallbackContextWindow = 262_144;
+
+    /// <summary>表里没有该模型时给出的输出上限起点。</summary>
+    /// <remarks>
+    /// 32768 同样来自 dsh 的默认值，与表中常见值的中位数一致。
+    /// 输出上限填错的影响比上下文小：它只影响单次回复能写多长。
+    /// </remarks>
+    public const int FallbackMaxOutputTokens = 32_768;
+
     /// <summary>全部内置预设的模型能力表，供宿主渲染模型选择器。</summary>
     public static IReadOnlyDictionary<string, ProviderPresetData> AllPresets =>
         ProviderPresets.All;

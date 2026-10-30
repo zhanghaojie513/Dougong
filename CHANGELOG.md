@@ -21,6 +21,54 @@
 
 ## [Unreleased]
 
+## [0.1.9-alpha.1] — 2026-10-30
+
+**协议自动推断、上下文三层回退、收录 Gemini/Mistral。**
+
+### Added
+
+- **协议三级推断**：显式 `wire_api` > 端点形状 > 默认 chat-completions。
+  - `https://api.minimax.io/anthropic` 这种路径末尾带 `/anthropic` 的端点
+    现在能自动认出是 Anthropic Messages。此前它会被当成 chat-completions
+    发出去，拿到一个含糊的 404——而用户完全看不出是自己少写了一行 `wire_api`。
+  - 精确匹配主机名而不是子串：`api.anthropic.com.attacker.test` 与
+    `proxy.test/api.anthropic.com/v1` 都能骗过 `Contains`。
+  - **不推断 openai-responses**：只有 OpenAI 官方主机确定用它，而官方主机在预设里
+    已经写死 `wire_api`。对未知端点赌 responses 会让绝大多数兼容服务直接 404。
+- **上下文三层回退**：配置显式写 > 内置表查到 > `FallbackContextWindow`（262144）。
+  没有第三层时的结果是"上下文未知 → 压缩永不启用"，而长会话一定撞上 provider
+  上限，那时报的是 provider 的原始错误，看不出是配置缺失。
+  **取中位数而不是最大值**：填大的代价更糟（压缩永不触发，直到撞真上限才失败），
+  填小只是多压几次，有代价但可恢复。
+  - 界面上**区分事实与估计**：查到的显示"取自内置能力表"，
+    回退的显示"⚠ 内置表未收录该模型，这是估计值"。一个看起来精确的错数字比"未知"更糟。
+- **收录 `google` / `mistral`**（22 家、662 个模型）。两家都有 OpenAI 兼容端点
+  （实测：Gemini 的 `/v1beta/openai/chat/completions` 报"缺 Authorization"
+  而非路径不存在；Mistral 的 `/v1/chat/completions` 报 401），
+  只是 models.dev 的 `npm` 标的是它们的原生 SDK 包名。
+
+### Changed
+
+- **修正表改为带出处的两列**（`source` + `why`），收录两条上游修正：
+  - `gpt-5-pro` 输出上限 128000：models.dev 报 272000，那是输入子限额的重复值。
+  - `claude-opus-4-6` / `claude-sonnet-4-6` 上下文 1M：官方文档支持 1M，
+    models.dev 报 200K。不修则压缩在 200K 就触发，白白浪费一半窗口。
+  - **`source` 区分 `pi`（上游结论）与 `self`（自己实测）**，两者排查路径不同。
+  - **`why` 必须写机理，不能只写"某某这么写"**：没有机理的修正无法判断
+    上游改版后是否还成立，那才是真正该自己重测的。
+  - 缺 `source` 或 `why` 时生成脚本直接报错退出，不静默跳过。
+
+### 为什么不学 dsh 把多 provider 外包给 pi-ai
+
+dsh 只内置官方一家，其余靠 `dsh-llm-pi-ai` 接 pi-ai 目录——它在 Node 生态里，
+pi-ai 是同语言可选包。我们在 .NET 里，`Pi.Ai` 虽在 NuGet 上，但：
+- 它有自己的 `Pi.Ai.Api` 抽象，与 `IChatClient` 不兼容；
+- 它依赖自研的 `Pi.Telemetry`（`architecture.md` §2.3 明确不学其形状）；
+- 引入它等于把 `Dougong.Ai` 三种协议实现（约 1500 行，已实测验证）作废。
+
+**我们做的是"外包数据、不外包运行时"**：从 models.dev 生成编译期常量，零依赖。
+缺的从来不是"42 家的适配代码"，是"42 家的端点与能力数据"。
+
 ## [0.1.8-alpha.1] — 2026-10-30
 
 **预设表改为从 models.dev 生成，模型能力自动带出。**

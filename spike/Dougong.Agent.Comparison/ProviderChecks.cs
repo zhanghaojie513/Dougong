@@ -27,6 +27,8 @@ public static class ProviderChecks
         failures += await CheckAsync("model-command-lists-and-switches", ModelCommandAsync);
         failures += await CheckAsync("secret-never-appears-in-doctor-output", SecretNeverPrintedAsync);
         failures += await CheckAsync("presets-are-data-only", PresetsAreDataOnly);
+        failures += await CheckAsync("protocol-inference-three-levels", ProtocolInferenceAsync);
+        failures += await CheckAsync("capabilities-and-fallback", CapabilitiesAndFallbackAsync);
         failures += await CheckAsync("model-command-preserves-comments", PreservesCommentsAsync);
         failures += await CheckAsync("model-command-creates-config", CreatesConfigAsync);
         failures += await CheckAsync("model-command-refuses-broken-config", RefusesBrokenConfigAsync);
@@ -743,6 +745,141 @@ public static class ProviderChecks
             try { _listener.Stop(); _listener.Close(); } catch { /* 已关闭 */ }
             try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { /* 忽略 */ }
         }
+    }
+
+    /// <summary>
+    /// 协议三级推断：显式 > 端点形状 > 默认。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么必须测</b>：MiniMax 的端点是 <c>https://api.minimax.io/anthropic</c>，
+    /// 路径末尾就是 <c>/anthropic</c>。不推断的话它会被当成 chat-completions 发出去，
+    /// 拿到一个含糊的 404——而用户完全看不出是自己少写了一行 <c>wire_api</c>。
+    /// <para>
+    /// <b>精确匹配主机名而不是子串</b>：<c>api.anthropic.com.attacker.test</c> 和
+    /// <c>proxy.test/api.anthropic.com/v1</c> 都能骗过 Contains 判断。
+    /// 这里专门测一个伪造主机不会被误判。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> ProtocolInferenceAsync()
+    {
+        // 1) 路径末尾 /anthropic → AnthropicMessages
+        var bySuffix = ProviderConfigFile.TryParse("""
+            default_provider = "x"
+
+            [providers.x]
+            base_url = "https://api.minimax.io/anthropic"
+            model = "m"
+            """, "t.toml", out var suffixCatalog);
+
+        if (bySuffix is not null) return Task.FromResult<string?>($"路径推断失败：{bySuffix}");
+        if (suffixCatalog!.Selected.Protocol != ChatProtocol.AnthropicMessages)
+        {
+            return Task.FromResult<string?>(
+                $"/anthropic 结尾应推断为 AnthropicMessages，实际 {suffixCatalog.Selected.Protocol}");
+        }
+
+        // 2) 显式 wire_api 必须覆盖推断（同一端点写 openai）
+        var explicitApi = ProviderConfigFile.TryParse("""
+            default_provider = "x"
+
+            [providers.x]
+            base_url = "https://api.minimax.io/anthropic"
+            wire_api = "openai"
+            model = "m"
+            """, "t.toml", out var explicitCatalog);
+
+        if (explicitApi is not null) return Task.FromResult<string?>($"显式协议解析失败：{explicitApi}");
+        if (explicitCatalog!.Selected.Protocol != ChatProtocol.OpenAiChatCompletions)
+        {
+            return Task.FromResult<string?>(
+                $"显式 wire_api 应覆盖推断，实际 {explicitCatalog.Selected.Protocol}");
+        }
+
+        // 3) 伪造主机不得被误判为 Anthropic（子串匹配会中招）
+        var spoofed = ProviderConfigFile.TryParse("""
+            default_provider = "x"
+
+            [providers.x]
+            base_url = "https://api.minimax.io/anthropic.attacker.test/v1"
+            model = "m"
+            """, "t.toml", out var spoofCatalog);
+
+        if (spoofed is not null) return Task.FromResult<string?>($"伪造主机解析失败：{spoofed}");
+        if (spoofCatalog!.Selected.Protocol == ChatProtocol.AnthropicMessages)
+        {
+            return Task.FromResult<string?>("伪造主机被误判为 AnthropicMessages——匹配方式过于宽松");
+        }
+
+        // 4) 普通端点落到 chat-completions
+        var plain = ProviderConfigFile.TryParse("""
+            default_provider = "x"
+
+            [providers.x]
+            base_url = "https://api.example.com/v1"
+            model = "m"
+            """, "t.toml", out var plainCatalog);
+
+        if (plain is not null) return Task.FromResult<string?>($"普通端点解析失败：{plain}");
+        if (plainCatalog!.Selected.Protocol != ChatProtocol.OpenAiChatCompletions)
+        {
+            return Task.FromResult<string?>(
+                $"普通端点应默认为 chat-completions，实际 {plainCatalog.Selected.Protocol}");
+        }
+
+        return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>
+    /// 能力表与三层回退：查到的用事实，查不到的用可改的起点。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么回退值是必要的</b>：没有它时的结果是"上下文未知 → 压缩永不启用"，
+    /// 而长会话一定会撞上 provider 上限——那时报的是 provider 的原始错误，
+    /// 完全看不出是配置缺失。
+    /// <para>
+    /// <b>回退值必须仍为正数</b>：0 在压缩语义里是"不启用"，
+    /// 与"还不知道"是两件事，混用会让症状更难查。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> CapabilitiesAndFallbackAsync()
+    {
+        // 表里有的：必须给出真实值，且与回退值不同（否则测不出是否真查了表）。
+        var known = ProviderCatalog.FindModelCapabilities("deepseek", "deepseek-v4-pro");
+        if (known is null)
+            return Task.FromResult<string?>("表里应有 deepseek-v4-pro，却查不到");
+
+        if (known.ContextWindow <= 0)
+            return Task.FromResult<string?>($"deepseek-v4-pro 的上下文窗口是 {known.ContextWindow}");
+
+        if (known.ContextWindow == ProviderCatalog.FallbackContextWindow)
+        {
+            return Task.FromResult<string?>(
+                "deepseek-v4-pro 的上下文窗口恰好等于回退值，这条测不出是否真的查了表");
+        }
+
+        // 表里没有的：调用方必须能用回退值，且回退值本身合法。
+        var unknown = ProviderCatalog.FindModelCapabilities("deepseek", "no-such-model-xyz");
+        if (unknown is not null)
+            return Task.FromResult<string?>("不存在的模型竟然查到了能力数据");
+
+        // 用局部变量而不是直接比常量：编译器会把它折叠成常量条件并报"不可达代码"，
+        // 而这条断言的意义正是"以后有人把常量改坏了要被拦住"。
+        var fallbackContext = ProviderCatalog.FallbackContextWindow;
+        var fallbackOutput = ProviderCatalog.FallbackMaxOutputTokens;
+
+        if (fallbackContext <= 0 || fallbackOutput <= 0)
+        {
+            return Task.FromResult<string?>("回退值必须为正数（0 在压缩语义里是「不启用」）");
+        }
+
+        // 输出上限不能大于上下文窗口，否则压缩预算会算成负数。
+        if (fallbackOutput >= fallbackContext)
+        {
+            return Task.FromResult<string?>(
+                "回退的输出上限不得大于上下文窗口，否则有效输入预算为负");
+        }
+
+        return Task.FromResult<string?>(null);
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────

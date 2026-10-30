@@ -176,17 +176,24 @@ public static class ModelCommand
             return 0;
         }
 
-        // 能力表：选完模型直接把上下文窗口与输出上限带出来。
-        // **这是预设表真正的价值**——用户不知道 MiniMax-M3 是 1M 上下文，
-        // 让他手填等于把可查的事实变成一道考题；填错的代价是压缩永不触发
-        // （填大）或过早压缩（填小），两种都不报错。
+        // 三层回退：配置里显式写 > 内置表查到 > 默认起点。
+        // 前两层是事实，第三层是**估计**——所以界面上必须说清是哪一种。
+        // 一个看起来精确的错数字比"未知"更糟，而"估计值"是可以接受的：
+        // 用户看到"估计"就知道要自己确认。
         var capabilities = ProviderCatalog.FindModelCapabilities(chosen, model);
+
+        var contextWindow = capabilities?.ContextWindow
+            ?? ProviderCatalog.FallbackContextWindow;
+        var maxOutput = capabilities?.MaxOutputTokens is > 0
+            ? capabilities.MaxOutputTokens
+            : ProviderCatalog.FallbackMaxOutputTokens;
 
         // 选中的 provider 就设成默认：这个命令的意图是"以后用这个"。
         var result = ProviderConfigWriter.UpdateProvider(
             path, chosen, model, setAsDefault: true, baseUrl: baseUrl,
-            contextWindow: capabilities?.ContextWindow,
-            maxOutputTokens: capabilities?.MaxOutputTokens);
+            contextWindow: contextWindow,
+            maxOutputTokens: maxOutput);
+
         if (!result.Succeeded)
         {
             Console.Error.WriteLine(result.Error);
@@ -200,14 +207,19 @@ public static class ModelCommand
         Output.Line($"  model   : {model}");
         if (capabilities is not null)
         {
-            Output.Line($"  上下文  : {capabilities.ContextWindow:N0} tokens"
-                + $"（输出上限 {capabilities.MaxOutputTokens:N0}）"
-                + "  ← 取自内置能力表，可手工改");
+            Output.Line($"  上下文  : {contextWindow:N0} tokens"
+                + $"（输出上限 {maxOutput:N0}）"
+                + "  ← 取自内置能力表");
         }
         else
         {
-            Output.Line("  上下文  : 未知（内置表未收录该模型，压缩不会自动启用）");
+            // 必须说清这是估计：用户看到"估计"就知道要自己确认，
+            // 而看到一个精确数字会以为它是查出来的。
+            Output.Line($"  上下文  : {contextWindow:N0} tokens"
+                + $"（输出上限 {maxOutput:N0}）"
+                + "  ⚠ 内置表未收录该模型，这是估计值，请按实际型号确认");
         }
+
         if (keyEnv is { Length: > 0 }) Output.Line($"  key_env : {keyEnv}");
         if (result.BackupPath is not null)
             Output.Line($"  备份    : {result.BackupPath}");

@@ -192,20 +192,31 @@ public static class ProviderConfigFile
             return $"provider '{name}' 的 base_url 不是合法的 http(s) 地址：{baseUrl}";
         }
 
+        // ── 协议三级推断 ──────────────────────────────────────────
+        // 1) 用户显式写的 wire_api 优先，永远覆盖推断。
+        // 2) 没写时按端点形状推断（照 Hermes 的规则，纯判断不联网）。
+        // 3) 都不匹配则默认 chat-completions——绝大多数兼容端点是这个形状。
+        //
+        // **为什么需要第 2 级**：MiniMax 的端点是 https://api.minimax.io/anthropic，
+        // 路径末尾就是 /anthropic。不推断的话它会被当成 chat-completions 发出去，
+        // 拿到一个含糊的 404，而用户完全看不出是自己少写了一行 wire_api。
         var wireApi = ReadString(table, "wire_api");
-        var protocol = wireApi?.ToLowerInvariant() switch
-        {
-            null or "" or "openai" or "chat" => ChatProtocol.OpenAiChatCompletions,
-            "responses" => ChatProtocol.OpenAiResponses,
-            "anthropic" or "messages" => ChatProtocol.AnthropicMessages,
-            _ => (ChatProtocol?)null,
-        };
+        var protocol = wireApi is null or ""
+            ? InferProtocolFromEndpoint(baseUrl)
+            : wireApi.ToLowerInvariant() switch
+            {
+                "openai" or "chat" => ChatProtocol.OpenAiChatCompletions,
+                "responses" => ChatProtocol.OpenAiResponses,
+                "anthropic" or "messages" => ChatProtocol.AnthropicMessages,
+                _ => (ChatProtocol?)null,
+            };
 
         if (protocol is null)
         {
             return $"provider '{name}' 的 wire_api='{wireApi}' 无法识别；"
                 + "支持 openai / responses / anthropic。";
         }
+
 
         var keyEnv = ReadString(table, "key_env");
 
@@ -240,6 +251,53 @@ public static class ProviderConfigFile
         };
 
         return null;
+    }
+
+    /// <summary>
+    /// 按端点形状推断线协议。**纯判断，不联网。**
+    /// </summary>
+    /// <remarks>
+    /// <b>规则来自 Hermes 的 <c>_detect_api_mode_for_url</c></b>，只保留我们能验证的部分。
+    /// 它的完整版还有 OpenAI 官方主机 → responses、Azure 前缀、Vertex 区域等，
+    /// 那些依赖我们没有的适配层，抄进来是死分支。
+    /// <para>
+    /// <b>为什么精确匹配主机名而不是 Contains</b>：<c>api.anthropic.com.attacker.test</c>
+    /// 和 <c>proxy.test/api.anthropic.com/v1</c> 都能骗过子串匹配。
+    /// 用 <see cref="Uri.Host"/> 精确比对，路径只比对末尾段。
+    /// </para>
+    /// <para>
+    /// <b>为什么不推断 openai-responses</b>：只有 OpenAI 官方主机确定用它，
+    /// 而官方主机在我们的预设里已经写死了 <c>wire_api</c>，走不到这里。
+    /// 对未知端点赌一个 responses 会让绝大多数兼容服务直接 404。
+    /// </para>
+    /// </remarks>
+    private static ChatProtocol InferProtocolFromEndpoint(string baseUrl)
+    {
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
+            return ChatProtocol.OpenAiChatCompletions;
+
+        var host = uri.Host.ToLowerInvariant();
+        var path = uri.AbsolutePath.TrimEnd('/').ToLowerInvariant();
+
+        // 第三方 Anthropic 兼容网关惯例在路径末尾挂 /anthropic（含 /anthropic/v1）。
+        // MiniMax 就是这种：https://api.minimax.io/anthropic
+        if (path.EndsWith("/anthropic", StringComparison.Ordinal)
+            || path.EndsWith("/anthropic/v1", StringComparison.Ordinal))
+        {
+            return ChatProtocol.AnthropicMessages;
+        }
+
+        // Kimi Code 的 /coding 路由说的是 Anthropic Messages（接受 Claude Code 的请求形状）。
+        if (host == "api.kimi.com" && path.Contains("/coding", StringComparison.Ordinal))
+            return ChatProtocol.AnthropicMessages;
+
+        // 官方 Anthropic 主机：原生 Messages 是它唯一计费正确的路径。
+        // OpenAI 兼容 shim 在同一个 host 上，但 Pro/Max 订阅只按原生路径计费，
+        // 走 shim 会撞上"额外的用量池为空"（Hermes 记的是 issue #32243）。
+        if (host is "api.anthropic.com")
+            return ChatProtocol.AnthropicMessages;
+
+        return ChatProtocol.OpenAiChatCompletions;
     }
 
     /// <summary>读一个可选的正整数字段；给了就必须合法。</summary>

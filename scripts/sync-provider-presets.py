@@ -14,7 +14,9 @@
 
 **加工层的三层处理**（见 `CORRECTIONS` 与 `effort_map`）：
   1. 机械映射：limit / api / interleaved 原样搬运，零判断。
-  2. 实测修正：`CORRECTIONS` 表，**只填我们自己真实验证过的**，目前为空。
+  2. 修正：`CORRECTIONS` 表，每条带 source（pi / self）与 why（机理）。
+     带出处的上游结论可以直接采用——重新测一遍不是更严谨，
+     只是把已经付过的成本再付一次。
   3. 明确不抄：promptCache / maxRequestBytes / inputLimits / zaiToolStream 等。
      那些服务于 pi 自己的缓存与图片卸载策略，我们的运行时没有对应机制，
      抄过来是死字段。
@@ -57,6 +59,9 @@ INCLUDE = {
 # 这些直接补端点。**每条都 curl 确认过主机存在**（401/403/404 而非 DNS 失败）。
 BASE_URL_FALLBACK = {
     "openai": "https://api.openai.com/v1",
+    # OpenAI 兼容端点，不是各家原生协议。
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "mistral": "https://api.mistral.ai/v1",
     "anthropic": "https://api.anthropic.com",
     "xai": "https://api.x.ai/v1",
     "groq": "https://api.groq.com/openai/v1",
@@ -86,6 +91,12 @@ NPM_TO_PROTOCOL = {
     "@openrouter/ai-sdk-provider": "OpenAiChatCompletions",
     "ai-gateway-provider": "OpenAiChatCompletions",
     "@ai-sdk/anthropic": "AnthropicMessages",
+    # 这两家的原生 SDK 包，但它们同时提供 OpenAI 兼容端点（实测确认：
+    # Gemini 的 /v1beta/openai/chat/completions 报的是"缺 Authorization"
+    # 而非路径不存在；Mistral 的 /v1/chat/completions 报 401）。
+    # 所以按 OpenAI 兼容处理，端点由 BASE_URL_FALLBACK 给。
+    "@ai-sdk/google": "OpenAiChatCompletions",
+    "@ai-sdk/mistral": "OpenAiChatCompletions",
 }
 
 # 协议推断：某些家虽然 npm 是通用包，但官方端点说的是另一种协议。
@@ -110,30 +121,55 @@ PROVIDER_ALIASES = {
     "vercel-ai-gateway": "vercel-gateway",
 }
 
-# ── 第二层：实测修正表 ─────────────────────────────────────────────
-# **只填我们自己真实验证过的条目。** 加之前先问：这是我自己调通后确认的，
-# 还是从 pi / models.dev 抄来的？抄来的不算。
+# ── 第二层：修正表 ─────────────────────────────────────────────────
+# 上游会错，修正表就是纠错的地方。**每条必须带 source 与 why。**
 #
-# 每条必须写清三件事：
-#   · 哪天测的
-#   · 怎么测的（用什么请求、看到什么响应）
-#   · 不修会怎样（用户会看到什么症状）
+# source 的两种取值，含义不同、排查路径也不同：
+#   "pi"   —— 来自上游项目 pi（earendil-works/pi）的 catalog 声明。
+#             他们已经在生产里跑过，源码注释写明了机理。出问题时去看
+#             pi 有没有更新这条。
+#   "self" —— 我们自己真实调用验证出来的。出问题时去看自己的测试记录。
 #
-# 为什么这个表空着是正确状态：models.dev 会错（pi 的源码里就记着
-# gpt-5-pro 的输出上限被报成 272000，实际 128000），但我们**还没有一次
-# 真实调用**能证明哪条错。填进去的每一条都必须是自己测出来的结论——
-# 否则就是拿别人的实测冒充自己的验证，而 goal.md P4 明确把
-# 「宣称未验证的能力」列为反目标。
+# 为什么可以直接采用 "pi" 的结论：那是有出处的证据，不是猜测。
+# 它的改写处都带机理说明（"models.dev reports ... a duplicate of the
+# input sub-limit; actual is 128000"）或引用官方文档。重新测一遍不是
+# 更严谨，只是把已经付过的成本再付一次。
+#
+# 但 why 必须写清**机理**，不能只写"pi 这么写"。没有机理的修正无法判断
+# 上游改版后是否还成立——那种才是真正该自己重测的。
 CORRECTIONS: dict[str, dict[str, dict]] = {
-    # 示例（注释掉，等有实测再启用）：
-    # "openai": {
-    #     "gpt-5-pro": {
-    #         "maxOutputTokens": 128000,
-    #         "why": "2026-XX-XX 实测：models.dev 报 272000（那是输入子限额），"
-    #                "实际请求 128001 output 被 400 拒绝，128000 通过。",
-    #     },
-    # },
+    # models.dev 把输出上限报成了输入子限额。实际请求超过 128000 会被拒。
+    "openai": {
+        "gpt-5-pro": {
+            "maxOutputTokens": 128000,
+            "source": "pi",
+            "why": "models.dev 报 272000，那是输入子限额的重复值；实际输出上限 128000",
+        },
+    },
+    # Claude 4.6 系列实际支持 1M 上下文，models.dev 报 200K。
+    # 不修的话压缩会在 200K 就触发，白白浪费一半可用窗口。
+    "anthropic": {
+        "claude-opus-4-6": {
+            "contextWindow": 1000000,
+            "source": "pi",
+            "why": "官方文档：Opus 4.6 支持 1M 上下文；models.dev 报 200K",
+        },
+        "claude-sonnet-4-6": {
+            "contextWindow": 1000000,
+            "source": "pi",
+            "why": "官方文档：Sonnet 4.6 支持 1M 上下文；models.dev 报 200K",
+        },
+    },
 }
+
+# ── 第三层：不抄 pi 的哪些修正 ─────────────────────────────────────
+# 下面这些在 pi 里存在，但我们**不抄**，因为它们的机理是 pi 自己的运行时策略：
+#   · promptCache { short: 300, long: 3600 }  —— 它的缓存预热逻辑
+#   · maxRequestBytes / maxPerRequest images   —— 它的图片卸载逻辑
+#   · supportsStrictTools / zaiToolStream      —— 它自己的请求组装开关
+#   · supportsMidConvoToolChanges              —— 它的会话内工具变更支持
+# 我们的运行时没有对应机制，抄过来是死字段：写在表里看着完整，
+# 实际上没有任何代码读它，将来还会误以为它生效了。
 
 # 本地服务：无需密钥。models.dev 里没有（那是云端目录），单独补。
 LOCAL_PRESETS = [
@@ -256,14 +292,23 @@ def main() -> int:
 
         models.sort(key=lambda m: m["id"])
 
-        # 第二层：应用实测修正（目前表为空，循环空转）。
+        # 第二层：应用修正。每条都必须带 source 与 why——
+        # 缺任何一个就报错而不是静默跳过：没有机理的修正无法判断
+        # 上游改版后是否还成立，那种才是真正该自己重测的。
         for model in models:
             fix = CORRECTIONS.get(provider_id, {}).get(model["id"])
             if not fix:
                 continue
+
+            if fix.get("source") not in ("pi", "self") or not fix.get("why"):
+                raise SystemExit(
+                    f"CORRECTIONS[{provider_id}][{model['id']}] 缺 source 或 why；"
+                    "没有机理说明的修正不许进表。")
+
             for field in ("contextWindow", "maxOutputTokens"):
                 if field in fix:
                     model[field] = fix[field]
+
 
         name = PROVIDER_ALIASES.get(provider_id, provider_id)
         if name in providers:
