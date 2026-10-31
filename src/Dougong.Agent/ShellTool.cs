@@ -38,8 +38,22 @@ public sealed class ShellTool : IAgentTool
     /// <b>单独存而不是问 executor</b>：执行 seam 不该暴露"工作区在哪"——
     /// 沙箱实现、远程实现可能根本没有本地路径。审批者要看到的是
     /// "这条命令会影响哪个目录"，那是工具层的信息。
+    /// <para>
+    /// <b>可为 null</b>：走不带 workspace 的构造时我们真的不知道根在哪。
+    /// 那时不假装知道——用当前目录冒充会让守卫"看起来在工作"却拦错地方。
+    /// </para>
     /// </remarks>
-    private readonly string _workspace;
+    private readonly string? _workspace;
+
+    /// <summary>
+    /// 命令策略闸门。默认就是一个普通实例，宿主可换更严的实现。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么是字段而不是每次都 new</b>：策略要实现自己的状态时
+    /// （比如记住上一轮 cd 到哪了），复用同一实例是必须的。
+    /// 每次 new 会让状态丢失，而那正好是本策略最需要的上下文。
+    /// </remarks>
+    private readonly ShellCommandPolicy _policy;
 
     /// <summary>用本地实现构造（不沙箱）。</summary>
     /// <param name="workspace">工作目录。</param>
@@ -62,14 +76,44 @@ public sealed class ShellTool : IAgentTool
     /// <param name="executor">命令执行来源。</param>
     /// <param name="timeout">超时。</param>
     /// <param name="maxOutputBytes">单流输出上限。</param>
+    /// <remarks>
+    /// <b>这个重载不知道工作区在哪</b>，因此 <c>cd</c> 越界检查无从判定：
+    /// <see cref="WorkspacePathGuard"/> 需要一个基准根。保守做法是
+    /// **不放行任何改变目录的命令**，而不是拿进程当前目录当根——
+    /// 后者会"看起来在检查"却拦错地方。
+    /// <para>
+    /// 生产装配请用带 <c>workspace</c> 的重载。保留这个签名是为了不破坏
+    /// 已有调用点（ApiCompat CP0002）。
+    /// </para>
+    /// </remarks>
     public ShellTool(IShellExecutor executor, TimeSpan? timeout = null, int maxOutputBytes = 64 * 1024)
+        : this(executor, timeout, maxOutputBytes, workspace: null)
+    {
+    }
+
+    /// <summary>
+    /// 用指定的执行器与已知工作区构造。
+    /// </summary>
+    /// <param name="executor">命令执行来源。</param>
+    /// <param name="timeout">超时。</param>
+    /// <param name="maxOutputBytes">单流输出上限。</param>
+    /// <param name="workspace">
+    /// 工作区路径。<b>生产装配必须传</b>——命令策略用它判 <c>cd</c> 是否越界。
+    /// 显式传而不是从环境推断：<c>Environment.CurrentDirectory</c> 是
+    /// **进程启动时**的目录，与"这次会话的工作区"没有必然关系，
+    /// 拿它当根会让守卫拦错地方。
+    /// </param>
+    public ShellTool(IShellExecutor executor, TimeSpan? timeout, int maxOutputBytes,
+        string? workspace)
     {
         ArgumentNullException.ThrowIfNull(executor);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxOutputBytes, 1024);
         _executor = executor;
         _timeout = timeout ?? TimeSpan.FromSeconds(120);
         _maxOutputBytes = maxOutputBytes;
-        _workspace = Environment.CurrentDirectory;
+        // null 表示"工作区未知"，不是"用当前目录冒充"。
+        _workspace = workspace is null ? null : Path.GetFullPath(workspace);
+        _policy = new ShellCommandPolicy();
     }
 
     public ToolDescriptor Descriptor { get; } = new(
@@ -102,14 +146,27 @@ public sealed class ShellTool : IAgentTool
         return new ToolPermission(
             ToolAccess.Execute,
             IsKnown: true,
-            Paths: [_workspace],
+            // 工作区未知时不声明路径：声明一个假的会让审批者看到错误的范围。
+            Paths: _workspace is null ? [] : [_workspace],
             Commands: [command],
             Domains: []);
     }
 
     /// <summary>始终工作区独占：shell 能改变进程与文件状态，不能与其他调用重叠。</summary>
+    /// <remarks>
+    /// <b>上限比内部超时宽一倍</b>：本工具自己有 <c>_timeout</c>（默认 120 秒），
+    /// dispatcher 是对第三方实现的兜底。让它先于外层触发，是为了拿到
+    /// 更精确的诊断——内部知道"是哪个进程超时"，外层只知道"这个工具超时"。
+    /// <para>
+    /// 若内层因某种原因没生效（例如子进程不响应 kill），外层这道仍会兜住，
+    /// 终态报 <c>TimedOut</c> 而不是永远挂住。
+    /// </para>
+    /// </remarks>
     public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
-        new(ToolConcurrency.WorkspaceExclusive);
+        new(ToolConcurrency.WorkspaceExclusive)
+        {
+            Timeout = _timeout + TimeSpan.FromSeconds(30),
+        };
 
     /// <summary>
     /// 不声明文件依赖：无法从命令文本可靠推断它读写哪些文件。
@@ -133,6 +190,27 @@ public sealed class ShellTool : IAgentTool
         var fullCommand = args.Count == 0
             ? command
             : command + " " + string.Join(' ', args.Select(QuoteShellArgument));
+
+        // 策略闸门在**执行前**，且判的是拼好的完整命令：
+        // 危险模式可能藏在 args 里（模型把 "rm -rf /" 拆成 command+args 会更隐蔽）。
+        //
+        // 工作区未知时不传它：策略层会把"无法判定 cd 是否越界"当成拒绝，
+        // 而不是放行。那比拿一个错误的根去猜安全。
+        var verdict = _policy.Evaluate(fullCommand, _workspace!);
+        if (!verdict.Allowed)
+        {
+            // 拒绝**返回失败结果而不是抛异常**：这是模型可自我纠正的常规情况
+            // （换一条命令就行）。抛异常会让整轮以 Failed 结束。
+            using var rejected = JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                exitCode = (int?)null,
+                stdout = string.Empty,
+                stderr = string.Empty,
+                rejected = true,
+                detail = verdict.Reason,
+            }));
+            return new AgentToolResult(rejected.RootElement.Clone());
+        }
 
         var result = await _executor
             .ExecuteAsync(fullCommand, _timeout, _maxOutputBytes, cancellationToken)
