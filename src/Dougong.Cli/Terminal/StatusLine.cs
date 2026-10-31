@@ -105,7 +105,7 @@ public static class StatusLine
         parts.Add(FormatDuration(turnElapsed));
 
         var line = "  " + string.Join(" · ", parts);
-        if (width > 0 && DisplayWidth(line) > width) line = TruncateToWidth(line, width);
+        if (width > 0 && DisplayWidth.Of(line) > width) line = TruncateToWidth(line, width);
         return line;
     }
 
@@ -178,10 +178,10 @@ public static class StatusLine
 
         // 可用宽度减 1：最后一列留空，杜绝自动折行。
         var limit = width - 1;
-        var visible = DisplayWidth(content);
+        var visible = DisplayWidth.Of(content);
 
         if (visible > limit) content = TruncateToWidth(content, limit);
-        visible = DisplayWidth(content);
+        visible = DisplayWidth.Of(content);
 
         return visible >= limit ? content : content + new string(' ', limit - visible);
     }
@@ -198,59 +198,24 @@ public static class StatusLine
     /// ——用不上的复杂度就是 bug 温床。
     /// </para>
     /// </remarks>
-    private static int DisplayWidth(string text)
-    {
-        var width = 0;
-        var inEscape = false;
-
-        foreach (var c in text)
-        {
-            if (inEscape)
-            {
-                if (c == 'm') inEscape = false;
-                continue;
-            }
-
-            if (c == '\u001b') { inEscape = true; continue; }
-
-            width += IsWide(c) ? 2 : 1;
-        }
-
-        return width;
-    }
-
     /// <summary>按显示宽度截断，末尾补省略号。</summary>
+    /// <remarks>
+    /// 按 Rune 迭代：按 <c>char</c> 迭代会在代理对中间切断，输出孤立高代理。
+    /// </remarks>
     private static string TruncateToWidth(string text, int width)
     {
         var builder = new StringBuilder(text.Length);
         var used = 0;
 
-        foreach (var c in text)
+        foreach (var rune in text.EnumerateRunes())
         {
-            var w = IsWide(c) ? 2 : 1;
+            var w = DisplayWidth.Of(rune);
             if (used + w > width - 1) break;
-            builder.Append(c);
+            builder.Append(rune.ToString());
             used += w;
         }
 
         builder.Append('…');
         return builder.ToString();
     }
-
-    /// <summary>该字符在等宽终端里是否占两格。</summary>
-    private static bool IsWide(char c) => c switch
-    {
-        >= '\u1100' and <= '\u115F' => true,  // 谚文字母
-        >= '\u2E80' and <= '\u303E' => true,  // CJK 部首与标点
-        >= '\u3041' and <= '\u33FF' => true,  // 假名、CJK 兼容
-        >= '\u3400' and <= '\u4DBF' => true,  // CJK 扩展 A
-        >= '\u4E00' and <= '\u9FFF' => true,  // CJK 统一表意
-        >= '\uA000' and <= '\uA4CF' => true,  // 彝文
-        >= '\uAC00' and <= '\uD7A3' => true,  // 谚文音节
-        >= '\uF900' and <= '\uFAFF' => true,  // CJK 兼容表意
-        >= '\uFE30' and <= '\uFE6F' => true,  // CJK 竖排标点
-        >= '\uFF00' and <= '\uFF60' => true,  // 全角 ASCII
-        >= '\uFFE0' and <= '\uFFE6' => true,  // 全角符号
-        _ => false,
-    };
 }
