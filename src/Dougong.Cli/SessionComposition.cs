@@ -315,15 +315,14 @@ public sealed class SessionComposition
         CreateDispatcher(_approver, store is null ? null : new FixedStoreAccessor(store));
 
     /// <summary>用访问点建立 dispatcher：内核路径下传入，使替换后自动取新实现。</summary>
-    public IToolDispatcher CreateDispatcher(IToolApprover approver, IStoreAccessor? store)
-
-    /// <summary>
+    /// <remarks>
     /// 用指定的审批器建立 dispatcher。
-    /// </summary>
-    /// <param name="approver">
-    /// 审批器。内核接线时传入的是**由内核解析得到的适配器**，
+    /// <para>
+    /// <paramref name="approver"/> 在内核接线时传入的是**由内核解析得到的适配器**，
     /// 而不是构造本对象时那个实例——否则审批器又成了绕开内核的裸引用。
-    /// </param>
+    /// </para>
+    /// </remarks>
+    public IToolDispatcher CreateDispatcher(IToolApprover approver, IStoreAccessor? store)
     {
         ArgumentNullException.ThrowIfNull(approver);
 
@@ -345,14 +344,40 @@ public sealed class SessionComposition
         var files = new LocalFileSystem(_workspace);
         dispatcher.Register(new ReadFileTool(files));
         dispatcher.Register(new WriteFileTool(files));
+        // 搜索与编辑：没有 grep 的编码 agent 等于没有眼睛。
+        // 都建在同一个 seam 上，所以将来的沙箱实现自动覆盖它们。
+        dispatcher.Register(new GlobTool(files));
+        dispatcher.Register(new GrepTool(files));
+        dispatcher.Register(new EditFileTool(files));
         // 计划工具：ACP plan 的唯一数据源。两个入口都要有，否则
         // "CLI 能看计划、ACP 看不到"——正是入口能力不一致的老问题。
         dispatcher.Register(new TodoWriteTool());
 
-        if (_shellEnabled) dispatcher.Register(new ShellTool(_workspace));
+        // 工作区必须显式传：命令策略用它判"cd 是否越界"。
+        // 不传时 ShellTool 会退回进程当前目录，那是启动时的工作目录，
+        // 与这次会话的工作区不一定相同——守卫会拦错地方。
+        if (_shellEnabled)
+            dispatcher.Register(new ShellTool(_workspace));
 
         return dispatcher;
     }
+
+    /// <summary>
+    /// 系统提示词的分节组装器。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么由这里给而不是每个入口自己拼</b>：REPL 与 ACP 曾各写一套装配，
+    /// 结果是能力不一致。提示词是同一类东西——各拼一份必然会漂移，
+    /// 而漂移的表现是"CLI 里模型会先搜索，ACP 里它直接猜路径"。
+    /// <para>
+    /// 只注册与**工具无关的事实**（工作区、文件工具纪律）。需要具体工具知识的
+    /// 分节（如 shell 沙箱边界）等有沙箱之后再加——现在写进去等于声明没有的能力。
+    /// </para>
+    /// </remarks>
+    public SystemPromptBuilder CreatePromptBuilder() =>
+        new SystemPromptBuilder()
+            .Add(new WorkspaceSection())
+            .Add(new FileToolPolicySection());
 
     /// <summary>
     /// 建立运行时。用量记账在这里包一层，两个入口自动都有账目。
@@ -379,11 +404,15 @@ public sealed class SessionComposition
 
         // 偏好在两条返回路径上都要接：漏掉一条就会出现
         // "开了压缩就没偏好"这类分支相关的怪事。
+        // 系统提示同理——它现在是分节组装出来的，漏接一条路径就等于完全没有。
+        var promptBuilder = CreatePromptBuilder();
+
         if (_contextWindow <= 0)
             return new LoopAgentRuntime(effective, dispatcher, store)
             {
                 Memory = Memory,
                 MemoryWorkspace = _workspace,
+                PromptBuilder = promptBuilder,
             };
 
         return new LoopAgentRuntime(
@@ -404,6 +433,7 @@ public sealed class SessionComposition
         {
             Memory = Memory,
             MemoryWorkspace = _workspace,
+            PromptBuilder = promptBuilder,
         };
     }
 

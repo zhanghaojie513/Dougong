@@ -159,14 +159,17 @@ public static class Program
             return 2;
         }
 
-        // 密钥：有 key_env 就必须能在环境里取到。取不到时报"缺哪个变量"，
-        // 而不是笼统说配置不全——用户需要知道该 export 什么。
-        if (config.ApiKeyEnvironmentVariable is { Length: > 0 } keyName
-            && Environment.GetEnvironmentVariable(keyName) is not { Length: > 0 })
+        // 密钥：有 key_env 就必须能取到。取不到时报"该做什么"，
+        // 而不是只报"缺哪个变量"——用户要的是下一步，不是诊断细节。
+        //
+        // **用 ResolveApiKey 而不是直接查环境变量**：那是唯一的真源，
+        // 它按"本机凭据文件 > 环境变量"的顺序找。这里自己再查一遍环境变量
+        // 就会得出错误结论——用户明明在凭据文件里存了，这里却说没设置。
+        if (config.ApiKeyName is { Length: > 0 }
+            && string.IsNullOrWhiteSpace(ChatClientFactory.ResolveApiKey(config)))
         {
-            Console.Error.WriteLine(
-                $"provider '{config.Name}' 需要环境变量 {keyName}，但它没有设置。");
-            Console.Error.WriteLine($"  export {keyName}='<你的密钥>'");
+            Console.Error.WriteLine($"provider '{config.Name}' 还没配密钥。");
+            Console.Error.WriteLine("  重跑 dougong model 会提示你粘贴密钥，之后自动保存。");
             return 2;
         }
 
@@ -678,10 +681,10 @@ public static class Program
                 + "model = \"<模型名>\"）");
         }
 
-        if (target.ApiKeyEnvironmentVariable is { Length: > 0 } keyName
-            && Environment.GetEnvironmentVariable(keyName) is not { Length: > 0 })
+        if (target.ApiKeyName is { Length: > 0 }
+            && string.IsNullOrWhiteSpace(ChatClientFactory.ResolveApiKey(target)))
         {
-            problems.Add($"需要环境变量 {keyName}，但它没有设置（export {keyName}='<你的密钥>'）");
+            problems.Add("还没有密钥（重跑 dougong model 输入即可）");
         }
 
         if (problems.Count > 0)
@@ -728,7 +731,7 @@ public static class Program
             var model = string.IsNullOrWhiteSpace(provider.Model) ? "未配置模型" : provider.Model;
 
             // 密钥状态：只说有没有，不说是什么。
-            var keyState = provider.ApiKeyEnvironmentVariable switch
+            var keyState = provider.ApiKeyName switch
             {
                 null or "" => "无需密钥",
                 { } name when Environment.GetEnvironmentVariable(name) is { Length: > 0 }

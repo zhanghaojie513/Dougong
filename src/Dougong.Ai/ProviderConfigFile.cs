@@ -10,8 +10,8 @@ namespace Dougong.Ai;
 /// </summary>
 /// <remarks>
 /// <b>红线：这个类读到的任何东西里都不允许出现密钥值。</b>
-/// 配置里只写变量名（<c>key_env</c>），值由 <see cref="ChatClientFactory"/>
-/// 在建立连接器时从环境变量取。这样配置文件可以进 git、进备份、进日志。
+/// 配置里只写条目的**名字**（<c>key</c>），值存在另一个文件
+/// （<see cref="CredentialFile"/>）里。这样配置文件可以进 git、进备份、进日志。
 /// <para>
 /// <b>为什么是 TOML</b>：与 Codex 的 <c>config.toml</c> 一致，用户不必学两套格式；
 /// 且 TOML 的表结构天然表达 <c>[providers.&lt;name&gt;]</c> 这种具名条目。
@@ -53,7 +53,7 @@ public static class ProviderConfigFile
     /// <summary>provider 段允许出现的键。</summary>
     private static readonly string[] AllowedProviderKeys =
     [
-        "base_url", "wire_api", "key_env", "model", "messages_path",
+        "base_url", "wire_api", "key", "model", "messages_path",
         // 上下文与输出上限：**必须能被读回来**。写进去却解析不了，
         // 就成了"向导显示 1M 上下文、配置文件里有、但程序读不到"——
         // 压缩永远不启用且没有任何提示。实测踩到过。
@@ -219,15 +219,16 @@ public static class ProviderConfigFile
         }
 
 
-        var keyEnv = ReadString(table, "key_env");
+        var keyName = ReadString(table, "key");
 
-        // key_env 必须是**变量名**而不是密钥值。这是安全红线，所以做成硬校验，
-        // 而不是在文档里请求用户注意——把 sk-xxx 直接写进 key_env 是最容易犯的错，
-        // 后果是密钥进 git，而那时已经太晚。
-        if (keyEnv is not null && LooksLikeSecret(keyEnv))
+        // key 必须是**条目名**而不是密钥值。这是安全红线，所以做成硬校验，
+        // 而不是在文档里请求用户注意——把 sk-xxx 直接写进 key 是最容易犯的错，
+        // 后果是密钥进 git（配置文件是可提交的），而那时已经太晚。
+        if (keyName is not null && LooksLikeSecret(keyName))
         {
-            return $"provider '{name}' 的 key_env='{keyEnv}' 看起来是一个密钥值而不是变量名。"
-                + "配置里只能写变量名（例如 DEEPSEEK_API_KEY），密钥值放进环境变量。";
+            return $"provider '{name}' 的 key='{keyName}' 看起来是一个密钥值而不是条目名。"
+                + "配置里只能写名字（例如 DEEPSEEK_API_KEY）；"
+                + "值请用 dougong model 输入，会存到本机凭据文件。";
         }
 
         // 数值字段：给了就必须是正整数。0 或负数视为配置错误而不是"未设置"——
@@ -263,7 +264,7 @@ public static class ProviderConfigFile
             // 预设没有模型名（同一端点的可用模型会变），空着比猜一个好。
             Model = ReadString(table, "model") ?? string.Empty,
             Protocol = protocol.Value,
-            ApiKeyEnvironmentVariable = keyEnv,
+            ApiKeyName = keyName,
             MessagesPath = ReadString(table, "messages_path"),
             ContextWindowTokens = contextWindow,
             MaxOutputTokens = maxOutputTokens,

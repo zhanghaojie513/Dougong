@@ -94,8 +94,8 @@ public static class Doctor
                 + "        [providers.deepseek]\n"
                 + "        base_url = \"https://api.deepseek.com\"\n"
                 + "        model = \"deepseek-chat\"\n"
-                + "        key_env = \"DEEPSEEK_API_KEY\"\n"
-                + "    · 或设 DOUGONG_PROVIDER_BASE / MODEL / KEY 三个环境变量");
+                + "        key = \"DEEPSEEK_API_KEY\"\n"
+                + "    · 或者只是想临时试试某个端点：设 DOUGONG_PROVIDER_BASE / MODEL / KEY");
         }
 
         var selected = catalog.Selected;
@@ -116,23 +116,26 @@ public static class Doctor
                 "检查该 provider 的 base_url，它应当形如 https://host/v1。");
         }
 
-        // 密钥状态：只说有没有找到、来自哪个变量名，**绝不打印值**。
-        // 这条与 /model 的列表同一口径。
-        if (selected.ApiKeyEnvironmentVariable is { Length: > 0 } keyName)
+        // 密钥状态：只说有没有找到，**绝不打印值**。
+        //
+        // **用 ResolveApiKey 判断，不自己查凭据文件**：那是唯一真源。
+        // 自建一份判断会漏掉 DOUGONG_PROVIDER_* 那条通道——
+        // 症状是"环境变量明明设了、doctor 却说没配"，而实际能正常对话。
+        var hasKey = !string.IsNullOrWhiteSpace(ChatClientFactory.ResolveApiKey(selected));
+
+        if (selected.ApiKeyName is { Length: > 0 } && !hasKey)
         {
-            var present = Environment.GetEnvironmentVariable(keyName) is { Length: > 0 };
-            if (!present)
-            {
-                return new(Level.Fail, "provider 配置",
-                    $"provider '{selected.Name}' 需要环境变量 {keyName}，但它没有设置",
-                    $"export {keyName}='<你的密钥>' 后重跑。密钥只从环境变量读，不写进配置文件。");
-            }
+            return new(Level.Fail, "provider 配置",
+                $"provider '{selected.Name}' 需要密钥，但还没配",
+                "重跑 dougong model 会提示你粘贴密钥，之后自动保存，不用每次设置。");
         }
 
         var others = catalog.Providers.Count - 1;
-        var keyState = selected.ApiKeyEnvironmentVariable is { Length: > 0 } name
-            ? $"{name} 已设置"
-            : "无需密钥";
+        var keyState = selected.ApiKeyName switch
+        {
+            null or "" => hasKey ? "已设置" : "无需密钥",
+            _ => hasKey ? "已设置" : "未设置",
+        };
 
         var detail = $"当前 '{selected.Name}'：model={selected.Model}  "
             + $"protocol={selected.Protocol}  base={selected.BaseUrl}  key={keyState}"

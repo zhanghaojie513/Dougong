@@ -42,7 +42,7 @@ public sealed class ProviderCatalog
             entry => new ProviderPreset(
                 BaseUrl: entry.Value.BaseUrl,
                 Protocol: entry.Value.Protocol,
-                ApiKeyEnvironmentVariable: entry.Value.ApiKeyEnvironmentVariable),
+                ApiKeyName: entry.Value.ApiKeyName),
             StringComparer.OrdinalIgnoreCase);
 
     private readonly Dictionary<string, ChatProviderConfig> _providers;
@@ -134,7 +134,7 @@ public sealed class ProviderCatalog
                 // 猜一个会变成"配好了却 404"。空字符串在 Create 时由使用方校验。
                 Model = string.Empty,
                 Protocol = preset.Value.Protocol,
-                ApiKeyEnvironmentVariable = preset.Value.ApiKeyEnvironmentVariable,
+                ApiKeyName = preset.Value.ApiKeyName,
             };
         }
 
@@ -243,9 +243,9 @@ public sealed class ProviderCatalog
     /// <summary>内置预设的一条。</summary>
     /// <param name="BaseUrl">API 基地址。</param>
     /// <param name="Protocol">线协议。</param>
-    /// <param name="ApiKeyEnvironmentVariable">密钥环境变量名——**是名字，不是值**。</param>
+    /// <param name="ApiKeyName">密钥环境变量名——**是名字，不是值**。</param>
     public sealed record ProviderPreset(
         string BaseUrl,
         ChatProtocol Protocol,
-        string? ApiKeyEnvironmentVariable);
+        string? ApiKeyName);
 }

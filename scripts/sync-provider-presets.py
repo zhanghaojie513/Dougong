@@ -463,7 +463,7 @@ def render(providers: dict, digest: str) -> str:
         lines.append(f"                Protocol: ChatProtocol.{entry['protocol']},")
         key_env = entry.get("apiKeyEnv")
         lines.append(
-            f"                ApiKeyEnvironmentVariable: {cs(key_env) if key_env else 'null'},")
+            f"                ApiKeyName: {cs(key_env) if key_env else 'null'},")
         lines.append("                Models: [")
 
         for model in entry["models"]:
@@ -501,14 +501,14 @@ def render(providers: dict, digest: str) -> str:
         "/// <summary>一个内置 provider 预设。</summary>",
         "/// <param name=\"BaseUrl\">默认端点。</param>",
         "/// <param name=\"Protocol\">默认线协议。</param>",
-        "/// <param name=\"ApiKeyEnvironmentVariable\">",
+        "/// <param name=\"ApiKeyName\">",
         "/// 密钥变量名。null 表示不鉴权（本地服务）。",
         "/// </param>",
         "/// <param name=\"Models\">该端点下的模型能力表；本地服务为空（模型由用户填）。</param>",
         "public sealed record ProviderPresetData(",
         "    string BaseUrl,",
         "    ChatProtocol Protocol,",
-        "    string? ApiKeyEnvironmentVariable,",
+        "    string? ApiKeyName,",
         "    IReadOnlyList<ModelCapabilities> Models);",
         "",
         "/// <summary>一个模型的能力数据。</summary>",

@@ -105,7 +105,7 @@ public static class ProviderChecks
             [providers.first]
             base_url = "https://a.example.com/v1"
             wire_api = "anthropic"
-            key_env = "FIRST_KEY"
+            key = "FIRST_KEY"
             model = "m1"
 
             [providers.second]
@@ -143,11 +143,11 @@ public static class ProviderChecks
     }
 
     /// <summary>
-    /// 把密钥值写进 key_env 必须被拒。
+    /// 把密钥值写进 key 必须被拒。
     /// </summary>
     /// <remarks>
     /// <b>这是本套最重要的一条</b>：用户最容易犯的错就是把 sk-xxx 直接写进
-    /// key_env。如果只把"应该写变量名"写进文档，那么配错的人在泄漏发生前
+    /// key。如果只把"应该写条目名"写进文档，那么配错的人在泄漏发生前
     /// 不会看到任何提示——而泄漏一旦发生（提交进 git），补救已经晚了。
     /// </remarks>
     private static Task<string?> SecretInKeyEnvRejected()
@@ -163,17 +163,24 @@ public static class ProviderChecks
             var toml = $"""
                 [providers.x]
                 base_url = "https://a.example.com"
-                key_env = "{secret}"
+                key = "{secret}"
                 """;
 
             var error = ProviderConfigFile.TryParse(toml, "test.toml", out var catalog);
             if (error is null || catalog is not null)
-                return Task.FromResult<string?>($"key_env='{secret}' 看起来是密钥值，却没被拒绝");
+                return Task.FromResult<string?>($"key='{secret}' 看起来是密钥值，却没被拒绝");
 
-            if (!error.Contains("变量名", StringComparison.Ordinal))
+            // 断言"说清了该写什么、值该放哪"，不锁具体词。
+            // 原先匹配"变量名"——现在字段语义是"条目名"，措辞已改。
+            var explainsName = error.Contains("条目名", StringComparison.Ordinal)
+                || error.Contains("名字", StringComparison.Ordinal);
+            var explainsWhere = error.Contains("dougong model", StringComparison.Ordinal)
+                || error.Contains("凭据文件", StringComparison.Ordinal);
+
+            if (!explainsName || !explainsWhere)
             {
                 return Task.FromResult<string?>(
-                    $"拒绝了但没说清原因（应提示要写变量名）：{error}");
+                    $"拒绝了但没说清原因（应提示写条目名 + 值放哪）：{error}");
             }
         }
 
@@ -183,7 +190,7 @@ public static class ProviderChecks
             var toml = $"""
                 [providers.x]
                 base_url = "https://a.example.com"
-                key_env = "{name}"
+                key = "{name}"
                 """;
 
             var error = ProviderConfigFile.TryParse(toml, "test.toml", out _);
@@ -240,7 +247,7 @@ public static class ProviderChecks
             [providers.fromfile]
             base_url = "https://file.example.com"
             model = "file-model"
-            key_env = "FILE_KEY"
+            key = "FILE_KEY"
 
             [providers.other]
             base_url = "https://other.example.com"
@@ -295,16 +302,16 @@ public static class ProviderChecks
             [providers.alpha]
             base_url = "https://a.example.com/v1"
             model = "alpha-model"
-            key_env = "ALPHA_KEY"
+            key = "ALPHA_KEY"
 
             [providers.beta]
             base_url = "https://b.example.com/v1"
             model = "beta-model"
-            key_env = "BETA_KEY"
+            key = "BETA_KEY"
 
             [providers.gamma]
             base_url = "https://c.example.com/v1"
-            key_env = "GAMMA_KEY"
+            key = "GAMMA_KEY"
             """;
 
         var path = WriteTempConfig(toml);
@@ -336,11 +343,21 @@ public static class ProviderChecks
             if (!combined.Contains("已切到 provider 'beta'", StringComparison.Ordinal))
                 return $"没有切到 beta。stdout={Trim(combined)}";
 
-            // 缺密钥的 provider 必须被拒，且报出缺哪个变量。
-            // 这条用"需要环境变量 GAMMA_KEY"匹配——它是报错文案里唯一
-            // 既指明变量名又说明原因的部分。
-            if (!combined.Contains("需要环境变量 GAMMA_KEY", StringComparison.Ordinal))
-                return $"缺密钥时没有报出缺哪个变量。stdout={Trim(combined)}";
+            // 缺密钥的 provider 必须被拒，并说清下一步怎么做。
+            //
+            // **钉的是"有没有 actionable 指引"，不是具体措辞**。
+            // 原来的断言匹配 "需要环境变量 GAMMA_KEY"，而那正是本轮改掉的
+            // 文案——它把 export 当成唯一出路，对普通用户门槛太高。
+            // 现在断言"提到密钥 + 提到怎么补"，措辞可以再改。
+            var mentionsKey = combined.Contains("密钥", StringComparison.Ordinal);
+            var mentionsFix = combined.Contains("dougong model", StringComparison.Ordinal)
+                || combined.Contains("重跑", StringComparison.Ordinal);
+
+            if (!mentionsKey || !mentionsFix)
+            {
+                return "缺密钥时没有说清怎么补（应提到密钥 + 重跑 dougong model）"
+                    + $"。stdout={Trim(combined)}";
+            }
 
             if (combined.Contains("已切到 provider 'gamma'", StringComparison.Ordinal))
                 return "缺密钥的 provider 竟然切换成功了";
@@ -376,7 +393,7 @@ public static class ProviderChecks
             [providers.probe]
             base_url = "https://probe.example.com/v1"
             model = "probe-model"
-            key_env = "PROBE_KEY"
+            key = "PROBE_KEY"
             """;
 
         var path = WriteTempConfig(toml);
@@ -400,8 +417,14 @@ public static class ProviderChecks
             if (!combined.Contains("provider 配置", StringComparison.Ordinal))
                 return $"自检没有检查 provider 配置。stdout={Trim(combined)}";
 
-            if (!combined.Contains("PROBE_KEY 已设置", StringComparison.Ordinal))
-                return $"自检没有报出密钥变量已设置（说明没走到这条路径）。stdout={Trim(combined)}";
+            // 只断言"认定密钥可用"，不锁具体措辞。
+            // 原先匹配 "PROBE_KEY 已设置"，但变量名是实现细节——
+            // 用户不该被迫记住它。现在文案是"已设置（环境变量）"。
+            var keyRecognized = combined.Contains("已设置", StringComparison.Ordinal)
+                || combined.Contains("已保存", StringComparison.Ordinal);
+
+            if (!keyRecognized)
+                return $"自检没有认定密钥可用（说明没走到这条路径）。stdout={Trim(combined)}";
 
             // 配置文件本身当然也不该被写入密钥——这里确认读之后文件没变。
             var after = await File.ReadAllTextAsync(path);
@@ -439,7 +462,7 @@ public static class ProviderChecks
 
             // 密钥变量名可以为 null（本地服务无需鉴权），但给了就必须像变量名。
             // 预设里出现密钥**值**是最严重的配置事故。
-            var keyName = preset.ApiKeyEnvironmentVariable;
+            var keyName = preset.ApiKeyName;
             if (keyName is not null
                 && (keyName.Length == 0
                     || !(char.IsAsciiLetter(keyName[0]) || keyName[0] == '_')
@@ -506,7 +529,7 @@ public static class ProviderChecks
             base_url = "https://a.example.com/v1"   # 行尾注释也要保留
             # 换模型前先确认这个值
             model = "old-model"
-            key_env = "ALPHA_KEY"
+            key = "ALPHA_KEY"
 
             [providers.beta]
             base_url = "https://b.example.com/v1"
@@ -1070,7 +1093,7 @@ public static class ProviderChecks
             model = "m"
             context_window = 1048576
             max_output_tokens = 262144
-            key_env = "PROBE_KEY"
+            key = "PROBE_KEY"
             """);
 
         try
@@ -1175,6 +1198,42 @@ public static class ProviderChecks
                      new[] { "DOUGONG_PROVIDER_CONFIG", "DOUGONG_KERNEL", "DOUGONG_TUI" }))
         {
             startInfo.Environment.Remove(name);
+        }
+
+        // **把凭据文件指到一个一次性路径**。
+        //
+        // 不做这一步，跑一次 CLI 会读写用户真实的 ~/.dougong/credentials——
+        // 既污染环境，又让检查结果依赖"开发者机器上恰好存了哪些密钥"。
+        // 实测踩到过：本机有 ANTHROPIC_API_KEY，于是"缺密钥"的检查
+        // 莫名其妙失败，而代码是对的。
+        var isolatedCredentials = Path.Combine(
+            Path.GetTempPath(), $"dougong-cred-{Guid.NewGuid():N}", "credentials");
+        startInfo.Environment["DOUGONG_CREDENTIALS"] = isolatedCredentials;
+
+        // 密钥现在只从凭据文件读，所以"环境里设了 XXX_API_KEY"这招不再生效。
+        // 把环境字典里形如 FOO_KEY / FOO_API_KEY 的条目转写成凭据文件内容——
+        // 这样既有测试用例不用逐条重写，而且转写的是**真实的产品路径**。
+        //
+        // 这不是在迁就测试：它恰好证明"凭据文件是唯一入口"这件事已经生效。
+        var credentialEntries = environment
+            .Where(pair => pair.Value is { Length: > 0 }
+                && (pair.Key.EndsWith("_KEY", StringComparison.Ordinal)
+                    || pair.Key.EndsWith("_API_KEY", StringComparison.Ordinal)
+                    || pair.Key.EndsWith("_TOKEN", StringComparison.Ordinal))
+                // DOUGONG_PROVIDER_* 是另一条独立通道，不该落进凭据文件。
+                && !pair.Key.StartsWith("DOUGONG_PROVIDER_", StringComparison.Ordinal))
+            .ToList();
+
+        if (credentialEntries.Count > 0)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(isolatedCredentials)!);
+            File.WriteAllLines(isolatedCredentials,
+                credentialEntries.Select(pair => $"{pair.Key}={pair.Value}"));
+
+            // 从子进程环境里移除：否则测试会"通过"，但通过的原因是一个
+            // 已经不存在的代码路径——那是假绿，比红更糟。
+            foreach (var (name, _) in credentialEntries)
+                startInfo.Environment.Remove(name);
         }
 
         foreach (var (key, value) in environment)

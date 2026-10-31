@@ -23,8 +23,35 @@ public sealed record ChatProviderConfig
     /// <summary>线协议。同一 provider 可能同时支持多种，必须显式指定。</summary>
     public ChatProtocol Protocol { get; init; } = ChatProtocol.OpenAiChatCompletions;
 
-    /// <summary>读取密钥的环境变量名。为空表示该端点无需鉴权。</summary>
-    public string? ApiKeyEnvironmentVariable { get; init; }
+    /// <summary>
+    /// 凭据条目名（如 <c>DEEPSEEK_API_KEY</c>），值存在本机凭据文件里。
+    /// 为空表示该端点无需鉴权。
+    /// </summary>
+    /// <remarks>
+    /// <b>名字带 <c>Name</c> 而不是 <c>Env</c></b>：它曾经是环境变量名，
+    /// 但现在指向 <see cref="CredentialFile"/> 里的条目。环境变量这条通道
+    /// 已经删掉——它随终端会话消失，会让"配好的密钥"莫名失效。
+    /// <para>
+    /// 需要"不改文件地试一个端点"时用 <see cref="ApiKey"/>（内存值），
+    /// 那条路径来自 <c>DOUGONG_PROVIDER_*</c>，与凭据文件互不影响。
+    /// </para>
+    /// </remarks>
+    public string? ApiKeyName { get; init; }
+
+    /// <summary>
+    /// 直接内联的密钥，**仅存在于内存，绝不写进任何文件**。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么需要它</b>：<c>DOUGONG_PROVIDER_*</c> 那条路是"临时试一个端点"，
+    /// 它的整套配置都来自环境变量，密钥自然也该在那里——让它去凭据文件找
+    /// 一个叫 <c>DOUGONG_PROVIDER_KEY</c> 的条目既绕又容易出错。
+    /// <para>
+    /// <b>它不参与序列化</b>：<see cref="ProviderConfigWriter"/> 只写
+    /// <see cref="ApiKeyName"/>，从不写这个字段。CI 里设环境变量即可，
+    /// 不需要造一个假的凭据文件。
+    /// </para>
+    /// </remarks>
+    public string? ApiKey { get; init; }
 
     /// <summary>
     /// 同一协议内部的方言差异（字段名、可选参数）。默认值对应已实测通过的端点。
@@ -62,21 +89,83 @@ public sealed record ChatProviderConfig
 /// </remarks>
 public static class ChatClientFactory
 {
-    /// <summary>按配置建立连接器；密钥只从环境变量读取。</summary>
-    /// <exception cref="InvalidOperationException">配置缺少必需的密钥环境变量或环境变量未设置。</exception>
+    /// <summary>
+    /// 按配置建立连接器；密钥按"环境变量 > 本机凭据文件"的顺序读取。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么环境变量优先</b>：CI 与一次性会话用它覆盖，比改文件方便；
+    /// 而且这与本项目的既有行为一致，老用法不会因为加了凭据文件而改变。
+    /// <para>
+    /// <b>凭据文件是给常规用户的</b>：让他们填一次，之后自动读。
+    /// 格式与权限见 <see cref="CredentialFile"/>。
+    /// </para>
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// 需要密钥但两处都没找到。
+    /// </exception>
     public static IChatClient Create(ChatProviderConfig config, HttpClient? http = null)
     {
         ArgumentNullException.ThrowIfNull(config);
 
-        string apiKey = string.Empty;
-        if (!string.IsNullOrWhiteSpace(config.ApiKeyEnvironmentVariable))
+        var apiKey = ResolveApiKey(config);
+
+        // **需要密钥却取不到要在这里明确失败**。
+        // 不失败的话，请求会带着空 Authorization 发出去，用户看到的是一句
+        // provider 侧的 401——那完全看不出"你还没配密钥"，
+        // 而这是最容易自己解决的一类问题。
+        if (string.IsNullOrWhiteSpace(apiKey)
+            && !string.IsNullOrWhiteSpace(config.ApiKeyName))
         {
-            apiKey = Environment.GetEnvironmentVariable(config.ApiKeyEnvironmentVariable)
-                ?? throw new InvalidOperationException(
-                    $"provider '{config.Name}' 需要环境变量 '{config.ApiKeyEnvironmentVariable}'，但它未设置。");
+            throw new InvalidOperationException(
+                $"provider '{config.Name}' 需要密钥 '{config.ApiKeyName}'，但未找到。\n"
+                + "两种设置方式：\n"
+                + $"  · 在本机凭据文件里保存（推荐，一次即可）：dougong model\n"
+                + $"  · 或设环境变量：export {config.ApiKeyName}='<你的密钥>'");
         }
 
         return Create(config, apiKey, http);
+    }
+
+    /// <summary>
+    /// 从本机凭据文件取密钥；没有返回空串。
+    /// </summary>
+    /// <remarks>
+    /// <b>只有一处来源，与 dsh / hermes 一致。</b>
+    /// <list type="bullet">
+    /// <item>dsh：<c>~/.dsh/.credentials.yaml</c> 是主存储</item>
+    /// <item>hermes：<c>~/.hermes/.env</c> 文件本身就是主存储</item>
+    /// </list>
+    ///
+    /// <para>
+    /// <b>为什么删掉了环境变量回退</b>：它不是一个存储——随终端会话消失，
+    /// 要求用户每次开新窗口重设。保留它只会制造两种失败：
+    /// 一是残留的旧值悄悄盖过用户填好的密钥，二是"我明明配过"却因为换了终端
+    /// 而失效。两种都极难自查。密钥只有一处权威来源，问题就只有一个方向。
+    /// </para>
+    ///
+    /// <para>
+    /// <b><c>key_env</c> 字段仍然保留</b>：它是凭据文件里的**条目名**
+    /// （如 <c>DEEPSEEK_API_KEY</c>），不是环境变量名。名字带 env 是历史遗留，
+    /// 语义已经改成"凭据条目的键"。
+    /// </para>
+    ///
+    /// <para>
+    /// 需要临时试另一个端点时用 <see cref="FromEnvironment"/> 那条独立路径——
+    /// 它用 <c>DOUGONG_PROVIDER_*</c> 配整套 provider，与这里的凭据文件互不影响。
+    /// </para>
+    /// </remarks>
+    public static string ResolveApiKey(ChatProviderConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        // 内存值优先：它来自 DOUGONG_PROVIDER_* 那条独立路径，
+        // 本来就该压过凭据文件（"这次换一个端点跑"）。
+        if (!string.IsNullOrWhiteSpace(config.ApiKey)) return config.ApiKey;
+
+        if (string.IsNullOrWhiteSpace(config.ApiKeyName))
+            return string.Empty;
+
+        return CredentialFile.TryRead(config.ApiKeyName) ?? string.Empty;
     }
 
     /// <summary>
@@ -125,7 +214,11 @@ public static class ChatClientFactory
             BaseUrl = baseUrl,
             Model = model,
             Protocol = protocol,
-            ApiKeyEnvironmentVariable = "DOUGONG_PROVIDER_KEY",
+
+            // **这条路径不用凭据文件**：值就在 DOUGONG_PROVIDER_KEY 里。
+            // 放进内存字段而不是让 ApiKeyName 指向一个不存在的条目。
+            ApiKeyName = null,
+            ApiKey = Environment.GetEnvironmentVariable("DOUGONG_PROVIDER_KEY"),
             MessagesPath = Environment.GetEnvironmentVariable("DOUGONG_ANTHROPIC_PATH"),
         };
     }

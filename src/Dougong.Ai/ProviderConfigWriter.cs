@@ -233,7 +233,7 @@ public static class ProviderConfigWriter
         builder.Append("base_url = \"").Append(preset.BaseUrl).Append('"').Append(newline);
         builder.Append("wire_api = \"").Append(WireApiName(preset.Protocol)).Append('"').Append(newline);
         builder.Append("model = \"").Append(model).Append('"').Append(newline);
-        builder.Append("key_env = \"").Append(preset.ApiKeyEnvironmentVariable).Append('"').Append(newline);
+        builder.Append("key = \"").Append(preset.ApiKeyName).Append('"').Append(newline);
 
         return builder.ToString();
     }
@@ -270,8 +270,8 @@ public static class ProviderConfigWriter
         text.AppendLine($"base_url = \"{baseUrl ?? preset.BaseUrl}\"");
         text.AppendLine($"wire_api = \"{WireApiName(preset.Protocol)}\"");
         text.AppendLine($"model = \"{model}\"");
-        if (preset.ApiKeyEnvironmentVariable is { Length: > 0 } keyEnv)
-            text.AppendLine($"key_env = \"{keyEnv}\"");
+        if (preset.ApiKeyName is { Length: > 0 } keyEnv)
+            text.AppendLine($"key = \"{keyEnv}\"");
 
         // 上下文与输出上限：从能力表带出来的值必须**真的写进文件**，
         // 否则下次启动读不到，压缩就永远不启用——而界面上刚显示过它。
