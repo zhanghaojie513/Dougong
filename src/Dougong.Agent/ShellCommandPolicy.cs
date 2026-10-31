@@ -212,14 +212,19 @@ public sealed class ShellCommandPolicy
 
             var target = match.Groups[2].Value.Trim('"', '\'');
 
-            // 目标是变量或命令替换：无法静态判断，按越界处理。
+            // 目标是变量、命令替换、或波浪号展开：无法静态判断，按越界处理。
             // 宁可拒绝一次正常调用，也不放过可能越界的一次——
             // 拒绝可以让模型改用明确路径，误放行却是静默的。
+            //
+            // **`~` 必须在这里**：shell 会把它展开成家目录，而 Path.GetFullPath
+            // 不会——后者把它当普通字符，于是 `cd ~` 会被算成"工作区内的 ~ 目录"
+            // 而放行。实测在 Linux 上是真实逃逸。
             if (target.Contains('$', StringComparison.Ordinal)
                 || target.Contains('`', StringComparison.Ordinal)
-                || target.Contains('(', StringComparison.Ordinal))
+                || target.Contains('(', StringComparison.Ordinal)
+                || target.StartsWith('~'))
             {
-                return $"命令被拒绝：cd 的目标 '{target}' 含变量或命令替换，无法静态判定是否越界。"
+                return $"命令被拒绝：cd 的目标 '{target}' 含变量、命令替换或家目录展开，无法静态判定是否越界。"
                     + "\n请用工作区内的字面路径。这是策略过滤而非沙箱。";
             }
 

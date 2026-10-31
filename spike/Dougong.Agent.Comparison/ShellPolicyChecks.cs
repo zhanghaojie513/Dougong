@@ -115,20 +115,41 @@ public static class ShellPolicyChecks
     /// <remarks>
     /// <b>这是本轮实测出的真实漏洞</b>：<c>cd / &amp;&amp; ls</c> 能列出整个盘，
     /// 因为 <c>WorkingDirectory</c> 只是起点。此前完全没有拦住。
+    /// <para>
+    /// <b>绝对路径用例按平台分开</b>：策略用 <c>Path.GetFullPath</c> 判断，
+    /// 而它按当前平台规则解析。<c>C:\Windows</c> 在 Linux 上是一个**普通文件名**
+    /// （含反斜杠，不是盘符），所以被正确地当成"工作区内的相对路径"。
+    /// 那不是缺陷——在 Linux 上它确实不是绝对路径。
+    /// <para>
+    /// 这个平台差异是 CI 的 ubuntu 先发现的：Windows 上这条通过，Linux 上失败。
+    /// 若不分开，检查会强迫产品按一个错误的前提工作。
+    /// </para>
     /// </remarks>
     private static string? CdEscapeRejected()
     {
         var policy = new ShellCommandPolicy();
 
-        string[] mustReject =
-        [
+        // 跨平台都成立的用例。
+        var mustReject = new List<string>
+        {
             "cd /",
             "cd / && ls",
             "cd ..",
             "cd ../..",
-            "cd C:\\Windows",
             "ls && cd /etc && cat passwd",
-        ];
+        };
+
+        // 平台相关的绝对路径：只在对应平台上才有"越界"语义。
+        if (OperatingSystem.IsWindows())
+        {
+            mustReject.Add(@"cd C:\Windows");
+            mustReject.Add(@"cd D:\");
+        }
+        else
+        {
+            mustReject.Add("cd /etc");
+            mustReject.Add("cd ~");
+        }
 
         foreach (var command in mustReject)
         {
