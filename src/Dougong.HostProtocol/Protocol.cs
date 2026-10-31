@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace Dougong.HostProtocol;
 
@@ -72,12 +73,106 @@ public static class HostProtocolContract
     /// <b>双方必须用同一份配置</b>：宿主各写一份 <see cref="JsonSerializerOptions"/>
     /// 是这类协议最常见的裂缝——一侧忽略 null、另一侧不忽略时，
     /// "字段不存在"与"字段是 null"在线上就无法区分。
+    /// <para>
+    /// <b>宿主不要改这个对象的任何属性</b>。需要加自己的消息类型时用
+    /// <see cref="RegisterDerivedType{TBase}"/>。改这个对象有两个后果：
+    /// 它一旦被使用就冻结（改属性抛 <see cref="InvalidOperationException"/>），
+    /// 而且改了什么只有那个宿主知道——正是上面那条裂缝。
+    /// </para>
     /// </remarks>
     public static JsonSerializerOptions Json { get; } = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+
+        // resolver 在这里就装好，不让宿主碰。它负责把
+        // RegisterDerivedType 登记的类型挂到对应多态根上。
+        //
+        // **必须在这一行装**：JsonSerializerOptions 首次使用后冻结，
+        // 之后再赋 TypeInfoResolver 会抛 InvalidOperationException。
+        // 让它成为初始值，就永远不会遇到那个时机问题。
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver
+        {
+            Modifiers = { HostExtensionRegistry.Apply },
+        },
     };
+
+    /// <summary>
+    /// 把宿主的派生类型挂到某个多态根下。
+    /// </summary>
+    /// <remarks>
+    /// <b>宿主要加自己的消息时用这个方法</b>，不要另建一份
+    /// <see cref="JsonSerializerOptions"/>：那会绕开"同一份配置"这条，
+    /// 而两侧的 <c>DefaultIgnoreCondition</c> 一旦不同，
+    /// "字段不存在"与"字段是 null"在线上就无法区分。
+    ///
+    /// <para>
+    /// <b>基线类型由泛型参数显式给出</b>，不靠反射推断。推断在这里会静默出错：
+    /// 派生类型的 <c>BaseType</c> 未必就是要挂的多态根（可能有中间基类），
+    /// 猜错时类型能编译、Serializable 特性也都在，只是序列化时它不走、
+    /// 反序列化时它不被识别——两端都不报错。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>必须在首次序列化之前调用</b>。之后调用会抛
+    /// <see cref="InvalidOperationException"/> 而不是静默忽略：
+    /// 静默忽略会让宿主以为注册生效了，然后对着一个"消息发不出去"
+    /// 的现象排查半天，而根因是自己的注册根本没进去。
+    /// </para>
+    /// </remarks>
+    /// <typeparam name="TBase">
+    /// 多态根，例如 <see cref="ClientCommand"/>、<see cref="ServerEvent"/>、
+    /// <see cref="ConversationItem"/>。
+    /// </typeparam>
+    /// <param name="derived">派生类型与它的判别器值。</param>
+    /// <exception cref="InvalidOperationException">
+    /// 首次序列化已经发生，配置已冻结；或 <typeparamref name="TBase"/>
+    /// 并不是一个多态根。
+    /// </exception>
+    public static void RegisterDerivedType<TBase>(JsonDerivedType derived)
+        where TBase : class
+    {
+        // **参数校验先做，冻结检查后做。**
+        //
+        // 顺序不能反：传递了错误的基类，报"必须在首次序列化之前调用"
+        // 是误导——那个人改对了时机也照样错。诊断应该指向真正的原因。
+        if (!typeof(TBase).IsAbstract)
+        {
+            throw new InvalidOperationException(
+                $"类型 '{typeof(TBase).Name}' 不是抽象基类，不能作为多态根。"
+                + "多态根必须是带 [JsonPolymorphic] 的抽象类型。");
+        }
+
+        if (!typeof(TBase).IsAssignableFrom(derived.DerivedType))
+        {
+            throw new InvalidOperationException(
+                $"类型 '{derived.DerivedType.Name}' 不是 '{typeof(TBase).Name}' 的派生类型。"
+                + "基类必须由调用方显式给出——由反射推断会静默挂错地方。");
+        }
+
+
+        // 冻结检查：这是宿主最可能踩的坑，报错要有指导性。
+        if (Json.IsReadOnly)
+        {
+            throw new InvalidOperationException(
+                "RegisterDerivedType 必须在首次序列化之前调用——"
+                + "JsonSerializerOptions 一旦被使用就会冻结，此后追加的登记不会生效。"
+                + "请把注册放到宿主初始化阶段（建立连接之前），而不是收到第一条消息之后。");
+        }
+
+        HostExtensionRegistry.Add(typeof(TBase), derived);
+    }
+
+    /// <summary>
+    /// 已登记的扩展类型，供宿主自检。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么要暴露它</b>：宿主注册了类型却发出不去的故障是静默的——
+    /// 编译通过、序列化不报错，只是那条消息用错了配置。
+    /// 有了这份清单，宿主可以断言自己的注册真的进去了。
+    /// </remarks>
+    public static IReadOnlyList<(Type BaseType, JsonDerivedType Derived)> RegisteredExtensions =>
+        HostExtensionRegistry.Registered;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -101,8 +196,26 @@ public abstract partial record ConversationItem
     /// <summary>条目标识。同一会话内唯一。</summary>
     public required string Id { get; init; }
 
-    /// <summary>产生时刻。</summary>
-    public DateTimeOffset At { get; init; } = DateTimeOffset.Now;
+    /// <summary>
+    /// 产生时刻。**必需**，缺失即反序列化失败。
+    /// </summary>
+    /// <remarks>
+    /// <b>这里原先是 <c>= DateTimeOffset.Now</c> 的默认值，那会静默产生错误数据</b>：
+    /// 缺字段时两端各自取自己的"现在"——客户端拿到的是收到消息的时刻，
+    /// 不是服务端产生该条目的时刻。跨进程时分叉立刻可见：两条消息的
+    /// 时间戳可能颠倒，界面按 <see cref="At"/> 排序就会错序。
+    /// <para>
+    /// <b>它不是可推导的字段</b>：收包时间 <c>Now</c> 与产生时间在概念上不同，
+    /// 用前者冒充后者是拿一个近似值回答一个精确问题。第三方实现若自己
+    /// 补一个本地时间，行为就与我们不一致——而这正是"跨语言移植对不上"
+    /// 最典型的来源。
+    /// </para>
+    /// <para>
+    /// 标成 <c>required</c> 后，缺失会得到明确的 <c>JsonException</c>，
+    /// 而不是一条时间错误却看起来正常的条目。
+    /// </para>
+    /// </remarks>
+    public required DateTimeOffset At { get; init; }
 }
 
 // ─────────────────────────────────────────────────────────────

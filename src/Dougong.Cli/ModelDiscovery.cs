@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Dougong.Ai;
 
 namespace Dougong.Cli;
 
@@ -47,11 +48,18 @@ public static class ModelDiscovery
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
         using var request = new HttpRequestMessage(HttpMethod.Get, modelsUrl);
 
-        if (keyEnv is { Length: > 0 }
-            && Environment.GetEnvironmentVariable(keyEnv) is { Length: > 0 } key)
+        // 与 ChatClientFactory 同一来源顺序：存储优先，环境变量兜底。
+        // 这里若只查环境变量，用户存了凭据文件后"拉取模型列表"会拿不到数据，
+        // 而对话本身是好的——那种不一致最难查。
+        if (keyEnv is { Length: > 0 })
         {
-            request.Headers.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", key);
+            var key = CredentialFile.TryRead(keyEnv);
+
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                request.Headers.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", key);
+            }
         }
 
         using var response = await http.SendAsync(request).ConfigureAwait(false);

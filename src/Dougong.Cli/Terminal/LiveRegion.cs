@@ -268,6 +268,11 @@ public sealed class LiveRegion : IDisposable
     /// <b>上限是 <c>width - 1</c>，不是 <c>width</c></b>：写满最右列会让终端
     /// 自动折行，光标跳到下一行，后续 <c>ESC[1E</c> 就多走一行、整块区域错位。
     /// 真机上表现为活动行只剩 spinner、文字消失（2026-10-29 截图）。
+    /// <para>
+    /// <b>按 Rune 迭代</b>：按 <c>char</c> 迭代时，宽度刚好卡在代理对中间
+    /// 会 Append 一个孤立高代理，输出里出现 <c>�</c>。宽度判定统一走
+    /// <see cref="DisplayWidth"/>，不在这里另抄一份区间表。
+    /// </para>
     /// </remarks>
     private static string Truncate(string text, int width)
     {
@@ -277,29 +282,14 @@ public sealed class LiveRegion : IDisposable
         var used = 0;
         var builder = new System.Text.StringBuilder(text.Length);
 
-        foreach (var c in text)
+        foreach (var rune in text.EnumerateRunes())
         {
-            var w = WidthOf(c);
+            var w = DisplayWidth.Of(rune);
             if (used + w > limit) break;
-            builder.Append(c);
+            builder.Append(rune.ToString());
             used += w;
         }
 
         return builder.ToString();
     }
-
-    /// <summary>CJK 占两格——与 <see cref="StatusLine"/> 的判定保持一致。</summary>
-    private static int WidthOf(char c) => c is
-        >= '\u1100' and <= '\u115F' or
-        >= '\u2E80' and <= '\u303E' or
-        >= '\u3041' and <= '\u33FF' or
-        >= '\u3400' and <= '\u4DBF' or
-        >= '\u4E00' and <= '\u9FFF' or
-        >= '\uA000' and <= '\uA4CF' or
-        >= '\uAC00' and <= '\uD7A3' or
-        >= '\uF900' and <= '\uFAFF' or
-        >= '\uFE30' and <= '\uFE6F' or
-        >= '\uFF00' and <= '\uFF60' or
-        >= '\uFFE0' and <= '\uFFE6'
-        ? 2 : 1;
 }

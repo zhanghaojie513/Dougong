@@ -42,6 +42,12 @@ public static class ToolPackageChecks
         failures += Check("readme-test-count-matches-reality", ReadmeTestCount);
         failures += Check("docs-have-no-broken-relative-links", NoBrokenDocLinks);
         failures += Check("capability-progress-counts-are-consistent", ProgressCountsConsistent);
+
+        // 差异台账：每个 ✅ 声称都必须有证据。没有证据的"已完成"是本项目
+        // 最危险的状态——它看起来可信，而没人能验证。
+        failures += Check("every-claim-has-evidence", EveryClaimHasEvidence);
+        failures += Check("deviation-records-cite-real-locations", DeviationsCiteRealCode);
+        failures += Check("evidence-suites-exist-and-are-registered", EvidenceSuitesRegistered);
         failures += Check("baseline-package-lists-agree", BaselineListsAgree);
         failures += Check("no-hardcoded-version-in-sources", NoHardcodedVersion);
         failures += await CheckAsync("version-is-consistent-across-outputs", VersionConsistentAsync);
@@ -780,6 +786,191 @@ public static class ToolPackageChecks
 
     /// <summary>换行符。用常量而不是内联字面量，避免嵌套转义。</summary>
     private const char NewLine = '\n';
+
+    /// <summary>
+    /// 每条 ✅ 声称都必须有一条真实存在的检查为它作证。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条守的是"声称必须有证据"</b>。本项目最危险的状态不是"没实现"，
+    /// 而是"标了 ✅ 却没人验证过"——它看起来可信，而下次重构会静默破坏它。
+    /// <para>
+    /// <b>判据是"证据存在"，不是"覆盖某些能力域"</b>：这里**不预设**
+    /// 应该验哪些维度。哪些行为值得钉，由能力本身决定——搜索工具该钉
+    /// 歧义拒绝，压缩器该钉触发点，协议该钉缺字段，各不相同的维度才叫行为。
+    /// 预设一份清单会把它降级成考点：照着清单打勾就能"通过"，
+    /// 而清单之外的破坏无人发现。
+    /// </para>
+    /// <para>
+    /// 具体到每个能力该问什么，见台账 §二"验收怎么问"：
+    /// 那里给的是**提问方式**（这个能力有哪些可观察输出？改了实现哪些会变？），
+    /// 而不是一张必答的题单。
+    /// </para>
+    /// </remarks>
+    private static string? EveryClaimHasEvidence()
+    {
+        var root = FindRepoRoot();
+        var ledger = Path.Combine(root, "docs", "porting-differences.md");
+        if (!File.Exists(ledger))
+            return "缺少 docs/porting-differences.md——声称与证据的对应关系无处可查";
+
+        var text = File.ReadAllText(ledger);
+
+        // 台账里必须有"声称与证据"小节，且表格不为空。
+        var sectionStart = text.IndexOf("## 三、声称与证据", StringComparison.Ordinal);
+        if (sectionStart < 0) return "台账缺少「声称与证据」小节";
+
+        var sectionEnd = text.IndexOf("\n## ", sectionStart + 1, StringComparison.Ordinal);
+        var section = sectionEnd > sectionStart
+            ? text[sectionStart..sectionEnd]
+            : text[sectionStart..];
+
+        var rows = section.Split(NewLine)
+            .Select(line => line.Trim())
+            .Where(line => line.StartsWith('|') && line.Contains('`', StringComparison.Ordinal))
+            .ToList();
+
+        if (rows.Count == 0)
+            return "「声称与证据」表里没有一行带证据的条目";
+
+        // 每行必须同时给出检查名与负控方式。
+        //
+        // **负控那一列不能空**：只有检查名而没有"怎么破坏它才失败"，
+        // 说明这条检查没被证明过在验证任何东西。本项目的实际教训是
+        // 检查跑绿但完全没生效——破坏守卫后依然全绿，因为它根本没跑到
+        // 新编译的 DLL。没有负控的检查只是"不会红的代码"。
+        var problems = new List<string>();
+        foreach (var row in rows)
+        {
+            var cells = row.Split('|')
+                .Select(cell => cell.Trim())
+                .Where(cell => cell.Length > 0)
+                .ToList();
+
+            if (cells.Count < 3)
+            {
+                problems.Add($"行格式不完整（需 声称/证据/负控 三列）：{row}");
+                continue;
+            }
+
+            var evidence = cells[1];
+            var counterproof = cells[2];
+
+            if (!evidence.Contains('`'))
+                problems.Add($"证据列没有指向具体检查：{evidence}");
+
+            if (counterproof.Length < 8)
+            {
+                problems.Add($"负控列为空或过短，未说明如何证明检查会失败：{row}");
+            }
+        }
+
+        return problems.Count == 0
+            ? null
+            : "台账有声称缺少证据或缺少负控：" + string.Join("；", problems);
+    }
+
+    /// <summary>
+    /// 台账里引用的源码位置必须真实存在。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条防的是"偏离记录过期"</b>。偏离记录里写着
+    /// <c>src/Dougong.Agent/ContextCompaction.cs</c>，若那个文件改名或删掉，
+    /// 记录就变成误导——它仍然看起来权威，而指向的地方已经没有那段代码。
+    /// <para>
+    /// 检查只验路径存在，不验内容：验内容需要解析语义，成本高且脆弱。
+    /// 路径存在至少能保证"还能顺着找过去"。
+    /// </para>
+    /// </remarks>
+    private static string? DeviationsCiteRealCode()
+    {
+        var root = FindRepoRoot();
+        var ledger = Path.Combine(root, "docs", "porting-differences.md");
+        if (!File.Exists(ledger)) return "缺少 docs/porting-differences.md";
+
+        var text = File.ReadAllText(ledger);
+
+        // 抓所有形如 src/Xxx/Yyy.cs 的反引号路径。
+        var cited = System.Text.RegularExpressions.Regex
+            .Matches(text, @"`(src[/\\][\w./\\-]+\.cs)`")
+            .Select(m => m.Groups[1].Value)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (cited.Count == 0)
+            return "台账的偏离记录没有引用任何源码位置——无法核对是否仍然成立";
+
+        var missing = cited
+            .Where(relative => !File.Exists(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar))))
+            .ToList();
+
+        return missing.Count == 0
+            ? null
+            : $"台账引用的源码文件不存在（记录已过期）：{string.Join("、", missing)}";
+    }
+
+    /// <summary>
+    /// 台账引用的套件必须真实存在，且已在 all-checks.sh 里注册。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条最要紧</b>：写了检查但没注册进回归，等于没有——
+    /// 它不会在任何人提交前跑一次，只在有人记得手动跑时才有用。
+    /// 本轮就踩到过两次：<c>search</c> 与 <c>prompt</c> 都写好了却没进
+    /// <c>suites</c> 列表，差点以"全部通过"收工。
+    /// <para>
+    /// 判据：台账里出现的套件名，必须同时满足
+    /// (a) `Program.cs` 里有对应的子命令分发，
+    /// (b) `scripts/all-checks.sh` 的 suites 列表里有它。
+    /// </para>
+    /// </remarks>
+    private static string? EvidenceSuitesRegistered()
+    {
+        var root = FindRepoRoot();
+        var ledgerPath = Path.Combine(root, "docs", "porting-differences.md");
+        if (!File.Exists(ledgerPath)) return "缺少 docs/porting-differences.md";
+
+        var ledger = File.ReadAllText(ledgerPath);
+
+        // 套件名在本台账里都写成 `suite`：小写连字符，且已被 Program 分发。
+        // 用"程序里存在同名分发"反向确定哪些反引号词是套件名——
+        // 这样不需要在台账里额外标注，也不会把检查名误当套件名。
+        var programPath = Path.Combine(root, "spike", "Dougong.Agent.Comparison", "Program.cs");
+        var checksPath = Path.Combine(root, "scripts", "all-checks.sh");
+
+        if (!File.Exists(programPath)) return "找不到 Program.cs";
+        if (!File.Exists(checksPath)) return "找不到 all-checks.sh";
+
+        var program = File.ReadAllText(programPath);
+        var suitesLine = File.ReadAllText(checksPath)
+            .Split(NewLine)
+            .FirstOrDefault(line => line.StartsWith("suites=", StringComparison.Ordinal));
+
+        if (suitesLine is null) return "all-checks.sh 里找不到 suites= 那一行";
+
+        var registered = suitesLine
+            .Split('"')[0..]
+            .SelectMany(part => part.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .ToHashSet(StringComparer.Ordinal);
+
+        // 台账里以反引号引用的词，若 Program.cs 里有 `== "word"` 的分发，
+        // 它就是一个套件名。
+        var mentioned = System.Text.RegularExpressions.Regex
+            .Matches(ledger, @"`([a-z][a-z-]+)`")
+            .Select(m => m.Groups[1].Value)
+            .Where(word => program.Contains($"== \"{word}\"", StringComparison.Ordinal)
+                || program.Contains($"== \"{word}\"", StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (mentioned.Count == 0)
+            return "台账里没有任何可识别的套件名引用——证据指向不明";
+
+        var unregistered = mentioned.Where(suite => !registered.Contains(suite)).ToList();
+
+        return unregistered.Count == 0
+            ? null
+            : $"台账引用了未注册进 all-checks.sh 的套件：{string.Join("、", unregistered)}"
+                + "（写了检查却没进回归，等于没有）";
+    }
 
     /// <summary>
     /// 从总览表读「合计」那一行，返回 5 个计数：4 个状态 + 小计。

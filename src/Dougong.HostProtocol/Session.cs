@@ -154,10 +154,46 @@ public sealed record ModelInfo(
     bool SupportsReasoning);
 
 /// <summary>模型目录。响应 <see cref="ListModelsCommand"/>。</summary>
+/// <remarks>
+/// <b>载荷曾经只有 <see cref="Models"/></b>，而那是残缺的：客户端拿不到
+/// "哪些 provider 可用"，也标不出"现在用的是哪个"。这两个缺口不是界面偏好——
+/// 一个 provider 当前没有任何可用模型时（凭据未配、目录为空），
+/// 从 <see cref="Models"/> 反推就完全看不到它，用户会以为那个 provider 不存在。
+///
+/// <para>
+/// <b>为什么之前没发现</b>：这个事件在 SDK 里只登记过判别器，
+/// 从未被构造或消费——有类型不等于被验证过。
+/// </para>
+/// </remarks>
 public sealed record ModelsListedEvent : ServerEvent
 {
     /// <summary>全部可选模型。</summary>
     public required IReadOnlyList<ModelInfo> Models { get; init; }
+
+    /// <summary>
+    /// 已知的 provider 标识，按字母序。**可能包含没有模型的 provider**。
+    /// </summary>
+    /// <remarks>
+    /// 单独给出而不是让客户端从 <see cref="Models"/> 去重：
+    /// 一个 provider 可能因为凭据未配、或目录暂时为空而没有模型，
+    /// 但它仍然应该出现在"选一个 provider"的下拉里。
+    /// <para>
+    /// <b>必需而不是可空</b>：可空会让"服务端真的没有 provider"与
+    /// "这条消息来自旧版服务端、它不知道该字段"混在一起，
+    /// 而客户端无法区分。0.x 不承诺跨版本兼容（<c>compat-policy.md</c> §7.1），
+    /// 所以这里选择让旧服务端明确失败，而不是让它发一条语义含糊的消息。
+    /// </para>
+    /// </remarks>
+    public required IReadOnlyList<string> Providers { get; init; }
+
+    /// <summary>
+    /// 当前实际在用的模型 Id；null 表示**未配置**（这是一个有效状态）。
+    /// </summary>
+    /// <remarks>
+    /// 这里的 null 有确切含义（用户还没选模型），与"服务端不知道该字段"不同。
+    /// 前者是正常的初始状态，界面应显示"未选择"。
+    /// </remarks>
+    public string? CurrentModelId { get; init; }
 }
 
 /// <summary>列出当前可选的模型。</summary>

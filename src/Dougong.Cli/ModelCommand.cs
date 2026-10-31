@@ -158,8 +158,8 @@ public static class ModelCommand
         // Hermes 的关键一步：配模型时顺手把密钥处理掉。
         // 只提示"你还需要 export"等于把活留给用户，而他刚打开这个界面
         // 就是因为不知道要配什么。
-        var keyEnv = existing?.ApiKeyEnvironmentVariable
-            ?? (ProviderCatalog.Presets.TryGetValue(chosen, out var kp) ? kp.ApiKeyEnvironmentVariable : null);
+        var keyEnv = existing?.ApiKeyName
+            ?? (ProviderCatalog.Presets.TryGetValue(chosen, out var kp) ? kp.ApiKeyName : null);
 
         var (keyOk, keyNote) = PromptApiKey(chosen, keyEnv);
         if (!keyOk)
@@ -277,43 +277,69 @@ public static class ModelCommand
     /// 采集密钥。返回 (是否继续, 事后提示)。
     /// </summary>
     /// <remarks>
-    /// <b>密钥只进环境变量，绝不写配置文件</b>——这条红线不变。所以这里能做的是：
-    /// 说清需要哪个变量、现在有没有、以及怎么设。
+    /// <b>红线不变：密钥绝不写进配置文件。</b>它写进本机凭据文件
+    /// （<see cref="CredentialFile"/>），那个文件与 config.toml 是两回事——
+    /// 前者从不进版本库，后者可以安全分享。
     /// <para>
-    /// <b>为什么不在这里收密钥值</b>：命令行里键入的密钥会进 shell 历史，
-    /// 而进程也没法替父 shell 设环境变量。收下来只能写进配置文件，
-    /// 那正好破坏这条红线。所以这里只确认"是否已设置"，未设置时给出可直接
-    /// 粘贴的一行命令。
+    /// <b>为什么就在命令里收，而不是让用户自己 export</b>：
+    /// 参考的四个项目（pi / pi.net / dsh / hermes）全都提供交互输入，
+    /// 没有一个要求用户 export。那层门槛是 CLI 时代的习惯：
+    /// 得知道在哪设、每次开新终端重设、Windows 上还要分清 PowerShell 与 Git Bash。
+    /// 本命令收下后直接存盘，用户填一次就够。
+    /// </para>
+    /// <para>
+    /// <b>输入必须掩码</b>：pi 的登录框把密钥交给普通输入框，明文显示在屏幕上、
+    /// 留在滚动历史里——那是可参照的教训。见 <see cref="SecretPrompt"/>。
     /// </para>
     /// </remarks>
-    private static (bool Proceed, string? Note) PromptApiKey(string provider, string? keyEnv)
+    private static (bool Proceed, string? Note) PromptApiKey(string provider, string? keyName)
     {
         Output.Line();
 
-        if (keyEnv is null or "")
+        if (keyName is null or "")
         {
             Output.Line($"  {provider} 无需密钥。");
             return (true, null);
         }
 
-        if (Environment.GetEnvironmentVariable(keyEnv) is { Length: > 0 })
+        // **先看凭据——已配好就直接过，不再问一句**。
+        //
+        // 用户重跑 dougong model 通常是想改 provider 或模型，不是改密钥。
+        // 每次都追加一个"要换吗"的提示会让交互步骤随状态变化，
+        // 而那既烦人、也让"输入第 N 步是什么"变得不可预测。
+        // 想换密钥就再单独跑一次（或在下面"没有凭据"分支里输入）。
+        if (CredentialFile.TryRead(keyName) is { Length: > 0 } stored)
         {
-            Output.Line($"  密钥：{keyEnv} 已设置 ✓");
+            Output.Line($"  密钥：已保存（{SecretPrompt.Mask(stored)}）✓  想换请删掉后重跑");
             return (true, null);
         }
 
-        Output.Line($"  密钥：需要环境变量 {keyEnv}，当前未设置。");
-        Output.Line($"  设置方法（密钥只从环境变量读，不写进配置文件）：");
-        Output.Line($"      export {keyEnv}='<你的密钥>'");
 
-        // 也接受"我知道，先跳过"：用户可能想先把配置写好，稍后再设密钥。
+        // 没有存储：直接问用户输入。
+        //
+        // **这是本轮改动的核心**。原来这里打印
+        //     export XXX_API_KEY='<你的密钥>'
+        // 就算完事——那要求用户知道在哪设、每次开新终端重设、
+        // Windows 上还要分清 PowerShell 与 Git Bash。四个参考项目
+        // （pi / pi.net / dsh / hermes）全都提供交互输入，没有一个
+        // 让用户自己去 export。
+        Output.Line($"  密钥：还没有。直接粘贴进来即可，会保存到本机。");
+        Output.Line($"  （存放位置：{CredentialFile.DefaultPath}，仅当前用户可读）");
         Output.Line();
-        Output.Text("  先跳过并继续写配置？[Y/n]: ");
-        var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
-        if (answer is "n" or "no")
-            return (false, null);
 
-        return (true, $"还差密钥：设置 {keyEnv} 后才能对话（export {keyEnv}='<你的密钥>'）。");
+        var entered = SecretPrompt.Ask(keyName);
+        if (entered is { Length: > 0 })
+        {
+            CredentialFile.Write(keyName, entered);
+            Output.Line($"  已保存（{SecretPrompt.Mask(entered)}）。以后不用再输入。");
+            return (true, null);
+        }
+
+        // 用户没输入：允许先写配置、稍后补。
+        Output.Line($"  已跳过。之后补密钥只需重跑：");
+        Output.Line($"      dougong model");
+
+        return (true, $"还差密钥：重跑 dougong model 输入即可，否则对话会失败。");
     }
 
     /// <summary>
@@ -427,12 +453,14 @@ public static class ModelCommand
             var host = TryHost(baseUrl);
 
             // 密钥状态：已设置 / 未设置 / 无需密钥。
-            var keyEnv = configured?.ApiKeyEnvironmentVariable
-                ?? (ProviderCatalog.Presets.TryGetValue(name, out var kp) ? kp.ApiKeyEnvironmentVariable : null);
+            var keyEnv = configured?.ApiKeyName
+                ?? (ProviderCatalog.Presets.TryGetValue(name, out var kp) ? kp.ApiKeyName : null);
             var keyState = keyEnv switch
             {
                 null or "" => "无需密钥",
-                { } n when Environment.GetEnvironmentVariable(n) is { Length: > 0 } => "密钥✓",
+                // 存储优先（与解析顺序一致）。两处都算"已设置"，
+                // 且**不显示来源**：环境变量名是实现细节，对用户没有意义。
+                { } n when CredentialFile.TryRead(n) is { Length: > 0 } => "密钥✓",
                 _ => "密钥未设",
             };
 
@@ -497,11 +525,11 @@ public static class ModelCommand
             var active = string.Equals(
                 provider.Name, catalog.SelectedName, StringComparison.OrdinalIgnoreCase);
             var model = string.IsNullOrWhiteSpace(provider.Model) ? "未配置模型" : provider.Model;
-            var keyState = provider.ApiKeyEnvironmentVariable switch
+            var keyState = provider.ApiKeyName switch
             {
                 null or "" => "无需密钥",
-                { } n when Environment.GetEnvironmentVariable(n) is { Length: > 0 } => $"{n} 已设置",
-                { } n => $"{n} 未设置",
+                { } n when CredentialFile.TryRead(n) is { Length: > 0 } => "密钥已保存",
+                _ => "密钥未设置",
             };
 
             Output.Line($"  {(active ? "▶" : " ")} {provider.Name,-16} {model,-22} {keyState}");

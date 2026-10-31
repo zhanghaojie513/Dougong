@@ -39,7 +39,7 @@ internal static class ProviderPresets
             ["anthropic"] = new(
                 BaseUrl: "https://api.anthropic.com",
                 Protocol: ChatProtocol.AnthropicMessages,
-                ApiKeyEnvironmentVariable: "ANTHROPIC_API_KEY",
+                ApiKeyName: "ANTHROPIC_API_KEY",
                 Models: [
                     new("claude-fable-5", 1000000, 128000, true, null, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low", ["max"] = "max", ["medium"] = "medium", ["xhigh"] = "xhigh" }),
                     new("claude-fable-5-1", 1000000, 128000, true, null, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low", ["max"] = "max", ["medium"] = "medium", ["xhigh"] = "xhigh" }),
@@ -62,7 +62,7 @@ internal static class ProviderPresets
             ["cerebras"] = new(
                 BaseUrl: "https://api.cerebras.ai/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "CEREBRAS_API_KEY",
+                ApiKeyName: "CEREBRAS_API_KEY",
                 Models: [
                     new("gpt-oss-120b", 131072, 40960, true, null, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low", ["medium"] = "medium" }),
                     new("qwen-3.8-27b", 131072, 40960, true, null, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low", ["medium"] = "medium", ["none"] = "none" }),
@@ -70,7 +70,7 @@ internal static class ProviderPresets
             ["deepinfra"] = new(
                 BaseUrl: "https://api.deepinfra.com/v1/openai",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "DEEPINFRA_API_KEY",
+                ApiKeyName: "DEEPINFRA_API_KEY",
                 Models: [
                     new("ByteDance/Seed-2.0-code", 256000, 131072, true, null, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low", ["medium"] = "medium", ["none"] = "none" }),
                     new("ByteDance/Seed-2.0-mini", 256000, 32000, true, null, null),
@@ -150,7 +150,7 @@ internal static class ProviderPresets
             ["deepseek"] = new(
                 BaseUrl: "https://api.deepseek.com",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "DEEPSEEK_API_KEY",
+                ApiKeyName: "DEEPSEEK_API_KEY",
                 Models: [
                     new("deepseek-flash", 1048576, 393216, true, "reasoning_content", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low", ["max"] = "max" }),
                     new("deepseek-v4-flash", 1048576, 393216, true, "reasoning_content", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low", ["max"] = "max" }),
@@ -160,7 +160,7 @@ internal static class ProviderPresets
             ["doubao"] = new(
                 BaseUrl: "https://ark.cn-beijing.volces.com/api/v3",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "ARK_API_KEY",
+                ApiKeyName: "ARK_API_KEY",
                 Models: [
                     new("deepseek-v4-flash-ga-260731", 1000000, 384000, true, "reasoning_content", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low", ["medium"] = "medium", ["minimal"] = "minimal" }),
                     new("deepseek-v4-pro-ga-260813", 1000000, 384000, true, "reasoning_content", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low", ["medium"] = "medium", ["minimal"] = "minimal" }),
@@ -182,7 +182,7 @@ internal static class ProviderPresets
             ["glm"] = new(
                 BaseUrl: "https://api.z.ai/api/paas/v4",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "ZHIPU_API_KEY",
+                ApiKeyName: "ZHIPU_API_KEY",
                 Models: [
                     new("glm-4.5", 131072, 98304, true, "reasoning_content", null),
                     new("glm-4.5-air", 131072, 98304, true, "reasoning_content", null),
@@ -206,7 +206,7 @@ internal static class ProviderPresets
             ["glm-cn"] = new(
                 BaseUrl: "https://open.bigmodel.cn/api/paas/v4",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "ZHIPU_API_KEY",
+                ApiKeyName: "ZHIPU_API_KEY",
                 Models: [
                     new("glm-4.5", 131072, 98304, true, "reasoning_content", null),
                     new("glm-4.5-air", 131072, 98304, true, "reasoning_content", null),
@@ -229,7 +229,7 @@ internal static class ProviderPresets
             ["google"] = new(
                 BaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "GOOGLE_API_KEY",
+                ApiKeyName: "GOOGLE_API_KEY",
                 Models: [
                     new("deep-research-max-preview-04-2026", 131072, 65536, true, null, null),
                     new("deep-research-preview-04-2026", 131072, 65536, true, null, null),
@@ -259,7 +259,7 @@ internal static class ProviderPresets
             ["groq"] = new(
                 BaseUrl: "https://api.groq.com/openai/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "GROQ_API_KEY",
+                ApiKeyName: "GROQ_API_KEY",
                 Models: [
                     new("llama-3.1-8b-instant", 131072, 131072, false, null, null),
                     new("llama-3.3-70b-versatile", 131072, 32768, false, null, null),
@@ -272,7 +272,7 @@ internal static class ProviderPresets
             ["kimi"] = new(
                 BaseUrl: "https://api.moonshot.ai/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "MOONSHOT_API_KEY",
+                ApiKeyName: "MOONSHOT_API_KEY",
                 Models: [
                     new("kimi-k2.6", 262144, 262144, true, "reasoning_content", null),
                     new("kimi-k2.7-code", 262144, 262144, true, "reasoning_content", null),
@@ -284,7 +284,7 @@ internal static class ProviderPresets
             ["kimi-cn"] = new(
                 BaseUrl: "https://api.moonshot.cn/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "MOONSHOT_API_KEY",
+                ApiKeyName: "MOONSHOT_API_KEY",
                 Models: [
                     new("kimi-k2.6", 262144, 262144, true, "reasoning_content", null),
                     new("kimi-k2.7-code", 262144, 262144, true, "reasoning_content", null),
@@ -296,13 +296,13 @@ internal static class ProviderPresets
             ["lmstudio"] = new(
                 BaseUrl: "http://127.0.0.1:1234/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: null,
+                ApiKeyName: null,
                 Models: [
                 ]),
             ["mimo"] = new(
                 BaseUrl: "https://api.xiaomimimo.com/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "XIAOMI_API_KEY",
+                ApiKeyName: "XIAOMI_API_KEY",
                 Models: [
                     new("mimo-v2.5", 1048576, 131072, true, "reasoning_content", null),
                     new("mimo-v2.5-pro", 1048576, 131072, true, "reasoning_content", null),
@@ -314,7 +314,7 @@ internal static class ProviderPresets
             ["minimax"] = new(
                 BaseUrl: "https://api.minimax.io/anthropic/v1",
                 Protocol: ChatProtocol.AnthropicMessages,
-                ApiKeyEnvironmentVariable: "MINIMAX_API_KEY",
+                ApiKeyName: "MINIMAX_API_KEY",
                 Models: [
                     new("MiniMax-M2", 204800, 131072, true, null, null),
                     new("MiniMax-M2.1", 204800, 131072, true, null, null),
@@ -328,7 +328,7 @@ internal static class ProviderPresets
             ["minimax-cn"] = new(
                 BaseUrl: "https://api.minimax.cn/anthropic/v1",
                 Protocol: ChatProtocol.AnthropicMessages,
-                ApiKeyEnvironmentVariable: "MINIMAX_API_KEY",
+                ApiKeyName: "MINIMAX_API_KEY",
                 Models: [
                     new("MiniMax-M2", 204800, 131072, true, null, null),
                     new("MiniMax-M2.1", 204800, 131072, true, null, null),
@@ -342,7 +342,7 @@ internal static class ProviderPresets
             ["mistral"] = new(
                 BaseUrl: "https://api.mistral.ai/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "MISTRAL_API_KEY",
+                ApiKeyName: "MISTRAL_API_KEY",
                 Models: [
                     new("codestral-2508", 256000, 8192, false, null, null),
                     new("codestral-latest", 256000, 4096, false, null, null),
@@ -381,13 +381,13 @@ internal static class ProviderPresets
             ["ollama"] = new(
                 BaseUrl: "http://127.0.0.1:11434/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: null,
+                ApiKeyName: null,
                 Models: [
                 ]),
             ["openai"] = new(
                 BaseUrl: "https://api.openai.com/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "OPENAI_API_KEY",
+                ApiKeyName: "OPENAI_API_KEY",
                 Models: [
                     new("gpt-4", 8192, 8192, false, null, null),
                     new("gpt-4-turbo", 128000, 4096, false, null, null),
@@ -436,7 +436,7 @@ internal static class ProviderPresets
             ["openrouter"] = new(
                 BaseUrl: "https://openrouter.ai/api/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "OPENROUTER_API_KEY",
+                ApiKeyName: "OPENROUTER_API_KEY",
                 Models: [
                     new("aion-labs/aion-2.0", 131072, 32768, true, null, null),
                     new("aion-labs/aion-3.0", 131072, 32768, true, null, null),
@@ -757,7 +757,7 @@ internal static class ProviderPresets
             ["qwen"] = new(
                 BaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "DASHSCOPE_API_KEY",
+                ApiKeyName: "DASHSCOPE_API_KEY",
                 Models: [
                     new("deepseek-v4-flash-0731", 1000000, 384000, true, "reasoning_content", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low", ["max"] = "max" }),
                     new("glm-5.2", 1000000, 131072, true, "reasoning_content", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["max"] = "max" }),
@@ -810,7 +810,7 @@ internal static class ProviderPresets
             ["stepfun"] = new(
                 BaseUrl: "https://api.stepfun.com/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "STEPFUN_API_KEY",
+                ApiKeyName: "STEPFUN_API_KEY",
                 Models: [
                     new("step-3.5-flash", 256000, 256000, true, "reasoning_content", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low" }),
                     new("step-3.5-flash-2603", 256000, 256000, true, "reasoning_content", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["high"] = "high", ["low"] = "low" }),
@@ -820,7 +820,7 @@ internal static class ProviderPresets
             ["xai"] = new(
                 BaseUrl: "https://api.x.ai/v1",
                 Protocol: ChatProtocol.OpenAiChatCompletions,
-                ApiKeyEnvironmentVariable: "XAI_API_KEY",
+                ApiKeyName: "XAI_API_KEY",
                 Models: [
                     new("grok-4.20-0309-non-reasoning", 1000000, 30000, false, null, null),
                     new("grok-4.20-0309-reasoning", 1000000, 30000, true, null, null),
@@ -843,14 +843,14 @@ internal static class ProviderPresets
 /// <summary>一个内置 provider 预设。</summary>
 /// <param name="BaseUrl">默认端点。</param>
 /// <param name="Protocol">默认线协议。</param>
-/// <param name="ApiKeyEnvironmentVariable">
+/// <param name="ApiKeyName">
 /// 密钥变量名。null 表示不鉴权（本地服务）。
 /// </param>
 /// <param name="Models">该端点下的模型能力表；本地服务为空（模型由用户填）。</param>
 public sealed record ProviderPresetData(
     string BaseUrl,
     ChatProtocol Protocol,
-    string? ApiKeyEnvironmentVariable,
+    string? ApiKeyName,
     IReadOnlyList<ModelCapabilities> Models);
 
 /// <summary>一个模型的能力数据。</summary>

@@ -62,6 +62,20 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// </remarks>
     public string? SystemPrompt { get; init; }
 
+    /// <summary>
+    /// 分节组装器；提供时优先于 <see cref="SystemPrompt"/>。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么两者并存</b>：<see cref="SystemPrompt"/> 是宿主给的一整段文本，
+    /// 简单但不适合扩展——加一条规则就得在宿主里改原文。
+    /// 组装器让 SDK 按"有哪些工具"决定给哪些纪律，宿主只需注册分节。
+    /// <para>
+    /// 两者都给时组装器胜出：混用会出现"分节说的和整段说的不一致"，
+    /// 而模型无法判断哪个优先。要么用整段，要么用组装器，不并行。
+    /// </para>
+    /// </remarks>
+    public SystemPromptBuilder? PromptBuilder { get; init; }
+
 
     /// <summary>用裸 dispatcher 构造：内部包成固定访问点（不参与替换）。</summary>
     public LoopAgentRuntime(
@@ -135,6 +149,12 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         // 此时上下文总量只能纯估算，精度明显更差。
         UsageAnchor? usageAnchor = null;
 
+        // 上一轮"系统提示 + 工具集"的指纹。provider 回报的 inputTokens
+        // **包含这两个开销**，所以它们一变，旧锚点就不再是同一份提示的测量。
+        // 不做这个检查的具体后果：MCP 连上后工具从 8 个变 12 个，
+        // 而报告仍用旧锚点，显示一个偏小几百 token 的假数字。
+        int? lastPromptSignature = null;
+
         for (var round = 0; round < request.MaxToolRounds; round++)
         {
             // ── 上下文构成报告 ────────────────────────────────────
@@ -148,12 +168,32 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             //
             // **压缩之后必须把基准作废**：那个数是压缩前测的，
             // 用它加上压缩后的历史会得出一个偏大的假数字。
+            //
+            // 系统提示词在这里解析一次，供本轮的**统计与请求**共用：
+            // 两处各解析一次会让统计的数字与实际发出的内容对不上，
+            // 而那正是用户拿来判断"还能聊多久"的依据。
+            string? systemPrompt;
             {
                 var tools = await _dispatcher
                     .GetToolsAsync(cancellationToken).ConfigureAwait(false);
 
+                // 每轮解析而不是缓存在字段里：分节内容依赖工具集，
+                // 而工具集可能在回合之间变化（MCP 连接、内核替换）。
+                // 缓存它会让提示里写着"有 5 个工具的纪律"，实际只声明了 3 个。
+                systemPrompt = await ResolveSystemPromptAsync(tools, cancellationToken)
+                    .ConfigureAwait(false);
+
                 var breakdown = ContextBreakdown.Measure(
-                    SystemPrompt, tools, baseline);
+                    systemPrompt, tools, baseline);
+
+                // 提示规模变了就作废旧锚点：provider 的 inputTokens 包含
+                // 系统提示与工具 schema，两者任一变化都让它不再是同一份测量的基准。
+                // 用规模而不是内容做指纹：内容每轮可能微调（时间戳等），
+                // 而 token 数变化才是真正影响估算的因素。
+                var promptSignature = breakdown.SystemPromptTokens + breakdown.ToolDefinitionTokens;
+                if (lastPromptSignature is { } previous && previous != promptSignature)
+                    usageAnchor = null;
+                lastPromptSignature = promptSignature;
 
                 // 基准只在"它测量的仍是当前历史"时有效。
                 // 压缩会替换历史，此前记录的用量对不上新历史。
@@ -228,7 +268,10 @@ public sealed class LoopAgentRuntime : IAgentRuntime
 
             // L1 偏好注入：**每轮取一次快照**，整轮使用它。
             // 运行中撤销不影响当前轮——已发送给模型的内容无法撤回。
-            var requestHistory = await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false);
+            // 顺序是「系统提示 → 偏好 → 历史」：见 BuildRequestMessages。
+            var requestHistory = BuildRequestMessages(
+                systemPrompt,
+                await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false));
 
             await using var enumerator = _client
                 .GetStreamingResponseAsync(requestHistory, chatOptions, cancellationToken)
@@ -861,7 +904,53 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         _ => ChatRole.User,
     };
 
+    /// <summary>
+    /// 解析本轮的系统提示词：组装器优先，否则用宿主给的整段文本。
+    /// </summary>
+    /// <remarks>
+    /// <b>不缓存</b>：分节内容取决于当前工具集，而工具集可以在一轮之内变化
+    /// （MCP 连接成功、内核替换 dispatcher）。缓存会让提示描述的纪律
+    /// 与实际声明的工具不一致，而模型无法察觉这种偏差。
+    /// <para>
+    /// <b>组装失败不阻断本轮</b>：分节是扩展点，第三方实现可能抛异常。
+    /// 提示词缺失时模型仍能工作（只是少了纪律），而抛异常会让整轮失败。
+    /// 失败时退回 <see cref="SystemPrompt"/>——那至少是宿主明确给的。
+    /// </para>
+    /// </remarks>
+    private async ValueTask<string?> ResolveSystemPromptAsync(
+        IReadOnlyList<ToolDescriptor> tools, CancellationToken cancellationToken)
+    {
+        if (PromptBuilder is null) return SystemPrompt;
+
+        var context = new SystemPromptContext(
+            MemoryWorkspace,
+            [.. tools.Select(tool => tool.Name)]);
+
+        try
+        {
+            var built = await PromptBuilder.BuildAsync(context, cancellationToken)
+                .ConfigureAwait(false);
+            // 组装出空内容（所有分节都不适用）时退回宿主的整段文本：
+            // 那是它的显式意图，不该被"分节恰好都不适用"抹掉。
+            return string.IsNullOrWhiteSpace(built) ? SystemPrompt : built;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return SystemPrompt;
+        }
+    }
+
     /// <summary>用基线历史构造初始请求消息，末尾追加本轮用户输入。</summary>
+    /// <remarks>
+    /// <b>这里不含系统提示词</b>：系统提示逐轮解析（它依赖工具集），
+    /// 而 <c>history</c> 的下标同时被压缩与尾部偏移使用——把系统消息塞进来
+    /// 会让那两个下标全部错位。系统提示在发包前拼到最前，
+    /// 见 <see cref="BuildRequestMessages"/>。
+    /// </remarks>
     private static List<ChatMessage> BuildHistory(
         IReadOnlyList<AgentMessage> baseline, string userInput)
     {
@@ -869,6 +958,32 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         foreach (var message in baseline) history.Add(ToChatMessage(message));
         history.Add(new ChatMessage(ChatRole.User, userInput));
         return history;
+    }
+
+    /// <summary>
+    /// 把系统提示词与对话历史合成真正要发出的消息列表。
+    /// </summary>
+    /// <remarks>
+    /// <b>顺序固定：系统提示 → 记忆偏好 → 历史。</b>两条系统消息并列是允许的，
+    /// 它们职责不同：前者是本次会话的行为纪律，后者是跨会话的用户偏好。
+    /// 合并成一条会让"撤销偏好"必须重拼纪律，耦合没有必要。
+    /// <para>
+    /// <b>此前系统提示从未发出</b>：它只参与 token 统计，实际请求里没有。
+    /// 于是报告说"系统提示占 1200 token"，模型却一个字都没看到——
+    /// 统计与真实请求对不上，所有行为纪律也就无处落地。
+    /// </para>
+    /// </remarks>
+    private static List<ChatMessage> BuildRequestMessages(
+        string? systemPrompt, List<ChatMessage> history)
+    {
+        if (string.IsNullOrWhiteSpace(systemPrompt)) return history;
+
+        var messages = new List<ChatMessage>(history.Count + 1)
+        {
+            new(ChatRole.System, systemPrompt),
+        };
+        messages.AddRange(history);
+        return messages;
     }
 
     /// <summary>

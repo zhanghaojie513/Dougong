@@ -35,7 +35,12 @@ public static class Program
         "elicitation",
         "elicitation-process",
         "failure",
+        "event-order",
+        "filesystem",
         "fileversion",
+        "host-protocol",
+        "host-protocol-extension",
+        "prompt",
         "kernel-path",
         "kernel-process",
         "kernel-wiring",
@@ -57,12 +62,15 @@ public static class Program
         "replaceability",
         "report",
         "schema",
+        "search",
         "session",
         "shell",
+        "shell-policy",
         "skill-l1",
         "store",
         "surface",
         "telemetry",
+        "timeout",
         "token",
         "tool-plugin-checks",
         "tool-replacement",
@@ -201,6 +209,34 @@ public static class Program
         // 宿主协议：多态序列化往返、判别器登记、未知 method 处理。
         if (args.FirstOrDefault() == "host-protocol")
             return await HostProtocolChecks.RunAsync();
+
+        // 搜索与编辑：重点验"该拒绝时拒绝"。
+        if (args.FirstOrDefault() == "search")
+            return await SearchChecks.RunAsync();
+
+        // 事件顺序：宿主状态机依赖它，编译通过不说明顺序对。
+        if (args.FirstOrDefault() == "event-order")
+            return await EventOrderChecks.RunAsync();
+
+        // 宿主扩展多态类型：注册口、冻结检查、不丢 SDK 登记。
+        if (args.FirstOrDefault() == "host-protocol-extension")
+            return await HostProtocolExtensionChecks.RunAsync();
+
+        // 本机凭据文件：存储优先、不落配置、不泄漏值。
+        if (args.FirstOrDefault() == "credential")
+            return await CredentialChecks.RunAsync();
+
+        // shell 命令策略：拦常见越界，且拒绝消息必须承认这不是沙箱。
+        if (args.FirstOrDefault() == "shell-policy")
+            return await ShellPolicyChecks.RunAsync();
+
+        // 工具超时：挂住的工具会挂住整轮，终态必须与"用户取消"分开。
+        if (args.FirstOrDefault() == "timeout")
+            return await TimeoutChecks.RunAsync();
+
+        // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
+        if (args.FirstOrDefault() == "prompt")
+            return await PromptChecks.RunAsync();
 
         if (args.FirstOrDefault() == "report")
             return await ReportChecks.RunAsync();

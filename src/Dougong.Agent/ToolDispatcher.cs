@@ -71,6 +71,41 @@ public sealed class ToolDispatcher : IToolDispatcher
     // 因此替换之后不会出现"dispatcher 还拿着旧 store"的路径。
     private readonly IStoreAccessor? _storeAccessor;
 
+    /// <summary>
+    /// 超时后等工具真正停下的最长时间。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么需要这个上限</b>：超时后必须等工具停下——一个还在写文件的
+    /// 工具在我们报告"超时"之后继续改磁盘，是最坏的组合。
+    /// 但如果工具完全不响应取消，无限等待就等于"超时机制自己挂住了整轮"，
+    /// 而那正是本项要解决的问题。
+    /// <para>
+    /// 2 秒：响应取消的工具远快于此；不响应的工具也不该让我们等太久。
+    /// 超过就如实报告"无法确认它是否还在运行"，而不是谎称"已中止"
+    /// ——后者意味着副作用没发生，而那是假的。
+    /// </para>
+    /// </remarks>
+    private static readonly TimeSpan GraceCap = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// 没有逐工具声明时使用的执行上限。
+    /// </summary>
+    /// <remarks>
+    /// <b>默认 10 分钟</b>：这是"明显卡死"的保守界线。它不该被当作
+    /// 细粒度控制——真正的区分靠 <see cref="ToolExecutionPlan.Timeout"/>，
+    /// 这里只保证"绝不会无限挂住"。
+    /// <para>
+    /// 用 <see cref="TimeSpan.Zero"/> 表示不限制（有意的逃生口）：
+    /// 某些宿主的工具就是要跑很久（批量迁移、大模型推理），
+    /// 而"被误杀"比"挂住"更难排查——误杀会静默丢结果。
+    /// </para>
+    /// <para>
+    /// 用属性而不是构造参数：加参数会改公开签名（ApiCompat CP0002），
+    /// 而那会让所有现有调用点与插件被迫重新编译。
+    /// </para>
+    /// </remarks>
+    public TimeSpan DefaultToolTimeout { get; init; } = TimeSpan.FromMinutes(10);
+
     private readonly Dictionary<string, Registration> _tools = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Registration> _aliases = new(StringComparer.Ordinal);
     private readonly HashSet<string> _seenInvocations = new(StringComparer.Ordinal);
@@ -274,20 +309,28 @@ public sealed class ToolDispatcher : IToolDispatcher
             var executionStarted = Stopwatch.GetTimestamp();
             try
             {
-                var result = await registration.Tool.ExecuteAsync(invocation, cancellationToken)
+                var outcome = await ExecuteWithTimeoutAsync(
+                    registration.Tool, invocation, execution, cancellationToken)
                     .ConfigureAwait(false);
                 var executionElapsed = Stopwatch.GetElapsedTime(executionStarted);
 
+                // 超时：终态在那一层就定了，这里只补耗时与权限。
+                if (outcome.TimedOut)
+                    return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
+                        ToolCallOutcome.TimedOut, Diagnostic: outcome.Diagnostic,
+                        Permission: permission, ApprovalElapsed: approvalElapsed,
+                        ExecutionElapsed: executionElapsed);
+
                 // 取消是协作式的：工具若忽略取消并完成，就必须如实报成功。
                 // 伪装成"已撤销"会让上层误判副作用没发生。
-                return cancellationToken.IsCancellationRequested
+                return cancellationToken.IsCancellationRequested || outcome.CompletedDespiteCancel
                     ? new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
-                        ToolCallOutcome.Succeeded, result,
+                        ToolCallOutcome.Succeeded, outcome.Result,
                         Diagnostic: "取消已请求，但工具未响应取消并完成了执行；副作用可能已发生。",
                         Permission: permission, ApprovalElapsed: approvalElapsed,
                         ExecutionElapsed: executionElapsed)
                     : new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
-                        ToolCallOutcome.Succeeded, result, Permission: permission,
+                        ToolCallOutcome.Succeeded, outcome.Result, Permission: permission,
                         ApprovalElapsed: approvalElapsed, ExecutionElapsed: executionElapsed);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -306,6 +349,192 @@ public sealed class ToolDispatcher : IToolDispatcher
             }
         }
     }
+
+    /// <summary>执行工具，带策略上限。</summary>
+    /// <remarks>
+    /// <b>为什么必须在 dispatcher 层做，而不是让每个工具自己超时</b>：
+    /// 工具可以来自第三方插件或 MCP 远端，它们的实现不受我们控制。
+    /// 只在自家工具里设超时，等于"我们的工具不会挂住，别人的会"——
+    /// 而挂住的是整轮对话，用户看到的是"AI 卡死了"。
+    /// <para>
+    /// <b>超时后必须等工具真的停下</b>，不能 fire-and-forget：那会让一个
+    /// 还在写文件的工具在我们已经报告"超时"之后继续改磁盘。
+    /// 做法是触发取消后继续 await 原始任务——工具若响应取消就很快返回，
+    /// 若忽略取消则会一直跑到自己结束，那时我们才带着真实结果返回。
+    /// </para>
+    /// <para>
+    /// <b>无限等待的风险是真实的</b>：一个完全不响应取消的工具会让这里永远等下去。
+    /// 但那是有意的选择——报告"超时"却让它在后台继续改文件更糟。
+    /// 这种情况需要宿主在更低层（进程级）解决，见 doc 里的沙箱条目。
+    /// </para>
+    /// </remarks>
+    private async ValueTask<ExecutionOutcome> ExecuteWithTimeoutAsync(
+        IAgentTool tool, ToolInvocation invocation, ToolExecutionPlan plan,
+        CancellationToken cancellationToken)
+    {
+        var limit = plan.Timeout ?? DefaultToolTimeout;
+
+        // 没设上限或上限非正:直接执行。负值/零当"不限"处理而不是"立即超时"——
+        // 后者会让一个笔误把整个工具集变成不可用。
+        if (limit <= TimeSpan.Zero)
+        {
+            var unbounded = await tool.ExecuteAsync(invocation, cancellationToken)
+                .ConfigureAwait(false);
+            return new ExecutionOutcome(unbounded, TimedOut: false, Diagnostic: null);
+        }
+
+        // 串起来：外层取消（用户按 Esc）与超时共用一条取消通道。
+        // 分开两条的话，工具需要同时观察两个 token，而 IAgentTool 的签名只收一个。
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // CancelAfter 用 TimeSpan 而不是 int 毫秒：TimeSpan 表达更清楚，
+        // 也不会因为超过 int 上限而静默溢出成负值（那会变成"永不过期"）。
+        cts.CancelAfter(limit);
+
+        var work = tool.ExecuteAsync(invocation, cts.Token).AsTask();
+
+        // **超时判定不能等工具抛异常**。
+        //
+        // 第一版写的是 `try { await work } catch (OperationCanceledException) { ... }`，
+        // 依赖工具在收到取消时抛 OCE。但那只有"响应取消的工具"才成立——
+        // 一个忽略 token 的工具（比如内部用未传 token 的 Task.Delay）会安然跑完，
+        // 于是 catch 永远不触发，超时形同不存在。实测：20 秒的工具，
+        // 100 毫秒上限，等了整整 20 秒才返回。
+        //
+        // 正确做法是**独立的等待上限**：WaitAsync 到点就抛 TimeoutException，
+        // 与工具是否响应取消无关。
+        Task<AgentToolResult> pending = work;
+        try
+        {
+            var result = await pending.WaitAsync(limit, cancellationToken).ConfigureAwait(false);
+            return new ExecutionOutcome(result, TimedOut: false, Diagnostic: null);
+        }
+        catch (TimeoutException)
+        {
+            // 到这儿是**真的超时**：限额内没完成。
+            // 下面的等待与上面的超时分开：宽限期只用来确认工具停下。
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 外层取消（用户按 Esc）。**但这不等于工具没跑完**：
+            // 一个忽略 token 的工具会继续进行到底，甚至已经成功了。
+            //
+            // 原实现直接 throw，把那种情况报成 `CancelledDuringExecution`，
+            // 意思是"副作用可能没发生"——而它其实成功了。这会误导宿主
+            // 去清理一个已经写好的结果。`failure` 套的
+            // `uncooperative-cancel-still-holds-lock` 抓到了这个错误。
+            //
+            // 所以这里先请求取消，再给一点时间看它是否真的完成：
+            // 完成了就如实报成功（带"未响应取消"的说明）。
+            cts.Cancel();
+            var completed = await TryAwaitStopAsync(pending).ConfigureAwait(false);
+            if (completed is not null)
+            {
+                return new ExecutionOutcome(completed, TimedOut: false,
+                    Diagnostic: "取消已请求，但工具未响应取消并完成了执行；副作用可能已发生。",
+                    CompletedDespiteCancel: true);
+            }
+
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            // **工具因超时取消而抛了 OCE**——这是最常见的正常路径，
+            // 必须归到超时，而不是让它冒到最外层变成 Failed。
+            //
+            // 时序：`cts.CancelAfter(limit)` 到点 → 工具响应取消抛 OCE →
+            // `WaitAsync` 把这个 OCE 传播出来，而它的 `TimeoutException`
+            // 还没发生（两者几乎同时，谁先不确定）。若不在这里接住，
+            // 表现是"超时被报成 Failed: TaskCanceledException"——
+            // `hanging-tool-times-out` 偶发失败就是这个。
+            //
+            // 落到这里说明不是外层取消（上面那个 catch 有守卫），
+            // 所以是 cts 触发的，即超时。
+            return await AfterTimeoutAsync(pending, limit).ConfigureAwait(false);
+        }
+
+        // 超时了：请求工具停下，然后**有限度地**等它真的停。
+        return await AfterTimeoutAsync(pending, limit).ConfigureAwait(false);
+    }
+
+    /// <summary>超时已确定：请求工具停下，再有限度地等它真的停。</summary>
+    /// <remarks>
+    /// 与上面的判定分开成方法，因为两条入口都要走它：
+    /// 一是 <see cref="TimeoutException"/>（等待先到点），
+    /// 二是工具自己抛的 <see cref="OperationCanceledException"/>（取消先到点）。
+    /// 两者都意味着"超时了"，后续处理完全相同。
+    /// </remarks>
+    private async ValueTask<ExecutionOutcome> AfterTimeoutAsync(
+        Task<AgentToolResult> pending, TimeSpan limit)
+    {
+        try
+        {
+            await pending.WaitAsync(GraceCap).ConfigureAwait(false);
+
+            return new ExecutionOutcome(null, TimedOut: true,
+                Diagnostic: $"工具超过 {FormatLimit(limit)} 未返回，已请求中止；"
+                    + "但它在取消后仍然完成了执行，副作用可能已发生。");
+        }
+        catch (TimeoutException)
+        {
+            // 宽限期内也没停：**不谎称「已中止」**，那意味着副作用没发生。
+            // 如实说"无法确认"——宿主据此才能决定要不要人工核对。
+            return new ExecutionOutcome(null, TimedOut: true,
+                Diagnostic: $"工具超过 {FormatLimit(limit)} 未返回；"
+                    + $"已请求中止，但在随后 {FormatLimit(GraceCap)} 内仍未停止。"
+                    + "**无法确认它是否还在运行**，副作用可能仍在发生。");
+        }
+        catch (OperationCanceledException)
+        {
+            return new ExecutionOutcome(null, TimedOut: true,
+                Diagnostic: $"工具超过 {FormatLimit(limit)} 未返回，已中止。"
+                    + "工具已启动过，副作用可能已部分发生。");
+        }
+        catch (Exception ex)
+        {
+            return new ExecutionOutcome(null, TimedOut: true,
+                Diagnostic: $"工具超过 {FormatLimit(limit)} 未返回，中止时抛出 "
+                    + $"{ex.GetType().Name}: {ex.Message}。副作用可能已部分发生。");
+        }
+    }
+
+    /// <summary>
+    /// 请求取消后有限度地等工具停下；若它完成了就返回结果。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么返回结果而不只是"等"</b>：一个忽略取消的工具会继续跑到成功。
+    /// 那时报"被取消"是错的——副作用已经发生，而且结果是好的。
+    /// 宿主据此会去清理一个其实已经完成的操作。
+    /// <para>
+    /// 返回 null 表示"宽限期内没完成或抛了异常"，由调用方按取消处理。
+    /// 不抛异常：调用方已经把终态定为取消，这里的异常不该覆盖那条信息。
+    /// </para>
+    /// </remarks>
+    private static async ValueTask<AgentToolResult?> TryAwaitStopAsync(Task<AgentToolResult> pending)
+    {
+        try
+        {
+            return await pending.WaitAsync(GraceCap).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>把上限格式化成用户能读的文本。</summary>
+    /// <remarks>
+    /// 不用 <c>ToString()</c>：它按当前文化输出，中文环境下可能变成
+    /// "00:02:00" 之外的形态。诊断文本要能跨机器对照，所以固定短语。
+    /// </remarks>
+    private static string FormatLimit(TimeSpan limit) => limit.TotalSeconds >= 1
+        ? $"{limit.TotalSeconds:0.###} 秒"
+        : $"{limit.TotalMilliseconds:0} 毫秒";
+
+    /// <summary>执行结果，附带是否因超时中断。</summary>
+    private readonly record struct ExecutionOutcome(
+        AgentToolResult? Result, bool TimedOut, string? Diagnostic,
+        bool CompletedDespiteCancel = false);
 
     /// <summary>
     /// 执行前复核：重新描述权限与执行计划，重算绑定，比对全部维度。

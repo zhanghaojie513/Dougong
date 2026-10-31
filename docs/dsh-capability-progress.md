@@ -44,10 +44,10 @@
 
 | 能力域 | ✅ | 🟡 | ⬜ | ➖ | 小计 | 完成度 |
 |---|---|---|---|---|---|---|
-| 1. Agent 循环 | 4 | 1 | 3 | 1 | 9 | 56% |
+| 1. Agent 循环 | 5 | 0 | 3 | 1 | 9 | 62% |
 | 2. LLM 与用量 | 4 | 2 | 3 | 0 | 9 | 56% |
 | 3. 会话与持久化 | 2 | 3 | 8 | 1 | 14 | 27% |
-| 4. 工具 | 3 | 4 | 11 | 4 | 22 | 29% |
+| 4. 工具 | 6 | 4 | 8 | 4 | 22 | 44% |
 | 5. 审批与提问 | 2 | 1 | 1 | 0 | 4 | 62% |
 | 6. 沙箱与进程 | 0 | 2 | 3 | 0 | 5 | 20% |
 | 7. 文件系统 | 3 | 0 | 3 | 0 | 6 | 50% |
@@ -55,10 +55,10 @@
 | 9. 任务与调度 | 0 | 1 | 5 | 0 | 6 | 8% |
 | 10. 网络与外部 | 2 | 1 | 2 | 1 | 6 | 50% |
 | 11. 配置与凭据 | 2 | 3 | 1 | 0 | 6 | 58% |
-| **合计** | **22** | **19** | **43** | **7** | **91** | **38%** |
+| **合计** | **26** | **18** | **40** | **7** | **91** | **44%** |
 
 完成度算法：`(✅ + 🟡×0.5) / (✅+🟡+⬜)`，不含 `➖`。
-（`(22 + 9.5) / 84 = 38%`）
+（`(26 + 9) / 84 = 42%`）
 
 **统计口径**：这些数字是从下面第二部分的表格逐行数出来的，
 不是手填的。改了一行状态就要同步改这里——两处对不上说明漏改。
@@ -100,7 +100,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | ✅ | 默认模型选择 | `[自有]` | `dsh-agent-default-model` | `ProviderCatalog`, `default_provider` | |
 | ✅ | 压缩 seam | `[自有]` | `dsh-compaction` | `IContextCompactor` / `ICompactionTask` | 接口自己定；`dsh` 的 seam 在 `ctx.compaction` |
 | ✅ | 上下文压缩实现 | `[自有]` | `dsh-compaction-basic` | `SlidingWindowCompactor` + 摘要 | 选区算法自研；摘要复用同一个 `IChatClient` |
-| 🟡 | 系统提示组装 | `[自有]` | `dsh-system-prompt` | `LoopAgentRuntime.SystemPrompt` | **单值，无分节注册表**；且 CLI 主对话根本没设置它 |
+| ✅ | 系统提示组装 | `[自有]` | `dsh-system-prompt` | `SystemPromptBuilder` + `ISystemPromptSection` | 分节注册表；纪律按实际工具集取舍；2026-10-31 顺带修掉"提示只进统计、从未发出"的缺陷 |
 | ⬜ | 工作区指令加载 | `[—]` | `dsh-agent-instructions` | — | 不读 `AGENTS.md` / `CLAUDE.md` |
 | ⬜ | 部署人格段落 | `[—]` | `dsh-persona` | — | |
 | ⬜ | 时间上下文 | `[—]` | `dsh-time-context` | — | 模型不知道"现在几点" |
@@ -147,12 +147,12 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | ✅ | 计划工具 | `[自有]` | `dsh-tool-todo` | `TodoWriteTool` | |
 | 🟡 | 读文件 | `[自有]` | `dsh-tool-fs` | `ReadFileTool`（已进 SDK） | 走 `IFileSystem` seam，返回 version |
 | 🟡 | 写文件 | `[自有]` | `dsh-tool-fs` | `WriteFileTool`（已进 SDK） | 走 seam；原子写 + 版本守卫 |
-| ⬜ | **glob / grep** | `[—]` | `dsh-tool-fs-search` | — | **P0**。dsh 打包 ripgrep；我们计划用 BCL |
-| ⬜ | **按内容替换编辑** | `[—]` | `dsh-tool-str-replace-editor` | — | **P0**，改一行要重写全文 |
+| ✅ | glob / grep | `[自有]` | `dsh-tool-fs-search` | `GlobTool` / `GrepTool` | 走 `IFileSystem` seam，不打包 ripgrep；限深、跳噪声目录、截断如实报告 |
+| ✅ | 按内容替换编辑 | `[自有]` | `dsh-tool-str-replace-editor` | `EditFileTool` | **要求唯一匹配**，多次出现即拒绝；走版本守卫写 |
 | ✅ | shell 执行 seam | `[自有]` | `dsh-shell` | `IShellExecutor` + `LocalShellExecutor` | 2026-10-31 补齐；换沙箱只换实现，工具不改 |
-| 🟡 | shell | `[自有]` | `dsh-tool-bash` | `ShellTool` | 用 `System.Diagnostics.Process`；**无沙箱**（`cd /` 可绕过）、无持久、无后台 |
+| 🟡 | shell | `[自有]` | `dsh-tool-bash` | `ShellTool` + `ShellCommandPolicy` | 有**命令策略层**（危险命令/凭据读取/`cd` 越界）；**不是沙箱**，有意绕过仍可行；无持久、无后台 |
 | ⬜ | PowerShell | `[—]` | `dsh-tool-pwsh*` | — | |
-| ⬜ | **工具超时** | `[—]` | `dsh-tool-call-timeout-policy` | — | **P0**，工具卡住挂住整轮 |
+| ✅ | 工具超时 | `[自有]` | `dsh-tool-call-timeout-policy` | `ToolExecutionPlan.Timeout` + `ToolDispatcher.DefaultToolTimeout` | 逐工具上限优先；`TimedOut` 与"用户取消"分开；超时算已执行 |
 | 🟡 | 向人类提问 | `[自有]` | `dsh-tool-ask-user` | `AcpElicitationTool` | ACP elicitation 协议；REPL 无等价物 |
 | ⬜ | 技能加载 | `[—]` | `dsh-tool-skill` | — | |
 | ⬜ | 子 agent 委派 | `[—]` | `dsh-tool-subagent*` | — | |
@@ -179,9 +179,9 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 
 | 状态 | 能力 | 实现方式 | dsh | 我们 | 备注 |
 |---|---|---|---|---|---|
-| 🟡 | 路径守卫 | `[自有]` | `dsh-sandbox-policy` | `WorkspacePathGuard` | 纯路径规范化；**`cd /` 能绕过** |
+| 🟡 | 路径守卫 | `[自有]` | `dsh-sandbox-policy` | `WorkspacePathGuard` + `ShellCommandPolicy` | 路径规范化 + `cd` 越界拦截；**故意绕过仍可行**（`find /`、脚本内 cd） |
 | 🟡 | 子进程执行 | `[库]` | `dsh-subprocess` | `ShellTool` | 用 `System.Diagnostics.Process`；无进程组、无升级杀 |
-| ⬜ | **进程沙箱** | `[—]` | `dsh-sandbox*` | — | **P0**。dsh 有 bwrap/landlock/Seatbelt/Windows ACL 四套 |
+| ⬜ | 进程沙箱 | `[—]` | `dsh-sandbox*` | — | 已降为 P1：先做策略层（2026-10-31）。OS 级隔离需 bwrap/landlock/Seatbelt/ACL 四套各自实现与验证环境 |
 | ⬜ | 持久 PTY | `[—]` | `dsh-terminal*` | — | 桌面端要的 PTY |
 | ⬜ | Win32 Job Object | `[—]` | `dsh-win32-process` | — | |
 
@@ -247,12 +247,24 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | 0 | 文件能力归位到 SDK | ✅ | 2026-10-31 |
 | 5 | 原子写 | ✅ | 2026-10-31（随 #0） |
 | 6 | 会话格式版本 | ➖ | 决策：不做（`compat-policy.md` §7.1） |
-| 1 | glob / grep | ⬜ | 下一步 |
-| 2 | 按内容替换编辑 | ⬜ | 下一步 |
-| 3 | shell 沙箱 | ⬜ | 独立一轮 |
-| 4 | 工具超时 | ⬜ | |
+| 1 | glob / grep | ✅ | 2026-10-31 |
+| 2 | 按内容替换编辑 | ✅ | 2026-10-31 |
+| 3 | shell 沙箱（仅策略层） | 🟡 | 2026-10-31；差 OS 级隔离，转 P1 |
+| 4 | 工具超时 | ✅ | 2026-10-31 |
 
-**P0 完成度：2/5（另有 1 项明确不做）**
+**P0 完成度：5/5，但有一处折价**：
+
+- `#3 shell 沙箱` 只做到**策略层**（`ShellCommandPolicy` 的模式匹配）。
+  拦得住常见误操作（`cd /`、`rm -rf /`、`cat .env`），**挡不住有意绕过**
+  （`find / -name`、脚本内 cd）。OS 级隔离需要 bwrap/landlock/Seatbelt/ACL
+  四套各自实现与验证环境，已转 P1，见 `porting-differences.md` D-8。
+  拒绝消息里如实写明"这是策略过滤而非沙箱"，不宣称已沙箱。
+- `#6 会话格式版本` 是明确不做的决策，不是欠账。
+
+**另一个未验项**：P0 这批工具（glob / grep / edit / 超时 / 命令策略）
+全部只经过确定性套件，**没有一次真实 provider 的端到端会话**。
+按本文的判定规则，行为检查已足够（每项都有负控），但"实际好不好用"
+尚未确认。
 
 ---
 
@@ -262,13 +274,25 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 - 下面对应那一行
 - §一 的总览计数
 
-**判定从严**，三个具体规则：
+**判定从严**，四个具体规则：
 
 1. **有类名不算**。类存在但没接进 `SessionComposition` 的装配，算 `⬜`。
    上轮实例：`SystemPrompt` 属性在，但 CLI 从不赋值，那一栏永远是 0。
 2. **接进装配但没验证，算 🟡**。验证指有确定性套件钉住行为，
    不是"我试过一次能跑"。
-3. **`🟡` 必须在"备注"列写清差什么**。写不出差什么，说明没核过，
+3. **验证了但只验"能跑"不算 ✅**。要回答移植的三问
+   （对外暴露出什么 / 改内部实现哪一项会变而编译仍过 / 怎么破坏它检查才红），
+   见 `porting-differences.md` §一"验收怎么问"。
+   **这不是一份题单**：每项能力的可观察面不同，答案不同。
+   2026-10-31 的教训：P0 工具全都"接进装配、编译通过、检查全绿"，
+   按这三问一查仍有四个缺陷，且**分别落在 Agent 循环、工具层、协议层、终端层**——
+   预设一份维度清单不会恰好覆盖它们。
+4. **`🟡` 必须在"备注"列写清差什么**。写不出差什么，说明没核过，
    应该回去核而不是标 `🟡`。
+
+**✅ 必须有证据**。每个 ✅ 都要在 `porting-differences.md` §三 指向一条
+能跑起来的检查，并记录负控怎么做的。`tool-package-checks` 的三条检查
+（`every-claim-has-evidence`、`deviation-records-cite-real-locations`、
+`evidence-suites-exist-and-are-registered`）会拦住没有证据的声称。
 
 **➖ 必须能在 gap 文档里找到理由**。找不到就说明是漏了，不是不做。

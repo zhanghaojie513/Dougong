@@ -129,6 +129,27 @@ public sealed record ToolExecutionPlan(ToolConcurrency Concurrency)
 
     /// <summary>是否声明了资源级键。未声明时按 <see cref="Concurrency"/> 处理。</summary>
     public bool HasResourceKeys => Reads.Count > 0 || Writes.Count > 0;
+
+    /// <summary>
+    /// 本次调用的执行上限；null 表示用 dispatcher 的默认值。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么要逐工具而不是一个全局值</b>：不同工具的正常耗时差两个数量级。
+    /// <c>read_file</c> 正常在毫秒级，<c>shell</c> 跑一次构建可以是几分钟。
+    /// 用一个全局值必然两难：按快的设，shell 会被误杀；按慢的设，
+    /// 卡死的文件读要等几分钟才报错。
+    /// <para>
+    /// <b>声明在 <see cref="ToolExecutionPlan"/> 而不是新接口方法</b>：
+    /// 加接口方法会破坏所有已实现的插件（ApiCompat 报 CP0002），
+    /// 而计划对象本来就是"这次调用打算怎么做"的载体，超时属于同一类信息。
+    /// </para>
+    /// <para>
+    /// <b>它只是上限，不是承诺</b>：工具内部仍可更早超时（如
+    /// <c>ShellTool</c> 的 120 秒）。两层都设时取更早的那个生效——
+    /// 先返回总比外层先杀好。
+    /// </para>
+    /// </remarks>
+    public TimeSpan? Timeout { get; init; }
 }
 
 /// <summary>

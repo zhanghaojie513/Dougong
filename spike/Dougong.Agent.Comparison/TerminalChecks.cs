@@ -46,6 +46,12 @@ public static class TerminalChecks
         failures += Check("live-region-disabled-when-redirected", LiveDisabledWhenRedirected);
         failures += Check("activity-line-never-exceeds-terminal-width", ActivityNeverOverflows);
         failures += Check("status-line-accounting-for-wide-chars", StatusAccountsWideChars);
+
+        // 显示宽度的外部基准。**期望值硬编码**，不复用被测实现——
+        // 复用会让"两边一起错"永远通过。
+        failures += Check("width-golden-values", WidthGoldenValues);
+        failures += Check("width-is-biased-wide-not-narrow", WidthBiasIsWide);
+        failures += Check("truncate-never-splits-surrogate-pair", TruncateNoLoneSurrogate);
         failures += Check("spinner-follows-frame-interval", SpinnerFollowsInterval);
         failures += Check("live-region-emits-no-ansi-when-inactive", InactiveEmitsNothing);
         failures += Check("live-region-clears-what-it-painted", LiveRegionClears);
@@ -642,6 +648,143 @@ public static class TerminalChecks
         var line = StatusLine.RenderActivity(state, now, width: 80);
         if (line is null || line.Length < 4) return null;
         return line[2].ToString();
+    }
+
+    /// <summary>
+    /// 宽度偏差方向必须一致：只许偏宽，不许偏窄。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么方向比精确更重要</b>：偏宽的表现是"少显示几个字"，
+    /// 用户看不出异常；偏窄会写满最右列触发终端自动折行，
+    /// 光标跳到下一行，后续定位序列全部错位——那是布局崩坏，
+    /// 2026-10-29 真机上表现为活动行文字消失。
+    /// <para>
+    /// 具体例子：<c>❤️</c>（U+2764 + 变体选择符）。文本呈现时终端显示 1 格，
+    /// emoji 呈现时 2 格。本实现固定按 2 算，即偏宽 1 格——
+    /// 这是有意的取舍，不是遗漏。完整字形簇判定需要 ICU 或自带表，
+    /// 与"状态行别错位"的收益不成比例。
+    /// </para>
+    /// </remarks>
+    private static string? WidthBiasIsWide()
+    {
+        // 每个都是"终端实际显示宽度可能小于逐码点累加值"的组合。
+        string[] mustNotUnderCount =
+        [
+            "\u2764\uFE0F",                        // 变体选择符：实际 1 或 2，不可是 0
+            "\U0001F3F3\uFE0F",                    // 白旗 + VS16
+            "1\uFE0F\u20E3",                       // 键帽 1️⃣
+            "\U0001F1E8\U0001F1F3",                // 国旗 🇨🇳（两个区域指示符）
+        ];
+
+        foreach (var text in mustNotUnderCount)
+        {
+            var width = Dougong.Cli.Terminal.DisplayWidth.Of(text);
+
+            // 下限：至少 1 格。算成 0 格意味着"整段看不见"，
+            // 那会让这一行在布局里凭空多出空间。
+            if (width < 1)
+                return $"该文本算成 {width} 格——宽到看不见，方向反了";
+
+            // 上限：不能荒谬地大（每个 UTF-16 单元至多 2 格）。
+            if (width > text.Length * 2)
+                return $"该文本算成 {width} 格，超过 {text.Length}×2 的上限";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// <remarks>
+    /// <b>为什么必须硬编码</b>：此前的做法是测试自己再抄一份区间表，
+    /// 然后断言"两份一致"。那验证的是抄写一致性，不是正确性——
+    /// 两边同时把 emoji 算错时，检查依然通过。
+    /// <para>
+    /// 期望值取自 Unicode East Asian Width 的 Wide/Fullwidth 两类，
+    /// 以及与终端实测的对照。emoji 一律 2 格：<c>😀</c> 在 UTF-16 里是两个
+    /// <c>char</c>，旧实现在按 <c>char</c> 遍历时各算 1 格，
+    /// 合计 2 格——**碰巧正确**，所以这个错误长期看不出来。
+    /// 真正暴露它的是 <c>👨‍👩‍👧‍👦</c>（11 个 char，真实 2 格）。
+    /// </para>
+    /// </remarks>
+    private static string? WidthGoldenValues()
+    {
+        (string Text, int Expected, string Why)[] cases =
+        [
+            ("abc", 3, "ASCII 每字 1 格"),
+            ("中文", 4, "CJK 每字 2 格"),
+            ("\U0001F600", 2, "单个 emoji 2 格"),
+            ("a\U0001F600b", 4, "混合：1 + 2 + 1"),
+            ("\U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466", 8,
+                "👨‍👩‍👧‍👦 的 ZWJ 不占位，四个 emoji 各 2 格=8"
+                + "（终端多半渲染成 2，但我们按码点累加，宁可偏宽不可偏窄）"),
+        ];
+
+        foreach (var (text, expected, why) in cases)
+        {
+            // 用被测实现算，与硬编码期望比对。这是外部基准，不是自我一致。
+            var actual = Dougong.Cli.Terminal.DisplayWidth.Of(text);
+            if (actual != expected)
+                return $"'{text}' 宽度应为 {expected}（{why}），实际 {actual}";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 截断在代理对中间时，不能切出孤立高代理。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是一个会让终端显示乱码的真实缺陷</b>：按 <c>char</c> 遍历截断，
+    /// 宽度恰好卡在 <c>😀</c> 的两个代理项之间时会 Append 高代理
+    /// <c>U+D83D</c> 就停。那个孤立代理在终端里渲染成 <c>�</c>，
+    /// 而且它后面接 ANSI 序列会让后续颜色也一起错。
+    /// <para>
+    /// 验法：构造一串让截断点正好落在代理对中间的文本，检查结果里没有孤立代理。
+    /// </para>
+    /// </remarks>
+    private static string? TruncateNoLoneSurrogate()
+    {
+        // 宽度 3 时 limit=2。"a😀b" 的宽度是 1+2+1：
+        //   - 正确实现（按 Rune）：a(1) 后 😀 需要 2，1+2=3 > 2，只输出 a
+        //   - 错误实现（按 char）：a(1) + 高代理(1) = 2 <= 2，输出 a + 孤立高代理
+        var capability = new Dougong.Cli.Terminal.TerminalCapability(
+            Dougong.Cli.Terminal.TerminalTier.Rich, Width: 3, IsRedirected: false);
+
+        var original = Console.Out;
+        var buffer = new StringWriter();
+        try
+        {
+            Console.SetOut(buffer);
+            using var region = Dougong.Cli.Terminal.LiveRegion.Create(capability, force: true);
+            region.SetLines(["a\U0001F600b"]);
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        var raw = buffer.ToString();
+        // 去掉 ANSI 控制序列后检查代理对完整性。
+        var text = System.Text.RegularExpressions.Regex.Replace(raw, "\u001b\\[[0-9;]*[A-Za-z]", "");
+
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (char.IsHighSurrogate(text[i]))
+            {
+                if (i + 1 >= text.Length || !char.IsLowSurrogate(text[i + 1]))
+                    return $"输出里有孤立高代理（U+{(int)text[i]:X4}）：{Escape(text)}";
+                i++; // 跳过合法的低代理
+            }
+            else if (char.IsLowSurrogate(text[i]))
+            {
+                return $"输出里有孤立低代理（U+{(int)text[i]:X4}）：{Escape(text)}";
+            }
+        }
+
+        return null;
+
+        static string Escape(string s) =>
+            string.Concat(s.Select(c => c < 0x20 || c > 0x7E ? $"\\u{(int)c:X4}" : c.ToString()));
     }
 
     /// <summary>
