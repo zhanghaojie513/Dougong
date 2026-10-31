@@ -19,6 +19,134 @@
 
 ---
 
+## [0.1.14-alpha.1] — 2026-10-31
+
+**密钥不再走环境变量：改成"填一次，存本机"。**
+
+### Breaking
+
+- **`ApiKeyEnvironmentVariable` → `ApiKeyName`**（`ChatProviderConfig` /
+  `ProviderCatalog.ProviderPreset` / `ProviderPresetData`）。
+  它现在指向**本机凭据文件的条目名**，不再指向环境变量。
+- **配置文件字段 `key_env` → `key`**。语义同步改成"条目名"。
+  旧配置的 `key_env` 会被当作未知字段报错——**开发阶段刻意不静默忽略**，
+  以免带着一个不生效的字段继续跑。
+
+### Added
+
+- **`CredentialFile`**：本机凭据文件（`~/.dougong/credentials`，POSIX 上 0600）。
+  这是密钥的**唯一来源**。参考的四个项目全部这么做：
+  pi/pi.net 用 `~/.pi/agent/auth.json`、dsh 用 `~/.dsh/.credentials.yaml`、
+  hermes 用 `~/.hermes/.env`——**没有一家用 OS 凭据管理器**，
+  dsh 的 README 自己写着 "an OS-keychain provider is deferred … none is shipped"。
+  可用 `DOUGONG_CREDENTIALS` 覆盖路径（测试隔离用）。
+- **`SecretPrompt`**：掩码输入（`Console.ReadKey(intercept: true)`，逐字符回显 `*`）。
+  非交互环境（管道、CI）自动退回读一行。
+- **`ChatProviderConfig.ApiKey`**：内存内联密钥，供 `DOUGONG_PROVIDER_*`
+  那条"临时试一个端点"的通道用，不参与任何序列化。
+
+### Removed
+
+- **`key` 字段的环境变量回退**。环境变量不是一种存储——它随终端会话消失，
+  会导致两种难查的故障：残留旧值悄悄盖过用户填好的密钥；换了终端就"配过却失效"。
+  密钥只有一处权威来源，问题就只有一个方向。
+  CI 需要注入密钥时走 `DOUGONG_PROVIDER_*`（整套 provider 覆盖），
+  或写 `DOUGONG_CREDENTIALS` 指向的文件。
+
+### Changed
+
+- **`dougong model` 直接收密钥**，不再打印 `export XXX_API_KEY=...`。
+  参考的四个项目全都提供交互输入，没有一个要求用户 export——
+  那要求用户知道在哪设、每次开新终端重设、Windows 上还要分清
+  PowerShell 与 Git Bash。现在填一次即可。
+- 密钥已存在时**不再追问**"要换吗"：重跑 `model` 通常是改 provider 或模型，
+  每次都多一步会让交互步骤随状态变化。
+
+## [0.1.13-alpha.1] — 2026-10-31
+
+**补齐模型目录的载荷。`0.1.12` 里那个事件是残缺的，而且从未被验证过。**
+
+### Fixed
+
+- **`ModelsListedEvent` 缺 `Providers` 与 `CurrentModelId`**。客户端因此拿不到
+  "哪些 provider 可用"，也标不出"现在用的是哪个"。
+  `Providers` 是必需字段（`required`）而不是可空：可空会让"服务端真的没有 provider"
+  与"旧版服务端不知道该字段"混在一起，而客户端无法区分。
+  `CurrentModelId` 保留可空——那里的 null 有确切含义（用户还没选模型）。
+
+  **为什么之前没发现**：这个事件在 SDK 里只登记过判别器，从未被构造或消费。
+  有类型不等于被验证过。现在 `host-protocol` 套新增三项检查钉住载荷完整性，
+  其中一项从**手写的线协议文本**解析——对象往返只能验证序列化配置对称，
+  抓不到"服务端构造时漏填"。
+
+## [0.1.12-alpha.1] — 2026-10-31
+
+**编码 agent 成立：搜索、编辑、超时、命令策略；宿主可扩展协议类型。**
+
+### Added
+
+- **`GlobTool` / `GrepTool`：按文件名与按内容搜索**。建在 `IFileSystem` seam 上，
+  不打包 ripgrep——沙箱或远程实现将来也能用。限深 12 层、默认跳过
+  `node_modules` 等噪声目录、扫描量与匹配数有上限，**超限一律如实报告**
+  （静默停下会让模型以为"没有匹配"）。
+- **`EditFileTool`：按内容替换**。要求 `old_string` 在文件里**唯一出现**，
+  出现多次即拒绝并说明次数——猜一处替换会一次改坏多处，而模型看不出改了什么。
+  走版本守卫写，防"读到之后文件被外部改动而写回时冲掉"。
+- **`ToolExecutionPlan.Timeout` + `ToolDispatcher.DefaultToolTimeout`**：工具执行上限。
+  逐工具声明优先于默认值（`read_file` 毫秒级、`shell` 可能数分钟，一个全局值必然两难）。
+  `TimeSpan.Zero` 表示不限制。
+- **`ToolCallOutcome.TimedOut`**：超时是独立终态。**刻意不合并进
+  `CancelledDuringExecution`**——取消是"用户不想做"，超时是"这次太慢"，
+  宿主对两者该做的事相反。它属于"已执行"：工具启动过，副作用可能已发生。
+  超时后等待工具停下的宽限期是 2 秒；超过就报"无法确认它是否还在运行"，
+  而不是谎称"已中止"（后者意味着副作用没发生，而那是假的）。
+- **`ShellCommandPolicy`**：shell 命令策略层。拦磁盘级破坏、凭据读取、`cd` 越界。
+  **不是沙箱**：拒绝消息明确写明这一点——宣称已沙箱而只是模式匹配，
+  会让用户放松审查，比不做更危险。
+- **`SystemPromptBuilder` + `ISystemPromptSection`**：系统提示分节注册表。
+  纪律按**实际注册的工具集**取舍（没装 `edit_file` 就不说"用 edit_file"）。
+- **`HostProtocolContract.RegisterDerivedType<TBase>` + `RegisteredExtensions`**：
+  宿主可给自己的派生类型登记判别器。`[JsonDerivedType]` 必须挂在基类上，
+  而基类在 SDK 程序集里——没有这个口，宿主只能自建一份 `JsonSerializerOptions`，
+  而那正是"两侧配置不一致"的入口。
+  基类由**泛型参数显式给出**，不靠反射猜：猜错时类型挂到错误的多态根上，
+  序列化不走、反序列化不识别，两端都不报错。
+- **`ToolArguments`**：工具参数读取的统一入口。
+
+### Changed
+
+- **系统提示现在真的会发出去**。此前 `SystemPrompt` 只参与 token 统计，
+  实际请求里一个字都没有——报告说"提示占 1200 token"，模型没收到任何纪律。
+  现在由 `BuildRequestMessages` 拼在消息列表最前。
+- **`ShellTool` 新增带 `workspace` 的重载**，原签名保留。不带工作区的重载
+  不知道根在哪，因此**拒绝任何改变目录的命令**，而不是拿进程当前目录冒充。
+- **工具缺参数时错误消息统一**。此前 `GetProperty("x").GetString()` 缺字段抛
+  `KeyNotFoundException`，消息是英文 `The given key was not present in the dictionary.`，
+  模型读不出缺哪个参数；且 `edit_file` 返回中文失败结果、其它抛异常，
+  同一类问题两种形态。
+- **终端显示宽度按码点算**。此前按 `char` 遍历：`👨‍👩‍👧‍👦` 是 11 个 `char`、
+  算成 11 格（真实 2 格），截断还会切出孤立高代理，终端渲染成 `�`。
+  三份手抄的宽度表合并为 `DisplayWidth`。有意偏宽不偏窄——
+  偏窄会写满最右列触发折行，布局崩坏。
+
+### Fixed
+
+- **`ConversationItem.At` 默认取 `DateTimeOffset.Now`**（协议层）。
+  缺字段时两端各自取自己的"现在"：客户端拿到的是收包时刻，不是产生时刻。
+  跨进程时间戳可能颠倒、界面按时间排序错序，**且没有任何报错**。改为 `required`。
+- **`ShellTool` 走 executor 构造时工作区取错**：用了
+  `Environment.CurrentDirectory`（进程启动目录），不是会话工作区。
+  命令策略用它判 `cd` 越界，取错会让守卫拦错地方。
+
+### Docs
+
+- **新文档 `porting-differences.md`：差异台账**。每条 `✅` 声称必须指向一条
+  能跑的检查**并写清怎么证明它会失败**；每处与 dsh/pi 的有意偏离要写明
+  "哪不一样 / 为什么不跟 / 方向意味着什么 / 什么条件下重新考虑"。
+  三条 CI 检查强制它。
+- 移植的验收标准改为**问三问**而非背题单：这项能力对外暴露出什么 /
+  改一行内部实现哪一项会变而编译仍过 / 怎么破坏它检查才红。
+
 ## [0.1.11-alpha.1] — 2026-10-31
 
 **文件与命令执行的 seam、宿主契约包、上下文占用事件。**

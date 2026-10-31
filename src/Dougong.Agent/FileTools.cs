@@ -66,12 +66,12 @@ public sealed class ReadFileTool(IFileSystem files) : IAgentTool
         };
 
     public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) =>
-        [arguments.GetProperty("path").GetString() ?? ""];
+        [ToolArguments.PathForPermission(arguments)];
 
     public async ValueTask<AgentToolResult> ExecuteAsync(
         ToolInvocation invocation, CancellationToken cancellationToken)
     {
-        var path = invocation.Arguments.GetProperty("path").GetString()!;
+        var path = ToolArguments.RequiredString(invocation.Arguments, "path");
         var content = await _files.ReadTextAsync(path, cancellationToken).ConfigureAwait(false);
 
         // 返回**版本**：模型此后要改这个文件时，可以带上它做守卫。
@@ -122,13 +122,13 @@ public sealed class WriteFileTool(IFileSystem files) : IAgentTool
         };
 
     public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) =>
-        [arguments.GetProperty("path").GetString() ?? ""];
+        [ToolArguments.PathForPermission(arguments)];
 
     public async ValueTask<AgentToolResult> ExecuteAsync(
         ToolInvocation invocation, CancellationToken cancellationToken)
     {
-        var path = invocation.Arguments.GetProperty("path").GetString()!;
-        var content = invocation.Arguments.GetProperty("content").GetString() ?? string.Empty;
+        var path = ToolArguments.RequiredString(invocation.Arguments, "path");
+        var content = ToolArguments.RequiredString(invocation.Arguments, "content");
 
         // 期望版本是可选的。**给了就必须遵守**；没给则不检查，
         // 因为"整文件重写"本身就是一个明确意图（模型说我要这个内容）。

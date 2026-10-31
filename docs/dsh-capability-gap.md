@@ -33,6 +33,49 @@
 
 ---
 
+### 移植的验收标准：可观察行为，不是源码形状
+
+**"编译通过"不是"移植完成"。** 跨语言重写（dsh 是 TypeScript、我们是 C#）最容易掉进的坑，
+是两边都能跑、都"看起来对"，而跑出来的东西不一样。编译器对此一个问题都不会回答。
+
+**所以验收要对每项能力问三个问题**（不是背一张题单）：
+
+1. **它对外暴露出什么？** 事件序列 / 文本输出 / 返回值 / 终端渲染 / 协议报文 / 磁盘文件。
+2. **改一行内部实现，上面哪一项会变而编译仍然通过？** 那就是该钉的地方。
+   答不上来，说明这项能力没有可观察面——要么不重要，要么还没真正接出去。
+3. **怎么破坏它才能让检查变红？** 说不出来，检查就还没被证明在验证任何东西。
+
+第 2 问的答案**随能力不同而不同**，这正是这套方法的价值：它逼你去看
+这项能力真正的行为面，而不是套用一份通用清单。把维度固定成几条，
+等于用别人的能力面套自己的实现——照着勾就能"通过"，题单之外的破坏无人发现。
+
+**问法固定，答案不固定。**
+
+**这套方法已经抓出四个真实缺陷**（2026-10-31，全部已修并配上负控）。
+它们的能力面各不相同，恰好说明为什么不能预设清单：
+
+1. **系统提示从未发出**（Agent 循环）——`SystemPrompt` 只进 token 统计，
+   实际请求里一个字都没有。可观察面是"连接器收到了什么"，而那没人查过。
+2. **缺参数抛英文异常**（工具层）——`KeyNotFoundException` + BCL 的
+   `The given key was not present in the dictionary.`。可观察面是"模型读到的错误文本"。
+3. **`ConversationItem.At` 默认取 `Now`**（协议层）——缺字段时两端各取自己的"现在"，
+   跨进程时间戳可能颠倒且**没有任何报错**。可观察面是"反序列化后的字段值"。
+4. **emoji 宽度按 `char` 算**（终端层）——`👨‍👩‍👧‍👦` 是 11 个 `char`，算成 11 格（真实 2 格）；
+   截断还会切出孤立高代理。可观察面是"终端上占几格、在哪断行"。
+
+**为什么这四个长期没被发现**：它们都不导致编译错误、不导致崩溃、不导致检查失败。
+单看任何一侧都"能跑"。只有把可观察输出拉出来对比才会暴露。
+而且**四个分布在四个不同的层**——一份预设的维度清单不会恰好覆盖它们。
+
+配套的差异管理机制在 `docs/porting-differences.md`：每条 ✅ 声称都必须在该文件里
+指向一条能跑的检查**并写清怎么证明它会失败**；每处与 dsh/pi 的有意偏离都要写明
+"哪不一样 / 为什么不跟 / 方向意味着什么 / 什么条件下重考虑"。
+
+这三件事由 `tool-package-checks` 的三条检查强制：证据列指向具体检查、
+负控列不能空、引用的源码与套件必须真实存在。
+
+---
+
 ## 二、Agent 循环与运行
 
 | dsh | 能力 | 我们 | 差距 |
@@ -42,7 +85,7 @@
 | `dsh-agent-default-model` | 入口共用的默认模型选择 | `ProviderCatalog` + `default_provider` | **已有** |
 | `dsh-agent-instructions` | AGENTS.md / CLAUDE.md 工作区指令加载 | **无** | **缺**：只认配置，不读工作区约定文件 |
 | `dsh-agent-tool-presentation` | 工具以 PTC 或原生调用的形态呈现 | **无** | 不必有（我们没有 PTC） |
-| `dsh-system-prompt` | 系统提示词组装注册表 | `LoopAgentRuntime.SystemPrompt`（单值） | **缺**：没有分节注册表 |
+| `dsh-system-prompt` | 系统提示词组装注册表 | `SystemPromptBuilder` + `ISystemPromptSection` | 分节注册表已具备（工作区、文件工具纪律）；纪律按实际工具集取舍 |
 | `dsh-persona` | 部署级人格段落 | **无** | **缺** |
 | `dsh-time-context` | 每步注入当前时间与耗时 | **无** | **缺**：模型不知道"现在几点" |
 | `dsh-tmux-context` | 注入 tmux 面板位置 | **无** | 不必有 |
@@ -113,7 +156,7 @@
 | `dsh-tool-workflow` | 工作流脚本 | **无** | **缺**（但不是我们的目标） |
 | `dsh-tool-cordis` | 插件运行时探查 | **无** | 不必有 |
 | `dsh-tool-ralph` | Ralph 循环 | **无** | 不必有 |
-| `dsh-tool-call-timeout-policy` | 逐工具超时 | **无** | **缺**：工具卡住会挂住整轮 |
+| `dsh-tool-call-timeout-policy` | 逐工具超时 | `ToolExecutionPlan.Timeout` + `ToolDispatcher.DefaultToolTimeout` | 已有：逐工具上限优先；`TimedOut` 与"用户取消"分开 |
 | `dsh-repeat-tool-reminder` | 重复调用提醒 | **无** | **缺** |
 
 **工具面缺口最大，也是桌面端最直接感受到的**：只有 read/write/shell/todo 四个，
@@ -157,9 +200,9 @@
 
 | dsh | 能力 | 我们 | 差距 |
 |---|---|---|---|
-| `dsh-sandbox` | 进程沙箱 seam | **无** | **缺** |
-| `dsh-sandbox-local` | bwrap / landlock / Seatbelt / Windows ACL | **无** | **缺** |
-| `dsh-sandbox-policy` | 逐调用沙箱策略 | `WorkspacePathGuard`（仅路径） | **部分**：只管路径，不管命令 |
+| `dsh-sandbox` | 进程沙箱 seam | `IShellExecutor`（可换实现）+ `ShellCommandPolicy`（策略） | **部分**：seam 就位，缺 OS 级实现 |
+| `dsh-sandbox-local` | bwrap / landlock / Seatbelt / Windows ACL | **无** | **缺**：转 P1，见 `porting-differences.md` D-8 |
+| `dsh-sandbox-policy` | 逐调用沙箱策略 | `WorkspacePathGuard` + `ShellCommandPolicy` | **部分**：管路径与常见危险命令；不挡有意绕过 |
 | `dsh-bash-sandbox` / `pwsh-sandbox` | 沙箱内执行 | **无** | **缺** |
 | `dsh-subprocess` | 进程组、有界输出、升级杀 | `ShellTool`（简单版） | **部分** |
 | `dsh-win32-process` | Win32 Job Object | **无** | **缺** |
@@ -290,6 +333,42 @@
 以及一种变更算法的实现。而"用户能看工作区哪些部分"是**权限策略**，
 每个宿主答案不同——共享的应当是路径边界判断的**函数**，不是协议消息。
 
+#### 2026-10-31 补充：宿主不能被扩展——已修
+
+桌面端实测报出一个真缺口：
+
+```
+Runtime type 'DougongDesktop.Ipc.ListDirectoryCommand'
+is not supported by polymorphic type 'Dougong.HostProtocol.ClientCommand'
+```
+
+根因是 `[JsonDerivedType]` 必须挂在基类上，而基类在本程序集里——
+宿主想加 `fs/list` 这类消息时改不了。它只有两条路：放弃，或自建一份
+`JsonSerializerOptions`——而后者正是本文件反复警告的裂缝。
+
+**修法是加注册口，不是开放 resolver**：
+
+```csharp
+HostProtocolContract.RegisterDerivedType<ClientCommand>(
+    new JsonDerivedType(typeof(ListDirectoryCommand), "fs/list"));
+```
+
+三个设计决定，每个都有实测依据：
+
+| 决定 | 理由 |
+|---|---|
+| 用泛型参数显式给基类 | `params JsonDerivedType[]` 不带基类信息，SDK 只能反射猜 `BaseType`。猜错是**静默的**：类型挂到错误的多态根上，序列化不走、反序列化不识别，两端都不报错 |
+| `Json` 内部装好 resolver，宿主不碰 | `JsonSerializerOptions` 首次使用后**冻结**，之后改 `TypeInfoResolver` 抛 `InvalidOperationException`。让它成为初始值就永远不会遇到时机问题——否则接口会"看起来支持，实际取决于调用时机" |
+| 冻结后抛异常而非静默忽略 | 静默忽略正是桌面端遇到的事故形态：定义了配置忘用它，编译过、检查过、消息发不出去，dump 里看不出来 |
+
+**`RegisteredExtensions` 也让宿主能自检**："我注册的类型真的在里面"，
+而不是靠现象反推。这类"定义了但没用"的故障，只能靠自检发现。
+
+**边界**：扩展口是逃生舱，不是常规通道。某个扩展类型若变得通用
+（两个以上宿主都需要），应当收进本程序集的契约，而不是各宿主注册一遍。
+
+验收在 `host-protocol-extension` 套（6 项，含两条负控）。
+
 
 
 | dsh | 能力 | 我们 | 差距 |
@@ -310,10 +389,10 @@
 | # | 缺什么 | 影响 | 对应 dsh |
 |---|---|---|---|
 | ~~0~~ | ~~**文件工具不在 SDK 里**~~ | ~~桌面端必须自己重写~~ | `dsh-fs` + `dsh-tool-fs` — **已完成 2026-10-31** |
-| 1 | **文件搜索（glob / grep）** | 模型不能查代码，做不了编码 agent | `dsh-tool-fs-search` |
-| 2 | **文件编辑（按内容替换）** | 只能整文件重写，改一行要重写全文 | `dsh-tool-fs` / `dsh-tool-str-replace-editor` |
-| 3 | **shell 沙箱** | 模型可用 `cd /` 绕过工作区限制 | `dsh-sandbox*` |
-| 4 | **工具超时** | 工具卡住会挂住整轮，无恢复 | `dsh-tool-call-timeout-policy` |
+| ~~1~~ | ~~**文件搜索（glob / grep）**~~ | ~~模型不能查代码，做不了编码 agent~~ | `dsh-tool-fs-search` — **已完成 2026-10-31** |
+| ~~2~~ | ~~**文件编辑（按内容替换）**~~ | ~~只能整文件重写，改一行要重写全文~~ | `dsh-tool-str-replace-editor` — **已完成 2026-10-31** |
+| ~~3~~ | ~~**shell 沙箱**~~ | ~~模型可用 `cd /` 绕过工作区限制~~ | `dsh-sandbox*` — **策略层已完成 2026-10-31**；OS 级隔离转 P1（见台账 D-8） |
+| ~~4~~ | ~~**工具超时**~~ | ~~工具卡住会挂住整轮，无恢复~~ | `dsh-tool-call-timeout-policy` — **已完成 2026-10-31** |
 | ~~5~~ | ~~**原子写**~~ | ~~写一半崩溃得到半个文件~~ | `dsh-atomic-write` — **已完成 2026-10-31** |
 | ~~6~~ | ~~会话格式版本~~ | ~~格式一变革旧会话打不开~~ | `dsh-session-format*` — **决策不做**，见 `compat-policy.md` §7.1（0.x 明确不承诺会话兼容） |
 
@@ -502,6 +581,13 @@
 P1 里**系统提示分节注册**（`dsh-system-prompt`）值得提前到阶段 2 之后做，
 因为阶段 2 加的编辑/搜索工具会往提示里加内容，现在 `SystemPrompt` 是个单值，
 没法分节。**先有注册表再往里加，比加完再拆便宜。**
+
+> **已完成 2026-10-31**：`SystemPromptBuilder` + `ISystemPromptSection` 落到 SDK，
+> 纪律分节按实际注册的工具集取舍（没装 `edit_file` 就不说"用 edit_file"）。
+> 顺带发现并修掉一个更根本的缺陷：`SystemPrompt` 此前**只参与 token 统计、
+> 从未进入请求**——统计说"提示占 1200 token"，模型一个字没收到。
+> 现在由 `BuildRequestMessages` 拼在最前，且 `prompt-is-actually-sent` 用
+> 抓连接器实际输入的方式钉住它（负控已验证该检查会失败）。
 
 其余 P1/P2 项按实际需要触发，不预先排期——`goal.md` P4 反对
 "宣称未验证的能力"，同理也反对"预先作好却没消费者的架子"。
