@@ -120,7 +120,7 @@ public sealed class SessionComposition
     }
 
     /// <summary>
-    /// 按 <c>DOUGONG_MEMORY</c> 决定记忆目录。
+    /// 按偏好决定记忆目录（<c>[preferences] memory</c> 与 <c>memory_dir</c>）。
     /// </summary>
     /// <remarks>
     /// 默认**关闭**。这不是保守，是数据流决定的：启用记忆意味着
@@ -132,15 +132,39 @@ public sealed class SessionComposition
     /// </para>
     /// </remarks>
     /// <param name="sessionDirectory">会话目录，用于推出默认记忆目录。</param>
-    public static string? MemoryDirectoryFromEnvironment(string sessionDirectory)
+    /// <summary>
+    /// 记忆目录；未启用记忆时返回 null。
+    /// </summary>
+    /// <remarks>
+    /// <b>默认位置只有一处来源</b>：<see cref="DougongHome.MemoryDirectory"/>。
+    /// <para>
+    /// 此前默认位置是从调用方传进来的 <c>sessionDirectory</c> 用
+    /// <c>Path.Combine(dir, "..", "memory")</c> 推出来的。而两个入口传的东西不同：
+    /// REPL 传 <c>&lt;home&gt;/sessions</c>（推出 <c>&lt;home&gt;/memory</c>），
+    /// ACP 传 <c>&lt;workspace&gt;/.dougong</c>（推出 <c>&lt;workspace&gt;/memory</c>）。
+    /// 同一个功能落在两个位置，而两边都不报错——用户会看到"记忆时有时无"。
+    /// </para>
+    /// <para>
+    /// 现在默认值只由 home 决定，参数不再参与路径推导。保留它是为了
+    /// **不破坏已有调用点**（ACP 那边还要用它定位会话存储），
+    /// 但记忆位置与它无关了。
+    /// </para>
+    /// </remarks>
+    /// <param name="sessionDirectory">
+    /// 会话目录。**不再用于推导记忆位置**——保留参数只为调用方兼容。
+    /// </param>
+    public static string? ResolveMemoryDirectory(string sessionDirectory)
     {
-        var value = Environment.GetEnvironmentVariable("DOUGONG_MEMORY");
-        return value switch
-        {
-            null or "" or "0" or "false" => null,
-            "1" or "true" => Path.Combine(sessionDirectory, "..", "memory"),
-            _ => value,
-        };
+        _ = sessionDirectory;
+
+        // 布尔来自冻结的偏好（环境变量可临时覆盖），路径只来自配置或 home。
+        var switches = SecuritySwitches.Current;
+        if (!switches.Memory) return null;
+
+        // 配了 memory_dir 就用它（外置盘、同步目录）；否则用 home 下的默认位置。
+        return !string.IsNullOrWhiteSpace(switches.MemoryDirectory)
+            ? switches.MemoryDirectory
+            : DougongHome.MemoryDirectory;
     }
 
     /// <summary>从环境变量读取共用配置，构造装配器（不启用记忆）。</summary>
@@ -209,7 +233,10 @@ public sealed class SessionComposition
         IMemoryInjector? memory, MemoryStore? memoryStore,
         int? configuredContextWindow = null, int? configuredOutputReserve = null)
     {
-        var shellEnabled = Environment.GetEnvironmentVariable("DOUGONG_SHELL") is "1" or "true";
+        // 走冻结快照，不直接读环境变量：
+        // 安全开关必须在进程启动时定下来，否则模型改了配置文件就能影响
+        // 下一次读取（自举漏洞）。见 SecuritySwitches 的类型注释。
+        var shellEnabled = SecuritySwitches.Current.Shell;
 
         // 取值优先级：调用方传入（来自 provider 配置）> 环境变量 > 默认。
         //
@@ -613,7 +640,7 @@ public static class AcpComposition
 
         var composition = await SessionComposition.CreateAsync(
             context.SessionId, context.Workspace, client, approver,
-            SessionComposition.MemoryDirectoryFromEnvironment(
+            SessionComposition.ResolveMemoryDirectory(
                 storePath is null
                     ? Path.Combine(context.Workspace, ".dougong")
                     : (Path.GetDirectoryName(Path.GetFullPath(storePath)) ?? context.Workspace)),

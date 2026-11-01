@@ -51,17 +51,7 @@ public static class CredentialFile
     /// 凭据文件——那是既污染环境又可能泄漏的一类事故。
     /// </para>
     /// </remarks>
-    public static string DefaultPath
-    {
-        get
-        {
-            var overridden = Environment.GetEnvironmentVariable("DOUGONG_CREDENTIALS");
-            if (!string.IsNullOrWhiteSpace(overridden)) return overridden;
-
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return Path.Combine(home, ".dougong", FileName);
-        }
-    }
+    public static string DefaultPath => DougongHome.CredentialPath;
 
     /// <summary>
     /// 读一个变量的值；不存在返回 null。

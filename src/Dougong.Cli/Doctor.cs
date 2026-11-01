@@ -145,6 +145,23 @@ public static class Doctor
         return new(Level.Pass, "provider 配置", detail);
     }
 
+    /// <summary>
+    /// 工作区检查：目录存在即可通过；不可写只是警告。
+    /// </summary>
+    /// <remarks>
+    /// <b>不可写不该判为失败</b>。实测过：在 <c>C:\WINDOWS\system32</c> 下启动，
+    /// 程序完全正常——能对话、能读文件、状态全部写到 <c>~/.dougong</c>。
+    /// 只有写文件工具会因路径守卫拒绝，那是**功能受限**，不是"无法正常启动"。
+    /// <para>
+    /// 参考项目 hermes 更彻底：它**完全不检查**启动目录的可写性。
+    /// 原因也一样——状态写在 <c>HERMES_HOME</c>，启动目录不可写不构成障碍。
+    /// 全部源码里没有一处 <c>os.access(cwd, W_OK)</c>。
+    /// </para>
+    /// <para>
+    /// 判为失败的实际后果是：用户明明能用，doctor 却说"无法正常启动"，
+    /// 于是他开始怀疑一个完全正常的配置。那比不检查更糟。
+    /// </para>
+    /// </remarks>
     private static CheckResult CheckWorkspace()
     {
         var workspace = Environment.GetEnvironmentVariable("DOUGONG_WORKSPACE")
@@ -166,18 +183,52 @@ public static class Doctor
         }
         catch (Exception ex)
         {
-            return new(Level.Fail, "工作区",
-                $"不可写：{workspace}（{ex.GetType().Name}）",
-                "写文件工具需要工作区可写。检查目录权限，或把 DOUGONG_WORKSPACE 指向可写目录。");
+            // 警告而不是失败：能启动、能对话，只是写文件工具用不了。
+            return new(Level.Warn, "工作区",
+                $"只读：{workspace}（{ex.GetType().Name}）——可以对话，但写文件会被拒",
+                BuildWorkspaceHint(workspace));
         }
+    }
+
+    /// <summary>
+    /// 工作区不可写时给一句能直接照做的话。
+    /// </summary>
+    /// <remarks>
+    /// <b>先说"还能做什么"，再说"要改什么"</b>：用户此时确实能对话，
+    /// 一上来只讲限制会让他以为程序坏了。
+    /// <para>
+    /// <b>在系统目录下启动的最常见原因是管理员 PowerShell</b>：
+    /// 它的默认目录就是 <c>C:\WINDOWS\system32</c>，用户往往没注意到。
+    /// 指出这一点比让他去查目录权限有用得多。
+    /// </para>
+    /// </remarks>
+    private static string BuildWorkspaceHint(string workspace)
+    {
+        var normalized = workspace.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        var isSystemDirectory =
+            normalized.Contains(@"\Windows\system32", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals(@"C:\Windows", StringComparison.OrdinalIgnoreCase)
+            || normalized == "/" || normalized == "/usr" || normalized == "/etc";
+
+        const string canStill =
+            "对话、读文件、会话记录都正常（它们不在这个目录里）。";
+
+        if (isSystemDirectory)
+        {
+            return canStill
+                + $"\n    这里看起来是系统目录——用管理员身份开 PowerShell 时默认就在 system32。"
+                + "\n    要让它能改文件：先 cd 到你的项目目录，例如 cd C:\\work\\myProject\\dougong";
+        }
+
+        return canStill
+            + "\n    要让它能改文件：先 cd 到你的项目目录，或设 DOUGONG_WORKSPACE=<可写目录>";
     }
 
     private static CheckResult CheckSessionDirectory()
     {
-        var sessionDir = Environment.GetEnvironmentVariable("DOUGONG_SESSION_DIR")
-            ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".dougong", "sessions");
+        var sessionDir = Dougong.Ai.DougongHome.SessionsDirectory;
 
         try
         {
@@ -192,7 +243,7 @@ public static class Doctor
             return new(Level.Fail, "会话目录",
                 $"无法创建或写入：{sessionDir}（{ex.GetType().Name}）",
                 "会话日志是提交屏障的落点，不可写会导致任何操作都无法继续。"
-                + "检查权限，或用 DOUGONG_SESSION_DIR 指定另一个目录。");
+                + "检查权限，或设 DOUGONG_HOME 指向另一个位置。");
         }
     }
 
@@ -207,11 +258,8 @@ public static class Doctor
         }
 
         // 启用了记忆，就要能解析出目录——否则 CLI 会在启动时才失败。
-        var dir = SessionComposition.MemoryDirectoryFromEnvironment(
-            Environment.GetEnvironmentVariable("DOUGONG_SESSION_DIR")
-                ?? Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    ".dougong", "sessions"));
+        var dir = SessionComposition.ResolveMemoryDirectory(
+            Dougong.Ai.DougongHome.SessionsDirectory);
 
         if (string.IsNullOrWhiteSpace(dir))
         {
@@ -253,6 +301,15 @@ public static class Doctor
     {
         const string name = "上下文压缩";
 
+        // **先看配置文件，再看环境变量**——与启动路径一致。
+        //
+        // 只读环境变量会得出"未启用"，而启动时读的是配置文件（显示 1048576）。
+        // 同一个配置在两处报出不同结论，用户只能怀疑其中一个是错的。
+        // 这与 provider 连通性那条是同一类缺陷：自检自建了一套读取逻辑。
+        var fromConfig = ChatClientFactory.TryResolve(null, out var configured, out _) is null
+            ? configured?.Selected.ContextWindowTokens ?? 0
+            : 0;
+
         var raw = Environment.GetEnvironmentVariable("DOUGONG_CONTEXT_WINDOW");
 
         // 设了但不是正整数：必须报出来，不能当成"未配置"。
@@ -265,7 +322,7 @@ public static class Doctor
                 "填模型的实际上下文窗口，例如 1000000；不想压缩就删掉这个变量。");
         }
 
-        var window = int.TryParse(raw, out var value) ? value : 0;
+        var window = int.TryParse(raw, out var value) && value > 0 ? value : fromConfig;
 
         // 比例配置无论窗口开没开都要校验：写错了就该报，而不是等开了窗口才炸。
         if (!SessionComposition.TryReadCompactionRatios(
@@ -292,8 +349,11 @@ public static class Doctor
 
         // 策略必须报出来：默认值不是"没有配置"，而是一个具体选择
         // （触发 75% / 保留 16%）。不说就等于让用户以为自己没被策略支配。
+        //
+        // 去掉 Detail 末尾的句号再接分隔号：它自带 "。"，直接拼会得到 "。；"。
+        var detail = verdict.Detail.TrimEnd('。');
         return new(Level.Pass, name,
-            $"{verdict.Detail}；策略 触发 {PercentText.Format(triggerRatio)} / 保留 {PercentText.Format(retainRatio)}");
+            $"{detail}；策略 触发 {PercentText.Format(triggerRatio)} / 保留 {PercentText.Format(retainRatio)}");
     }
 
     /// <summary>
@@ -306,12 +366,24 @@ public static class Doctor
     /// </remarks>
     private static async Task<CheckResult> CheckProviderReachableAsync(CancellationToken cancellationToken)
     {
-        var config = ChatClientFactory.FromEnvironment();
-        var key = Environment.GetEnvironmentVariable("DOUGONG_PROVIDER_KEY");
-
-        if (config is null || string.IsNullOrWhiteSpace(key))
+        // **必须走与启动完全相同的解析路径**（TryResolve → 配置文件 + 环境变量覆盖）。
+        //
+        // 这里此前只读 `DOUGONG_PROVIDER_*` 环境变量，于是用配置文件配好的用户
+        // 永远看到"跳过（配置不完整）"——而实际能正常对话。
+        // 那种"自检说没配、实际能用"的报错比不检查更糟：它教用户怀疑一个正常的配置。
+        var resolveError = ChatClientFactory.TryResolve(null, out var catalog, out _);
+        if (resolveError is not null || catalog is null)
         {
-            return new(Level.Warn, "provider 连通性", "跳过（配置不完整）");
+            return new(Level.Warn, "provider 连通性", "跳过（没有可用的 provider 配置）");
+        }
+
+        var config = catalog.Selected;
+        var key = ChatClientFactory.ResolveApiKey(config);
+
+        if (!string.IsNullOrWhiteSpace(config.ApiKeyName) && string.IsNullOrWhiteSpace(key))
+        {
+            return new(Level.Warn, "provider 连通性", "跳过（还没有密钥）",
+                "重跑 dougong model 输入密钥。");
         }
 
         // 网络检查必须有超时：没有超时的"连通性检查"会在断网时挂住，

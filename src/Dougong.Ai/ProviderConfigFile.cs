@@ -37,18 +37,7 @@ public static class ProviderConfigFile
     /// 它也让"一个项目一套 provider"成为可能：把路径指到工作区内的文件即可。
     /// </para>
     /// </remarks>
-    public static string DefaultPath
-    {
-        get
-        {
-            var explicitPath = Environment.GetEnvironmentVariable("DOUGONG_PROVIDER_CONFIG");
-            if (!string.IsNullOrWhiteSpace(explicitPath)) return explicitPath;
-
-            return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".dougong", "config.toml");
-        }
-    }
+    public static string DefaultPath => DougongHome.ConfigPath;
 
     /// <summary>provider 段允许出现的键。</summary>
     private static readonly string[] AllowedProviderKeys =
@@ -120,12 +109,15 @@ public static class ProviderConfigFile
             return $"配置解析失败（{ex.GetType().Name}）：{ex.Message}";
         }
 
-        // 顶层只有 default_provider 与 providers 两个键。未知键必须报，
-        // 否则用户写错字段名会以为生效了——静默忽略最难查。
+        // 顶层只允许这几类键。未知键必须报，否则用户写错字段名会以为生效了
+        // ——静默忽略最难查。
+        //
+        // `preferences` 由 UserPreferencesFile 读，但这里也要放行：
+        // 两处共用同一个文件，白名单不放行会让"存了偏好之后 provider 解析失败"。
         foreach (var key in root.Keys)
         {
-            if (key is not ("default_provider" or "providers"))
-                return $"配置里有未知的顶层键 '{key}'；只支持 default_provider 与 providers。";
+            if (key is not ("default_provider" or "providers" or "preferences"))
+                return $"配置里有未知的顶层键 '{key}'；只支持 default_provider、providers 与 preferences。";
         }
 
         if (!root.TryGetValue("providers", out var providersValue)

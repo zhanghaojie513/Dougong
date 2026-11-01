@@ -20,7 +20,7 @@ namespace Dougong.Cli;
 /// <item><c>DOUGONG_PROVIDER_PROTOCOL</c> 可选：<c>openai</c>（默认）/ <c>anthropic</c> / <c>responses</c></item>
 /// <item><c>DOUGONG_ANTHROPIC_PATH</c> 可选：Anthropic 兼容层路径，默认 <c>/v1/messages</c></item>
 /// <item><c>DOUGONG_WORKSPACE</c> 可选，默认当前目录</item>
-/// <item><c>DOUGONG_SESSION_DIR</c> 可选，默认 ~/.dougong/sessions</item>
+/// <item><c>DOUGONG_HOME</c> 可选：用户数据根目录，默认 ~/.dougong</item>
 /// <item><c>DOUGONG_SHELL</c> 可选：设为 <c>1</c> 时启用 <c>shell</c> 工具（默认关闭）</item>
 /// <item><c>DOUGONG_CONTEXT_WINDOW</c> 可选：模型上下文窗口大小；设置后启用历史压缩（默认关闭）</item>
 /// <item><c>DOUGONG_MCP_SERVERS</c> 可选：MCP server 列表（默认不连）。三种形态：
@@ -174,10 +174,9 @@ public static class Program
         }
 
         var workspace = Environment.GetEnvironmentVariable("DOUGONG_WORKSPACE") ?? Directory.GetCurrentDirectory();
-        var sessionDir = Environment.GetEnvironmentVariable("DOUGONG_SESSION_DIR")
-            ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".dougong", "sessions");
+        // 会话目录由统一 home 派生：DOUGONG_SESSION_DIR 已删，
+        // 想换位置就设 DOUGONG_HOME（整根搬走）。
+        var sessionDir = Dougong.Ai.DougongHome.SessionsDirectory;
 
         // --list / --resume / --branch 都是"先决定用哪个会话，再开 REPL"。
         if (args.Contains("--list"))
@@ -257,7 +256,7 @@ public static class Program
             history = forked?.HistoryForResume ?? [];
         }
 
-        var shellEnabled = Environment.GetEnvironmentVariable("DOUGONG_SHELL") is "1" or "true";
+        var shellEnabled = Dougong.Ai.SecuritySwitches.Current.Shell;
 
         // 上下文预算：**配置里的优先，其次环境变量**。
         // 此前只看环境变量，于是 `dougong model` 写进配置的 context_window
@@ -328,7 +327,7 @@ public static class Program
         // "上下文 1,048,576 tokens"、文件里也写了，运行时用的却是别处的数。
         var composition = await SessionComposition.CreateAsync(
             sessionId, workspace, swappable, approver,
-            SessionComposition.MemoryDirectoryFromEnvironment(sessionDir),
+            SessionComposition.ResolveMemoryDirectory(sessionDir),
             contextWindow: config.ContextWindowTokens,
             // **不传 config.MaxOutputTokens**：那是模型的输出容量上限，
             // 不是单次请求预留。传进去会在 kimi-k3 这类
@@ -410,7 +409,8 @@ public static class Program
 
         // 推理内容默认不显示：Plain 档必须与改造前逐字一致，
         // 而推理里常带未定稿的自我纠错，当正文显示会误导。
-        var showReasoning = Environment.GetEnvironmentVariable("DOUGONG_SHOW_REASONING") is "1" or "true";
+        // 走冻结快照：偏好在启动时定下来，运行期不再重读配置文件。
+        var showReasoning = Dougong.Ai.SecuritySwitches.Current.ShowReasoning;
 
         using var liveRegion = LiveRegion.Create(
             Output.Capability, force: tuiRequested ? null : false);
@@ -871,10 +871,10 @@ public static class Program
         Output.Line("  DOUGONG_PROVIDER_KEY     密钥");
         Output.Line();
         Output.Line("可选：");
-        Output.Line("  DOUGONG_PROVIDER_CONFIG    配置文件路径，默认 ~/.dougong/config.toml");
+
         Output.Line("  DOUGONG_PROVIDER_PROTOCOL  openai（默认）/ anthropic / responses");
         Output.Line("  DOUGONG_WORKSPACE          工作区目录，默认当前目录");
-        Output.Line("  DOUGONG_SESSION_DIR        会话目录，默认 ~/.dougong/sessions");
+        Output.Line("  DOUGONG_HOME               用户数据根目录，默认 ~/.dougong");
         Output.Line("  DOUGONG_SHELL=1            启用 shell 工具（默认关闭）");
         Output.Line("  DOUGONG_MEMORY=1           启用 L1 偏好记忆（默认关闭）");
         Output.Line("  DOUGONG_CONTEXT_WINDOW     上下文窗口，设置后启用历史压缩");
@@ -1124,10 +1124,7 @@ public static class Program
             Console.OpenStandardOutput(),
             async context =>
             {
-                var sessionDir = Environment.GetEnvironmentVariable("DOUGONG_SESSION_DIR")
-                    ?? Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                        ".dougong", "sessions");
+                var sessionDir = Dougong.Ai.DougongHome.SessionsDirectory;
 
                 // 恢复时复用原路径：换新文件会表现为"恢复了但历史没接上"。
                 var storePath = context.StorePath
@@ -1147,19 +1144,13 @@ public static class Program
             },
             storeResolver: sessionId =>
             {
-                var sessionDir = Environment.GetEnvironmentVariable("DOUGONG_SESSION_DIR")
-                    ?? Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                        ".dougong", "sessions");
+                var sessionDir = Dougong.Ai.DougongHome.SessionsDirectory;
                 var candidate = Path.Combine(sessionDir, $"{sessionId}.jsonl");
                 return File.Exists(candidate) ? candidate : null;
             },
             listRoots:
             [
-                Environment.GetEnvironmentVariable("DOUGONG_SESSION_DIR")
-                    ?? Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                        ".dougong", "sessions")
+                Dougong.Ai.DougongHome.SessionsDirectory
             ]);
 
         await host.RunAsync();

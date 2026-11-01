@@ -126,10 +126,7 @@ public static class DiagnosticBundle
     private static async Task WriteRecentSessionsAsync(
         StringBuilder writer, CancellationToken cancellationToken)
     {
-        var dir = Environment.GetEnvironmentVariable("DOUGONG_SESSION_DIR")
-            ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".dougong", "sessions");
+        var dir = Dougong.Ai.DougongHome.SessionsDirectory;
 
         writer.AppendLine("[最近会话（只看元信息，不读内容）]");
         writer.AppendLine($"  目录: {dir}");
