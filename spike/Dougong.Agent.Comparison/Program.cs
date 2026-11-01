@@ -55,6 +55,7 @@ public static class Program
         "mcp-server",
         "memory-cli",
         "parity",
+        "preference",
         "perf",
         "kernel-perf",
         "reachability",
@@ -221,6 +222,10 @@ public static class Program
         // 宿主扩展多态类型：注册口、冻结检查、不丢 SDK 登记。
         if (args.FirstOrDefault() == "host-protocol-extension")
             return await HostProtocolExtensionChecks.RunAsync();
+
+        // 用户偏好与安全开关：偏好进配置，安全开关在进程内冻结。
+        if (args.FirstOrDefault() == "preference")
+            return await PreferenceChecks.RunAsync();
 
         // 本机凭据文件：存储优先、不落配置、不泄漏值。
         if (args.FirstOrDefault() == "credential")

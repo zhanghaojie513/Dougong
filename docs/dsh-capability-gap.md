@@ -272,9 +272,9 @@
 
 | dsh | 能力 | 我们 | 差距 |
 |---|---|---|---|
-| `dsh-credentials` / `-local` | 凭据 seam（设置存引用） | `ProviderConfigFile` + `key_env` | **已有**（语义一致） |
-| `dsh-launch-environment` | 记录"每个值由哪一层提供" | **无** | **缺**：配置来源只到"文件 or 环境变量" |
-| `dsh-home-paths` | 路径助手 | 分散 | **部分** |
+| `dsh-credentials` / `-local` | 凭据 seam（设置存引用） | `ProviderConfigFile` + `key` + `CredentialFile` | **已有**：配置只存条目名，值在 `~/.dougong/credentials` |
+| `dsh-launch-environment` | 记录"每个值由哪一层提供" | `SecuritySwitches.Source`（env / config / default） | **部分**：偏好类有来源标记，provider 类没有 |
+| `dsh-home-paths` | 路径助手 | `DougongHome`（单一入口 + `DOUGONG_HOME`） | **已有**：2026-11-01 收敛；`Describe()` 符号化不泄漏用户名 |
 | `dsh-scope` | 作用域标签与过滤派发 | **无** | 不必有（内核有 ProviderId） |
 | `dsh-commands` | 人的命令注册表 | `HandleCommand`（硬编码 switch） | **部分**：不可扩展 |
 | `dsh-cmdline` | 不可变命令行交接 | `args` 直接解析 | **部分** |
@@ -514,22 +514,96 @@ HostProtocolContract.RegisterDerivedType<ClientCommand>(
 
 ---
 
-### 阶段 3：shell 沙箱
+### 阶段 3：shell 安全 —— 到此为止（决策：不再投入）
 
-**单独一轮，独立于工具改动**——它要设计子进程限制，Windows/Linux 形态不同。
+**状态（2026-10-31）**：`ShellCommandPolicy` 提供的模式匹配即最终形态。
+**策略层不再补缺口，OS 级隔离不做。** 这是一条决策，不是待办。
 
-1. **先定义语义**，不是先写代码：
-   - `read-only`：拒绝一切写
-   - `workspace-write`：只能写工作区与临时目录
-   - 拒绝时的行为：**fail-closed**（拒绝而不是降级放行）
-2. **Windows**：受限令牌 + ACL 写白名单（`dsh-sandbox-windows-acl` 的做法）
-3. **Linux/macOS**：bwrap / Seatbelt 不一定可用，
-   **探测失败必须明确报错，不能静默降级成无沙箱**
-4. 与 `WorkspacePathGuard` 的关系：那个只管路径拼装，
-   管不住 `cd / && rm -rf`。两者是不同层次，不替代
-5. **验收**：真实尝试 `cd /` 写文件必须被拒；探测不到沙箱时工具不可用而非放行
+---
 
-**这一项的判定标准是"拒绝得对不对"，不是"能不能跑"。**
+#### 现在有什么
+
+`ShellCommandPolicy` 拦三类：
+
+- 磁盘级破坏的字面写法（`rm -rf /`、`mkfs`、`dd if=/dev/zero`）
+- 凭据读取（`.ssh`、`.env`、`.git/config`、云凭据文件）
+- `cd` 越界（`cd /`、`cd ..`、`cd ~`、含 `$VAR`/`$(...)`/反引号的动态目标）
+
+拒绝消息里明确写"这是策略过滤而非沙箱"，不宣称已沙箱。
+
+#### 现在没有什么（如实记录）
+
+实测 8 个真实误操作里 6 个被放行：
+
+```
+放行  rm -rf ..\other-project              ← 删掉同级另一个项目
+放行  rm -rf C:\work\old                   ← 删工作区外目录
+放行  del /s /q C:\work\other              ← Windows 删除
+放行  powershell -c Remove-Item -Recurse C:\work\x
+放行  cp C:\Windows\System32\drivers\etc\hosts .    ← 拷系统文件
+放行  type C:\Windows\win.ini              ← 读系统文件
+拒绝  bash -c 'rm -rf /'                    ← 只因 bash 不在白名单
+```
+
+根因：判据用正则匹配**命令文本**，只能拦住字面写法。`rm -rf /` 被拦，
+`rm -rf C:\work\old` 就漏——两者性质相同。
+
+**这不是"以后会修"，是已知的能力边界。** 使用者必须知道这一点。
+
+---
+
+#### 为什么不再投入
+
+**一、不做 OS 级隔离，补策略层就没有终点。**
+
+把路径判断从"匹配文本"改成"解析路径"，能堵住上面 5 条——但马上会有新的：
+`find / -delete`、`tar --remove-files`、`robocopy /MIR`、任何脚本内的路径。
+模式匹配与解析的军备竞赛没有收敛点，而真实的隔离只有内核能给。
+
+**只补一半的防护比没有更危险**：用户看到"有 shell 安全策略"，
+会以为自己的文件受保护，于是放松审查。dsh 做了全套还特意写
+"do not rely on it as the sole security control"——我们只做一半更该说清。
+
+**二、主要风险不在工具层。**
+
+模型删错文件是损失，但那是**可恢复**的（有版本控制、有备份）。
+真正的不可恢复风险是密钥泄漏，而那条线我们守得很死：
+凭据只在 `~/.dougong/credentials`、`ShellCommandPolicy` 拦凭据路径、
+密钥绝不进模型上下文。这条比沙箱更值得投入，且已经做完。
+
+**三、需要真隔离的场景，正确答案不是自己实现。**
+
+dsh 做了三平台内核隔离，`SAFETY.md` 的建议仍是
+"Prefer a disposable virtual machine, container, or dedicated environment"。
+出现"要让不可信第三方代码跑命令"的需求时（多租户、运行他人提交的脚本），
+正确做法是把整个 agent 跑进容器，而不是在 agent 内部做沙箱。
+
+---
+
+#### 使用者的正确预期
+
+| 场景 | 现状 |
+|---|---|
+| 在自己机器上、跑自己信任的模型 | 策略层足够——误操作的高频形态已被拦 |
+| 想让 AI 处理不可信内容（别人的仓库、外部脚本） | **不要把 shell 工具交给它**，或整个 agent 跑进容器/VM |
+| 需要审计级隔离 | 本项目不提供 |
+
+**给宿主的建议**：`DOUGONG_SHELL=1` 是显式开启的，默认关闭。
+不确定时就不开——没有 shell 工具时，文件工具仍受 `WorkspacePathGuard` 的路径约束。
+
+---
+
+#### 与参考项目的对照（说明我们的位置）
+
+| | 我们 | hermes | pi / pi.net | dsh |
+|---|---|---|---|---|
+| 命令策略 | ✅ 模式匹配 | ✅ denylist | ❌ | — |
+| OS 级隔离 | ❌ | 可选、默认关 | ❌ | ✅ 三平台 fail-closed |
+| 文件工具写限制 | ✅ 路径守卫 | denylist | ❌ | ✅ 进程内检查 |
+
+pi.net 的 `docs/security.md` 明文：「working folder ... **does not prevent commands
+from accessing other paths**」；上游 pi README 同理。**我们已高于 pi/pi.net**，
+与 hermes 默认配置相当。
 
 ---
 

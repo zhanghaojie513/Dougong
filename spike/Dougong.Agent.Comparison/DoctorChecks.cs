@@ -296,7 +296,7 @@ public static class DoctorChecks
                  {
                      "DOUGONG_PROVIDER_BASE", "DOUGONG_PROVIDER_MODEL",
                      "DOUGONG_PROVIDER_KEY", "DOUGONG_PROVIDER_PROTOCOL",
-                     "DOUGONG_WORKSPACE", "DOUGONG_SESSION_DIR", "DOUGONG_MEMORY",
+                     "DOUGONG_WORKSPACE", "DOUGONG_HOME", "DOUGONG_MEMORY",
                      "DOUGONG_CONTEXT_WINDOW",
                      // 比例覆盖同理：本机若设了非法值，会把"默认策略"的断言带偏。
                      "DOUGONG_COMPACT_TRIGGER_RATIO", "DOUGONG_COMPACT_RETAIN_RATIO",
@@ -304,6 +304,18 @@ public static class DoctorChecks
         {
             startInfo.Environment.Remove(name);
         }
+
+        // **配置文件与凭据文件必须指向一次性路径**。
+        //
+        // 不隔离的话，检查读的是开发者机器上真实的 ~/.dougong/config.toml，
+        // 于是"缺配置时应报失败"在本机配好 provider 之后就会假失败——
+        // 而代码是对的。实测踩到过：加了连通性检查后这条突然红了。
+        //
+        // 指向一个不存在的路径即可：ProviderConfigFile 把"文件不存在"
+        // 当成"没有配置"，正是这些用例要的状态。
+        var isolation = Path.Combine(
+            Path.GetTempPath(), $"dougong-doctor-{Guid.NewGuid():N}");
+        startInfo.Environment["DOUGONG_HOME"] = isolation;
 
         foreach (var (k, v) in environment)
         {
@@ -364,12 +376,24 @@ public static class DoctorChecks
                  {
                      "DOUGONG_PROVIDER_BASE", "DOUGONG_PROVIDER_MODEL",
                      "DOUGONG_PROVIDER_KEY", "DOUGONG_PROVIDER_PROTOCOL",
-                     "DOUGONG_WORKSPACE", "DOUGONG_SESSION_DIR", "DOUGONG_MEMORY",
+                     "DOUGONG_WORKSPACE", "DOUGONG_HOME", "DOUGONG_MEMORY",
                      "DOUGONG_LOG", "DOUGONG_KERNEL",
                  })
         {
             startInfo.Environment.Remove(name);
         }
+
+        // **配置文件与凭据文件必须指向一次性路径**。
+        //
+        // 不隔离的话，检查读的是开发者机器上真实的 ~/.dougong/config.toml，
+        // 于是"缺配置时应报失败"在本机配好 provider 之后就会假失败——
+        // 而代码是对的。实测踩到过：加了连通性检查后这条突然红了。
+        //
+        // 指向一个不存在的路径即可：ProviderConfigFile 把"文件不存在"
+        // 当成"没有配置"，正是这些用例要的状态。
+        var isolation = Path.Combine(
+            Path.GetTempPath(), $"dougong-doctor-{Guid.NewGuid():N}");
+        startInfo.Environment["DOUGONG_HOME"] = isolation;
 
         foreach (var (k, v) in environment)
         {
@@ -549,11 +573,23 @@ public static class DoctorChecks
                  {
                      "DOUGONG_PROVIDER_BASE", "DOUGONG_PROVIDER_MODEL",
                      "DOUGONG_PROVIDER_KEY", "DOUGONG_PROVIDER_PROTOCOL",
-                     "DOUGONG_WORKSPACE", "DOUGONG_SESSION_DIR", "DOUGONG_MEMORY",
+                     "DOUGONG_WORKSPACE", "DOUGONG_HOME", "DOUGONG_MEMORY",
                  })
         {
             startInfo.Environment.Remove(name);
         }
+
+        // **配置文件与凭据文件必须指向一次性路径**。
+        //
+        // 不隔离的话，检查读的是开发者机器上真实的 ~/.dougong/config.toml，
+        // 于是"缺配置时应报失败"在本机配好 provider 之后就会假失败——
+        // 而代码是对的。实测踩到过：加了连通性检查后这条突然红了。
+        //
+        // 指向一个不存在的路径即可：ProviderConfigFile 把"文件不存在"
+        // 当成"没有配置"，正是这些用例要的状态。
+        var isolation = Path.Combine(
+            Path.GetTempPath(), $"dougong-doctor-{Guid.NewGuid():N}");
+        startInfo.Environment["DOUGONG_HOME"] = isolation;
 
         foreach (var (k, v) in environment)
         {

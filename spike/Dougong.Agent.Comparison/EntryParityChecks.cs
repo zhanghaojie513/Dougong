@@ -228,6 +228,12 @@ public static class EntryParityChecks
             Environment.SetEnvironmentVariable(name, value);
         }
 
+        // **改完环境变量必须重置冻结快照**。
+        // SecuritySwitches 在首次访问时读定，之后不再看环境；
+        // 不重置的话，先跑过的用例会把自己的值"冻"给后面所有用例，
+        // 表现为"某个用例单独跑通过、一起跑失败"——那是最难查的一类。
+        Dougong.Ai.SecuritySwitches.ResetForTesting();
+
         try
         {
             return await action();
@@ -236,6 +242,8 @@ public static class EntryParityChecks
         {
             foreach (var (name, value) in saved)
                 Environment.SetEnvironmentVariable(name, value);
+
+            Dougong.Ai.SecuritySwitches.ResetForTesting();
         }
     }
 

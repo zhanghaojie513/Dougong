@@ -94,6 +94,7 @@
 | 系统提示真的进入请求 | `prompt`：`prompt-is-actually-sent`（抓连接器实收消息）、`prompt-omits-discipline-for-missing-tools` | `BuildRequestMessages` 恒返回原历史 → 该项失败 |
 | 文件写入原子且带版本守卫 | `filesystem`、`fileversion` | 去掉 `MustMatchVersion` 校验 → `fileversion` 套的版本冲突检查失败；把原子写改成直接覆盖目标文件 → `filesystem` 套的中断写检查失败 |
 | 宿主能扩展多态类型且不丢 SDK 登记 | `host-protocol-extension`：`host-type-roundtrips`、`extension-does-not-drop-sdk-registrations`、`registering-after-freeze-throws`、`registering-wrong-base-throws`、`registered-extensions-are-observable` | 把 `typeInfo.PolymorphismOptions ?? CreateEmpty(...)` 改成 `CreateEmpty(...)`（替换而非追加）→ `extension-does-not-drop-sdk-registrations` 报 `NotSupportedException`；删掉 `RegisterDerivedType` 里的冻结检查 → `registering-after-freeze-throws` 失败 |
+| 用户偏好进配置、安全开关冻结 | `preference`：`preferences-roundtrip`、`preferences-save-preserves-providers`、`preferences-default-to-off`、`env-overrides-config`、`security-switch-freezes-in-process`、`memory-dir-comes-from-config-not-env` | 把 `Current` 改成每次 `Load()` → `security-switch-freezes-in-process` 报"自举漏洞"；保存时整体重写 → `preferences-save-preserves-providers` 报"providers.a 丢了" |
 | 工具卡住不会挂住整轮 | `timeout`：`hanging-tool-times-out`、`timeout-is-not-reported-as-cancellation`、`timeout-counts-as-executed`、`per-tool-timeout-overrides-default`、`outer-cancel-still-wins`、`new-outcome-does-not-shift-existing-values` | 把 `Executed` 里的 `or TimedOut` 删掉 → `timeout-counts-as-executed` 失败；把 `catch when (!cancellationToken.IsCancellationRequested)` 的守卫去掉 → `outer-cancel-still-wins` 失败 |
 | shell 拦常见越界且承认不是沙箱 | `shell-policy`：`destructive-commands-are-rejected`、`credential-reads-are-rejected`、`cd-outside-workspace-is-rejected`、`rejection-message-admits-it-is-not-a-sandbox`、`read-only-classification-rejects-redirection`、`shell-tool-reports-rejection-as-result` | 把 `deny(escape)` 改成 `allow(escape)` → `cd-outside-workspace-is-rejected` 失败；把拒绝消息改成只写"命令被拒绝" → `rejection-message-admits-it-is-not-a-sandbox` 失败 |
 | 压缩比例默认值与可配置性 | `compaction`、`wiring`、`doctor` | 把 `DefaultTriggerRatio` 改成 0.99 → `compaction` 套的触发点检查失败；给 `--doctor` 传入 `retain >= trigger` → `doctor` 套的非法规格检查失败 |
@@ -182,11 +183,25 @@
 | | |
 |---|---|
 | **哪不一样** | dsh 有四套真隔离（bwrap / landlock / Seatbelt / Windows ACL）。我们只有 `ShellCommandPolicy` 的模式匹配：危险命令、凭据路径、`cd` 越界。 |
-| **为什么先这样做** | OS 级隔离每平台一套实现、各自需要验证环境；本机只有 win-x64，无法验证另外两个平台。而**绝大多数越界不是攻击，是误操作**——模型写 `cd / && ls` 或 `rm -rf /tmp/*`，这些模式识别就能拦。真隔离作为 P1 单独一轮。 |
+| **为什么先这样做** | 三条：① **dsh 自己说它不是安全边界**——它的 `SAFETY.md` 原文 "do not guarantee isolation or prevent damage"、"Prefer a disposable virtual machine"；做了三平台内核隔离的项目建议用户改用 VM。② **它解决的不是我们的主要风险**——dsh 沙箱边界只有文件效果（`docs/subsystems/sandbox.md`：「Network and process visibility are outside this vocabulary」），而我们的风险是误操作。③ **成本不成比例**——Linux 要 C 代码 + 原生产物（破坏零依赖），Windows 要 P/Invoke 受限令牌 + ACL，而 dsh 的 CI 都没跑 Windows 腿，我们更验不全。 |
 | **方向** | 拦得住常见误操作，**拦不住有意绕过**（`find / -name x`、`cat $(...)`、脚本内 cd）。所以拒绝消息里必须写明"这是策略过滤而非沙箱"——宣称已沙箱而只是模式匹配，会让用户放松审查，比不做更危险。 |
-| **前提 / 何时重考虑** | 前提是"使用者知道它不是沙箱"这一条能靠文档与拒绝消息传达。若要对外宣称"可安全让 AI 跑任意命令"，必须先有 OS 级隔离。 |
+| **现存缺口（已接受，不再是待办）** | 8 个真实误操作里 6 个被放行：`rm -rf ..\other-project`、`rm -rf C:\work\old`、`del /s /q C:\work\other`、`powershell -c Remove-Item`、`cp C:\Windows\...\hosts .`、`type C:\Windows\win.ini`。根因是判据用正则匹配**命令文本**。**决定不再补**——补到"解析路径"只是把军备竞赛推进一步，而没有内核隔离就永远没有收敛点；只补一半比不补更危险，因为用户会以为文件受保护。详见 `dsh-capability-gap.md` 阶段 3。 |
+| **前提 / 何时重考虑** | 若要**对外宣称**"可安全让 AI 跑任意命令"，必须真隔离——而正确答案不是自己实现三平台，是把整个 agent 跑进容器（与 dsh 自己的建议一致）。 |
 | **验证** | `shell-policy` 9 项，其中 `rejection-message-admits-it-is-not-a-sandbox` 专门钉住"承认边界"这一点。 |
 | **源码位置** | `src/Dougong.Agent/ShellCommandPolicy.cs` |
+
+### D-9 用户偏好进配置，安全开关在进程内冻结
+
+| | |
+|---|---|
+| **哪不一样** | 我们把 `shell` / `memory` / `show_reasoning` 三个开关放进 `config.toml` 的 `[preferences]`，并在**进程启动时冻结**。|
+| **参考了什么** | `memory` 进配置照 **hermes**（`memory.memory_enabled`）；偏好整体进配置是四家共同点（dsh 用 profile 的 `cordis.patch.yml`、hermes 用 `~/.hermes/config.yaml`、pi 用 `~/.pi/agent/settings.json`）。 |
+| **`memory_dir` 是类推，不是照抄** | 四家**没有一个是记忆路径**配置：hermes 的 memory 段 10 个字段无一涉及路径，因为它有 `HERMES_HOME` 统管全部状态；pi 有 `sessionDir`（**会话**目录，`settings-schema.ts:401`）但那是另一个东西。我们加 `memory_dir` 是因为**没有统一的 home 抽象**——`.dougong` 硬编码在 7 个文件 19 处，不配这个字段用户就没法把记忆放到外置盘。将来若加了统一 home，这个字段应退役。 |
+| **为什么冻结** | 照 **hermes**：`tools/approval.py` 在导入时读定 `HERMES_YOLO_MODE`，注释写 "reading os.environ per call would let any skill running in the process set this and bypass every approval check (prompt-injection escalation path)"。我们的对应风险是**自举**：`shell` 一旦开启，模型能用 `echo 'shell = true' >> ~/.dougong/config.toml` 给自己永久授权。冻结让配置改动要等用户主动重启才生效。 |
+| **为什么不做成"完全不持久"** | dsh 会把最激进的权限档位排除在持久 schema 外（"never enters `permission.defaultPreset`"），那是更彻底的做法规避自举。但我们面对的是本地单人使用，每次都要回答是纯负担；冻结已经切断自举路径（模型需要用户重启才能生效）。 |
+| **优先级为何与密钥相反** | 开关是"环境变量 > 配置"，密钥是"凭据文件 > 环境变量"。理由：开关有"我这次想关掉"的临时语义，密钥没有——密钥不该有"临时"之说。 |
+| **验证** | `preference` 套 7 项。其中 `security-switch-freezes-in-process` 专门钉自举防护，负控是把 `Current` 改成每次 `Load()`，失败信息会写"自举漏洞：模型可以用 shell 改配置给自己永久授权"。 |
+| **源码位置** | `src/Dougong.Ai/UserPreferences.cs`、`src/Dougong.Ai/UserPreferencesFile.cs` |
 
 ## 五、这份台账的边界
 
