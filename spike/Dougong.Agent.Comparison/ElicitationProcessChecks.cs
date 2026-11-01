@@ -333,7 +333,8 @@ public static class ElicitationProcessChecks
         info.Environment["DOUGONG_PROVIDER_KEY"] = "stub-key-not-a-real-secret";
         info.Environment["DOUGONG_PROVIDER_MODEL"] = "stub-model";
         info.Environment["DOUGONG_PROVIDER_PROTOCOL"] = "openai";
-        info.Environment["DOUGONG_SESSION_DIR"] = storeDir;
+        // 会话目录由 home 派生；把临时 storeDir 当作 home 下的 sessions。
+        info.Environment["DOUGONG_HOME"] = Path.GetDirectoryName(storeDir) ?? storeDir;
         info.Environment["DOUGONG_WORKSPACE"] = Directory.GetCurrentDirectory();
 
         var process = Process.Start(info)

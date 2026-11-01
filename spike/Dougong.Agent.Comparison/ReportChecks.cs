@@ -103,18 +103,20 @@ public static class ReportChecks
     {
         const string canary = "USER-PRIVATE-CONTENT-MUST-NOT-APPEAR";
 
+        // 会话目录现在由 home 派生：<home>/sessions。用 DOUGONG_HOME 指到这个临时根。
         var dir = Path.Combine(Path.GetTempPath(), "dg-rep-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(dir);
+        var sessions = Path.Combine(dir, "sessions");
+        Directory.CreateDirectory(sessions);
 
         try
         {
-            var file = Path.Combine(dir, "20261026-000000.jsonl");
+            var file = Path.Combine(sessions, "20261026-000000.jsonl");
             await File.WriteAllTextAsync(file,
                 $"{{\"content\":\"{canary}\"}}\n{{\"content\":\"second line\"}}\n");
 
             var result = await RunReportAsync(new Dictionary<string, string?>
             {
-                ["DOUGONG_SESSION_DIR"] = dir,
+                ["DOUGONG_HOME"] = dir,
             });
 
             var combined = result.Stdout + result.Stderr;
@@ -176,16 +178,17 @@ public static class ReportChecks
     private static async Task<string?> SessionMetadataAsync()
     {
         var dir = Path.Combine(Path.GetTempPath(), "dg-rep2-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(dir);
+        var sessions = Path.Combine(dir, "sessions");
+        Directory.CreateDirectory(sessions);
 
         try
         {
             await File.WriteAllTextAsync(
-                Path.Combine(dir, "20261026-111111.jsonl"), "a\nb\nc\n");
+                Path.Combine(sessions, "20261026-111111.jsonl"), "a\nb\nc\n");
 
             var result = await RunReportAsync(new Dictionary<string, string?>
             {
-                ["DOUGONG_SESSION_DIR"] = dir,
+                ["DOUGONG_HOME"] = dir,
             });
 
             // 记录数必须真的数出来：0 条会让"有记录但解析失败"与"空文件"无法区分
@@ -231,7 +234,7 @@ public static class ReportChecks
                  {
                      "DOUGONG_PROVIDER_BASE", "DOUGONG_PROVIDER_MODEL",
                      "DOUGONG_PROVIDER_KEY", "DOUGONG_PROVIDER_PROTOCOL",
-                     "DOUGONG_SESSION_DIR", "DOUGONG_MEMORY", "DOUGONG_LOG",
+                     "DOUGONG_HOME", "DOUGONG_MEMORY", "DOUGONG_LOG",
                  })
         {
             startInfo.Environment.Remove(name);

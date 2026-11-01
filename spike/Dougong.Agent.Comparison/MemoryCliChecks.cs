@@ -218,7 +218,7 @@ public static class MemoryCliChecks
         startInfo.Environment["DOUGONG_PROVIDER_BASE"] = "http://127.0.0.1:1";
         startInfo.Environment["DOUGONG_PROVIDER_KEY"] = "test-key-not-real";
         startInfo.Environment["DOUGONG_PROVIDER_MODEL"] = "test-model";
-        startInfo.Environment["DOUGONG_SESSION_DIR"] = Path.Combine(workDir, "sessions");
+        startInfo.Environment["DOUGONG_HOME"] = workDir;
         startInfo.Environment["DOUGONG_WORKSPACE"] = workspace ?? workDir;
         startInfo.Environment["DOUGONG_KERNEL"] = "0";   // 本套检查只测命令层，不测内核
         startInfo.Environment.Remove("DOUGONG_AUTO_APPROVE");

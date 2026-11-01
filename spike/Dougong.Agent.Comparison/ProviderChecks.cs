@@ -116,7 +116,7 @@ public static class ProviderChecks
         var path = WriteTempConfig(toml);
         try
         {
-            var error = ProviderConfigFile.TryLoad(path, out var catalog);
+            var error = ProviderConfigFile.TryLoad(Path.Combine(path, "config.toml"), out var catalog);
             if (error is not null) return Task.FromResult<string?>($"合法配置却报错：{error}");
             if (catalog is null) return Task.FromResult<string?>("合法配置没有解析出目录");
 
@@ -139,7 +139,7 @@ public static class ProviderChecks
 
             return Task.FromResult<string?>(null);
         }
-        finally { File.Delete(path); }
+        finally { DeleteTempHome(path); }
     }
 
     /// <summary>
@@ -261,7 +261,9 @@ public static class ProviderChecks
             Environment.SetEnvironmentVariable("DOUGONG_PROVIDER_BASE", "https://env.example.com");
             Environment.SetEnvironmentVariable("DOUGONG_PROVIDER_MODEL", "env-model");
 
-            var error = ChatClientFactory.TryResolve(path, out var catalog, out _);
+            // path 现在是 home 目录，配置文件在其中。
+            var error = ChatClientFactory.TryResolve(
+                Path.Combine(path, "config.toml"), out var catalog, out _);
             if (error is not null) return Task.FromResult<string?>($"解析失败：{error}");
             if (catalog is null) return Task.FromResult<string?>("没有解析出目录");
 
@@ -286,7 +288,7 @@ public static class ProviderChecks
         finally
         {
             RestoreProviderEnvironment(saved);
-            File.Delete(path);
+            DeleteTempHome(path);
         }
     }
 
@@ -322,7 +324,7 @@ public static class ProviderChecks
             [],
             new Dictionary<string, string?>
             {
-                ["DOUGONG_PROVIDER_CONFIG"] = path,
+                ["DOUGONG_HOME"] = path,
                 ["ALPHA_KEY"] = secret,
                 ["BETA_KEY"] = secret,
                 // GAMMA_KEY 故意不设：切过去必须被拒并说明缺什么。
@@ -373,7 +375,7 @@ public static class ProviderChecks
 
             return null;
         }
-        finally { File.Delete(path); }
+        finally { DeleteTempHome(path); }
     }
 
     /// <summary>
@@ -403,7 +405,7 @@ public static class ProviderChecks
                 ["--doctor"],
                 new Dictionary<string, string?>
                 {
-                    ["DOUGONG_PROVIDER_CONFIG"] = path,
+                    ["DOUGONG_HOME"] = path,
                     ["PROBE_KEY"] = secret,
                 });
 
@@ -427,13 +429,13 @@ public static class ProviderChecks
                 return $"自检没有认定密钥可用（说明没走到这条路径）。stdout={Trim(combined)}";
 
             // 配置文件本身当然也不该被写入密钥——这里确认读之后文件没变。
-            var after = await File.ReadAllTextAsync(path);
+            var after = await File.ReadAllTextAsync(Path.Combine(path, "config.toml"));
             if (after.Contains(secret, StringComparison.Ordinal))
                 return "配置文件中出现了密钥值（说明有回写）";
 
             return null;
         }
-        finally { File.Delete(path); }
+        finally { DeleteTempHome(path); }
     }
 
     /// <summary>
@@ -541,12 +543,12 @@ public static class ProviderChecks
         {
             var result = await RunCliAsync(
                 ["model", "--set", "alpha", "--model", "new-model"],
-                new Dictionary<string, string?> { ["DOUGONG_PROVIDER_CONFIG"] = path });
+                new Dictionary<string, string?> { ["DOUGONG_HOME"] = path });
 
             if (result.ExitCode != 0)
                 return $"退出码 {result.ExitCode}，stderr={Trim(result.Stderr)}";
 
-            var after = await File.ReadAllTextAsync(path);
+            var after = await File.ReadAllTextAsync(Path.Combine(path, "config.toml"));
 
             if (!after.Contains("new-model", StringComparison.Ordinal))
                 return $"值没改成功：{Trim(after)}";
@@ -577,7 +579,7 @@ public static class ProviderChecks
                 return "未触碰的 provider 被改动了";
 
             // 改后的文件必须仍能解析，且解析出的值正确。
-            var parseError = ProviderConfigFile.TryLoad(path, out var catalog);
+            var parseError = ProviderConfigFile.TryLoad(Path.Combine(path, "config.toml"), out var catalog);
             if (parseError is not null)
                 return $"改完的配置解析失败：{parseError}";
 
@@ -586,7 +588,7 @@ public static class ProviderChecks
 
             return null;
         }
-        finally { File.Delete(path); }
+        finally { DeleteTempHome(path); }
     }
 
     /// <summary>
@@ -604,20 +606,20 @@ public static class ProviderChecks
 
         try
         {
-            if (File.Exists(path)) File.Delete(path);
+            DeleteTempHome(path);
 
             // 交互式现在是四步：选 provider → 端点 → 密钥（跳过确认）→ 模型。
             // 选第 1 项（anthropic），端点回车接受默认，密钥那步回车接受跳过，
             // 最后手填模型名（端点无密钥查不到列表，会走手填分支）。
             var result = await RunCliAsync(
                 ["model"],
-                new Dictionary<string, string?> { ["DOUGONG_PROVIDER_CONFIG"] = path },
+                new Dictionary<string, string?> { ["DOUGONG_HOME"] = path },
                 stdin: "1\n\n\nmy-test-model\n");
 
-            if (!File.Exists(path))
+            if (!File.Exists(Path.Combine(path, "config.toml")))
                 return $"没有创建配置文件。stdout={Trim(result.Stdout)} stderr={Trim(result.Stderr)}";
 
-            var parseError = ProviderConfigFile.TryLoad(path, out var catalog);
+            var parseError = ProviderConfigFile.TryLoad(Path.Combine(path, "config.toml"), out var catalog);
             if (parseError is not null) return $"新建的配置解析失败：{parseError}";
             if (catalog is null) return "新建的配置没有解析出目录";
 
@@ -635,7 +637,8 @@ public static class ProviderChecks
         }
         finally
         {
-            try { File.Delete(path); Directory.Delete(dir, recursive: true); } catch { /* 清理失败不影响结论 */ }
+            DeleteTempHome(path);
+            try { Directory.Delete(dir, recursive: true); } catch { /* 清理失败不影响结论 */ }
         }
     }
 
@@ -654,13 +657,13 @@ public static class ProviderChecks
         {
             var result = await RunCliAsync(
                 ["model", "--set", "x", "--model", "m"],
-                new Dictionary<string, string?> { ["DOUGONG_PROVIDER_CONFIG"] = path });
+                new Dictionary<string, string?> { ["DOUGONG_HOME"] = path });
 
             if (result.ExitCode == 0)
                 return "配置有语法错却返回成功";
 
             // 文件必须一个字节都没变。
-            var after = await File.ReadAllTextAsync(path);
+            var after = await File.ReadAllTextAsync(Path.Combine(path, "config.toml"));
             if (after != broken)
                 return $"坏掉的配置被改写了：{Trim(after)}";
 
@@ -670,7 +673,7 @@ public static class ProviderChecks
 
             return null;
         }
-        finally { File.Delete(path); }
+        finally { DeleteTempHome(path); }
     }
 
     /// <summary>
@@ -700,12 +703,12 @@ public static class ProviderChecks
         {
             var result = await RunCliAsync(
                 ["model", "--set", "anthropic", "--model", "claude-x"],
-                new Dictionary<string, string?> { ["DOUGONG_PROVIDER_CONFIG"] = path });
+                new Dictionary<string, string?> { ["DOUGONG_HOME"] = path });
 
             if (result.ExitCode != 0)
                 return $"退出码 {result.ExitCode}：{Trim(result.Stdout + result.Stderr)}";
 
-            var after = await File.ReadAllTextAsync(path);
+            var after = await File.ReadAllTextAsync(Path.Combine(path, "config.toml"));
 
             if (!after.Contains("[providers.anthropic]", StringComparison.Ordinal))
                 return $"没有新建 [providers.anthropic] 段：{Trim(after)}";
@@ -721,7 +724,7 @@ public static class ProviderChecks
                 return "原有 provider 被破坏了";
 
             // 新段必须能被真正解析出来（拼坏的表头会在这里暴露）。
-            var parseError = ProviderConfigFile.TryLoad(path, out var catalog);
+            var parseError = ProviderConfigFile.TryLoad(Path.Combine(path, "config.toml"), out var catalog);
             if (parseError is not null)
                 return $"新增段后配置无法解析：{parseError}";
 
@@ -732,7 +735,7 @@ public static class ProviderChecks
 
             return null;
         }
-        finally { File.Delete(path); }
+        finally { DeleteTempHome(path); }
     }
 
     /// <summary>
@@ -751,7 +754,7 @@ public static class ProviderChecks
 
         try
         {
-            if (File.Exists(path)) File.Delete(path);
+            DeleteTempHome(path);
 
             // 选第 1 项（anthropic，预设端点是 api.anthropic.com），
             // 但把 base_url 改成假服务器；密钥那步回车接受跳过；
@@ -760,16 +763,16 @@ public static class ProviderChecks
                 ["model"],
                 new Dictionary<string, string?>
                 {
-                    ["DOUGONG_PROVIDER_CONFIG"] = path,
+                    ["DOUGONG_HOME"] = path,
                     // 预设要求 ANTHROPIC_API_KEY；设一个假的让它往下走。
                     ["ANTHROPIC_API_KEY"] = "sk-fake-for-test",
                 },
                 stdin: $"1\n{server.BaseUrl}\n1\n");
 
-            if (!File.Exists(path))
+            if (!File.Exists(Path.Combine(path, "config.toml")))
                 return $"没有创建配置。stdout={Trim(result.Stdout)}";
 
-            var after = await File.ReadAllTextAsync(path);
+            var after = await File.ReadAllTextAsync(Path.Combine(path, "config.toml"));
 
             if (!after.Contains(server.BaseUrl, StringComparison.Ordinal))
             {
@@ -778,7 +781,7 @@ public static class ProviderChecks
 
             return null;
         }
-        finally { try { File.Delete(path); } catch { /* 清理失败不影响结论 */ } }
+        finally { DeleteTempHome(path); }
     }
 
     /// <summary>起一个只实现 <c>/models</c> 的本地端点，用于验证模型发现。</summary>
@@ -1082,10 +1085,9 @@ public static class ProviderChecks
     /// </remarks>
     private static async Task<string?> ConfigBudgetsTakeEffectAsync()
     {
-        var path = Path.Combine(
-            Path.GetTempPath(), $"dougong-cfg-{Guid.NewGuid():N}.toml");
-
-        await File.WriteAllTextAsync(path, """
+        // 用 WriteTempConfig：它建一个临时 home 并在其中放 config.toml，
+        // 返回目录——与 DOUGONG_HOME 的语义一致。
+        var path = WriteTempConfig("""
             default_provider = "probe"
 
             [providers.probe]
@@ -1103,7 +1105,7 @@ public static class ProviderChecks
                 [],
                 new Dictionary<string, string?>
                 {
-                    ["DOUGONG_PROVIDER_CONFIG"] = path,
+                    ["DOUGONG_HOME"] = path,
                     ["PROBE_KEY"] = "k",
                     ["DOUGONG_KERNEL"] = "0",
                 },
@@ -1122,7 +1124,7 @@ public static class ProviderChecks
                 [],
                 new Dictionary<string, string?>
                 {
-                    ["DOUGONG_PROVIDER_CONFIG"] = path,
+                    ["DOUGONG_HOME"] = path,
                     ["PROBE_KEY"] = "k",
                     ["DOUGONG_KERNEL"] = "0",
                     ["DOUGONG_CONTEXT_WINDOW"] = "9999",
@@ -1138,16 +1140,44 @@ public static class ProviderChecks
 
             return null;
         }
-        finally { try { File.Delete(path); } catch { /* 清理失败不影响结论 */ } }
+        finally { DeleteTempHome(path); }
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────
+    /// <summary>删掉临时 home（目录）及其内容；失败不影响结论。</summary>
+    /// <remarks>
+    /// <b>必须是递归删目录而不是 File.Delete</b>：<see cref="WriteTempConfig"/>
+    /// 现在返回的是一个目录。用 File.Delete 会抛 UnauthorizedAccessException，
+    /// 而那发生在 finally 里会把整条用例的结论盖掉——实测踩到过，
+    /// 10 条用例全部报成"路径被拒绝"，而实际原因只是清理写法没跟上。
+    /// </remarks>
+    private static void DeleteTempHome(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
+            // 临时目录清不掉不影响结论。
+        }
+    }
+
+    /// <summary>
+    /// 建一个临时 home 目录，把配置写进其中的 config.toml，返回**目录**。
+    /// </summary>
+    /// <remarks>
+    /// <b>返回目录而不是文件</b>：单项路径变量（<c>DOUGONG_PROVIDER_CONFIG</c>）已删，
+    /// 现在只有 <c>DOUGONG_HOME</c>。这样也更接近真实布局——
+    /// 配置、凭据、会话都在同一个根下面，而不是三个变量各指一处。
+    /// </remarks>
     private static string WriteTempConfig(string toml)
     {
-        var path = Path.Combine(
-            Path.GetTempPath(), $"dougong-provider-{Guid.NewGuid():N}.toml");
-        File.WriteAllText(path, toml);
-        return path;
+        var home = Path.Combine(
+            Path.GetTempPath(), $"dougong-home-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(home);
+        File.WriteAllText(Path.Combine(home, "config.toml"), toml);
+        return home;
     }
 
     private static readonly string[] ProviderEnvNames =
@@ -1195,7 +1225,7 @@ public static class ProviderChecks
         foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
 
         foreach (var name in ProviderEnvNames.Concat(
-                     new[] { "DOUGONG_PROVIDER_CONFIG", "DOUGONG_KERNEL", "DOUGONG_TUI" }))
+                     new[] { "DOUGONG_HOME", "DOUGONG_KERNEL", "DOUGONG_TUI" }))
         {
             startInfo.Environment.Remove(name);
         }
@@ -1206,9 +1236,15 @@ public static class ProviderChecks
         // 既污染环境，又让检查结果依赖"开发者机器上恰好存了哪些密钥"。
         // 实测踩到过：本机有 ANTHROPIC_API_KEY，于是"缺密钥"的检查
         // 莫名其妙失败，而代码是对的。
-        var isolatedCredentials = Path.Combine(
-            Path.GetTempPath(), $"dougong-cred-{Guid.NewGuid():N}", "credentials");
-        startInfo.Environment["DOUGONG_CREDENTIALS"] = isolatedCredentials;
+        // 凭据现在由 home 派生：临时 home 建在临时目录下，
+        // 凭据文件就是 <home>/credentials。单项路径变量已删。
+        var isolatedHome = Path.Combine(
+            Path.GetTempPath(), $"dougong-cred-{Guid.NewGuid():N}");
+        var isolatedCredentials = Path.Combine(isolatedHome, "credentials");
+
+        // 调用方若没指定 home，就用这个临时 home。
+        if (!environment.ContainsKey("DOUGONG_HOME"))
+            startInfo.Environment["DOUGONG_HOME"] = isolatedHome;
 
         // 密钥现在只从凭据文件读，所以"环境里设了 XXX_API_KEY"这招不再生效。
         // 把环境字典里形如 FOO_KEY / FOO_API_KEY 的条目转写成凭据文件内容——
@@ -1224,22 +1260,34 @@ public static class ProviderChecks
                 && !pair.Key.StartsWith("DOUGONG_PROVIDER_", StringComparison.Ordinal))
             .ToList();
 
+        // **先应用调用方给的环境，再按最终确定下来的 home 写凭据**。
+        //
+        // 顺序不能反：调用方可能在 environment 里指定了自己的 DOUGONG_HOME，
+        // 那时凭据必须写到那个 home 下。此前先写凭据、后应用环境，
+        // 结果凭据写进了临时 home 而 CLI 去调用方指定的 home 找，两边不一致。
+        foreach (var (key, value) in environment)
+        {
+            if (value is null) startInfo.Environment.Remove(key);
+            else startInfo.Environment[key] = value;
+        }
+
         if (credentialEntries.Count > 0)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(isolatedCredentials)!);
-            File.WriteAllLines(isolatedCredentials,
+            // 以子进程实际会用的 home 为准。
+            var effectiveHome = startInfo.Environment.TryGetValue("DOUGONG_HOME", out var configuredHome)
+                && !string.IsNullOrWhiteSpace(configuredHome)
+                    ? configuredHome
+                    : isolatedHome;
+
+            Directory.CreateDirectory(effectiveHome);
+            File.WriteAllLines(
+                Path.Combine(effectiveHome, "credentials"),
                 credentialEntries.Select(pair => $"{pair.Key}={pair.Value}"));
 
             // 从子进程环境里移除：否则测试会"通过"，但通过的原因是一个
             // 已经不存在的代码路径——那是假绿，比红更糟。
             foreach (var (name, _) in credentialEntries)
                 startInfo.Environment.Remove(name);
-        }
-
-        foreach (var (key, value) in environment)
-        {
-            if (value is null) startInfo.Environment.Remove(key);
-            else startInfo.Environment[key] = value;
         }
 
         using var process = new Process { StartInfo = startInfo };
