@@ -19,6 +19,58 @@
 
 ---
 
+## [0.1.15-alpha.1] — 2026-11-01
+
+**统一用户数据根目录；用户偏好进配置；安全开关冻结；doctor 不再误报。**
+
+### Breaking
+
+- **删掉三个单项路径变量**：`DOUGONG_PROVIDER_CONFIG`、`DOUGONG_CREDENTIALS`、
+  `DOUGONG_SESSION_DIR`。改用单一的 **`DOUGONG_HOME`**（默认 `~/.dougong`），
+  改一个变量整根搬走。
+- **`DOUGONG_MEMORY` 不再接受路径**。它只能是布尔（`1`/`true`）；
+  想换记忆位置用 `[preferences] memory_dir`。
+- **`ProviderConfigFile.DefaultPath` 行为变化**：不再读 `DOUGONG_PROVIDER_CONFIG`，
+  改由 `DougongHome.ConfigPath` 派生。
+
+### Added
+
+- **`DougongHome`**：用户数据根目录的唯一解析入口。照 dsh 的 `dsh-home-paths`：
+  单一入口、空值当未设置（`DOUGONG_HOME=""` 不会解析成当前目录）、
+  `Describe()` 符号化（输出 `~/.dougong` 或 `$DOUGONG_HOME`，绝不输出绝对用户路径）。
+- **`[preferences]` 配置段**：`shell` / `memory` / `show_reasoning` /
+  `memory_dir`。用户设一次就常驻，不必每次 `export`。
+  环境变量保留为临时覆盖（开关有"我这次想关掉"的语义，密钥没有）。
+- **`SecuritySwitches`**：安全开关在进程启动时冻结。照 hermes 的 `tools/approval.py`
+  （它在导入时读定 `HERMES_YOLO_MODE`，注释说明每次读环境变量会让进程内的任何技能
+  改掉它并绕过全部审批）。
+- **`UserPreferencesFile`**：偏好的读写；保存时保留文件里其他段
+  （整体重写会把用户配的 provider 全冲掉）。
+
+### Fixed
+
+- **记忆默认位置在两个入口不一致**。此前从传入的 `sessionDirectory` 推导，
+  而 REPL 传 `<home>/sessions`、ACP 传 `<workspace>/.dougong` ——
+  同一功能落在 `<home>/memory` 与 `<workspace>/memory` 两处，两边都不报错。
+  现在只由 `DougongHome` 决定。
+- **`--doctor` 把工作区只读判为"无法正常启动"**。实测在 `C:\WINDOWS\system32`
+  下启动完全正常——能对话、能读文件、状态全写 `~/.dougong`，只有写文件工具受限。
+  降为警告。hermes 更彻底：全部源码没有一处检查启动目录可写性。
+- **`--doctor` 的 provider 连通性只读环境变量、不看配置文件**。
+  用配置文件配好的用户永远看到"跳过（配置不完整）"，而实际能对话。
+  改用与启动完全相同的 `TryResolve` 路径。
+- **`--doctor` 的上下文压缩同样只看环境变量**：doctor 说"未启用"，
+  启动时说"窗口 1048576"，同一配置两处结论不同。
+
+### 自举防护
+
+`shell` 一旦开启，模型能用 `echo 'shell = true' >> ~/.dougong/config.toml`
+给自己永久授权。冻结让这个写入**要等用户主动重启**才生效——
+而重启是用户的行为，不是模型的。
+
+`preference` 套的 `security-switch-freezes-in-process` 专门钉这条；
+负控把它改成每次读取会报"自举漏洞"。
+
 ## [0.1.14-alpha.1] — 2026-10-31
 
 **密钥不再走环境变量：改成"填一次，存本机"。**
