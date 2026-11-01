@@ -21,4 +21,10 @@
     <ProjectReference Include="..\Dougong.Agent\Dougong.Agent.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 检查套件需要重置安全开关的冻结值（见 SecuritySwitches.ResetForTesting）。
+         只授给对比探针，不授给任何产品工程——自举防护不能被外部重置。 -->
+    <InternalsVisibleTo Include="Dougong.Agent.Comparison" />
+  </ItemGroup>
+
 </Project>
