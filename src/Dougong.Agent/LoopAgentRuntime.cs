@@ -104,6 +104,20 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     public WorkingDirectory? Directory { get; init; }
 
     /// <summary>
+    /// 技能发现来源；null 表示不注入技能目录。
+    /// </summary>
+    /// <remarks>
+    /// <b>只注入"目录"，不注入正文</b>：给模型名字与一句描述，它自己决定要不要
+    /// 用 <c>skill</c> 工具加载。全量塞进提示等于每轮都付这笔预算，
+    /// 而大多数轮次一个技能都用不到。
+    /// <para>
+    /// <b>以 user 角色注入，不进系统提示</b>：与时间、目录同一判据——
+    /// 它是"当前环境里有什么可用"，不是行为纪律。
+    /// </para>
+    /// </remarks>
+    public SkillDiscovery? Skills { get; init; }
+
+    /// <summary>
     /// 模型请求失败后的重试策略；null 表示不重试。
     /// </summary>
     /// <remarks>
@@ -354,9 +368,10 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             // 这是可接受的——那 10 秒对"用户是刚回复还是隔了一小时"的判断没有影响。
             var requestHistory = BuildRequestMessages(
                 systemPrompt,
-                AppendDirectoryContext(
-                    AppendTimeContext(
-                        await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false))));
+                AppendSkillCatalog(
+                    AppendDirectoryContext(
+                        AppendTimeContext(
+                            await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false)))));
 
             // **重试边界**：一次 "尝试" 覆盖"建流 + 读完整条流"。
             // 可重试的失败两种形态都会出现，而且**前者比后者常见**：
@@ -1234,6 +1249,32 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// 而它一变就必须让模型立刻知道——一条过时的目录读数比没有更糟，
     /// 因为它会让模型自信地用错路径。不变时重复注入的代价很小（一行文本）。
     /// </remarks>
+    /// <summary>
+    /// 追加可用技能目录。
+    /// </summary>
+    /// <remarks>
+    /// <b>只在有技能时注入</b>：目录为空时加一行"（没有技能）"是纯噪音，
+    /// 而它每轮都会占一条消息。
+    /// <para>
+    /// <b>不做"变了才重新注入"的增量</b>：dsh 会对比会话日志里最近一条目录消息、
+    /// 只在变化时产出替换。我们每轮重算一遍——扫描是个位数目录、每次读 4 KiB 文件头，
+    /// 而多一条几十字节的消息比维护"上次发的是哪一版"便宜得多。
+    /// 代价是技能列表不变时每轮多一行文本，写进 D-26 的取舍里。
+    /// </para>
+    /// </remarks>
+    private List<ChatMessage> AppendSkillCatalog(List<ChatMessage> history)
+    {
+        if (Skills is null) return history;
+
+        var catalog = Skills.Discover();
+        if (catalog.Skills.Count == 0) return history;
+
+        var withSkills = new List<ChatMessage>(history.Count + 1);
+        withSkills.AddRange(history);
+        withSkills.Add(new ChatMessage(ChatRole.User, SkillCatalogText.Render(catalog)));
+        return withSkills;
+    }
+
     private List<ChatMessage> AppendDirectoryContext(List<ChatMessage> history)
     {
         if (Directory is null) return history;

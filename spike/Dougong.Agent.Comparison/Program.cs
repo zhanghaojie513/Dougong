@@ -93,6 +93,7 @@ public static class Program
         "file-references",
         "feedback",
         "working-directory",
+        "skills",
         "workspace-lock",
     ];
 
@@ -300,6 +301,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "working-directory")
             return await WorkingDirectoryChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "skills")
+            return await SkillChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

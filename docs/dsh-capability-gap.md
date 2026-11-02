@@ -163,7 +163,7 @@
 | `dsh-tool-pwsh` / `-persistent` | PowerShell | **无** | **缺**（Windows 上更重要） |
 | `dsh-tool-todo` | `todo_write` | `TodoWriteTool` | **已有** |
 | `dsh-tool-ask-user` | `ask_user_question` | `AcpElicitationTool`（仅 ACP） | **缺**：REPL 里没有等价物 |
-| `dsh-tool-skill` | 技能加载工具 | **无** | **缺** |
+| `dsh-tool-skill` | 技能加载工具 | `SkillTool` | **已有** |
 | `dsh-tool-subagent` / `-control` | 子 agent 委派与控制 | **无** | **缺** |
 | `dsh-tool-jobs` | 后台任务控制 | **无** | **缺** |
 | `dsh-tool-web` | `web_search` / `web_fetch` | **无** | **缺** |
@@ -292,7 +292,7 @@ Roslyn 只解析 C#。把 Roslyn 写进 SDK 恰好是把 harness 绑定到单一
 
 | dsh | 能力 | 我们 | 差距 |
 |---|---|---|---|
-| `dsh-skill` / `-filesystem` | 技能提供者注册表 | **无** | **缺**（L1 记忆是另一回事） |
+| `dsh-skill` / `-filesystem` | 技能提供者注册表 | `SkillDiscovery` | **部分**：有发现与合并，**无分层注册表与热失效**；理由见 D-26 |
 | `dsh-goal` / `-round-driver` | 会话内目标的持久状态与轮次驱动 | **无** | **缺** |
 | `dsh-plan-mode` | 计划模式（带用户审阅的退出） | **部分**：`TodoWriteTool` 只是计划展示 | **缺** |
 | `dsh-subagent` / `-fork` / `-spawn` | 子 agent seam 与两种后端 | **无** | **缺** |
@@ -490,7 +490,7 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~19~~ | ~~计划模式（带审阅退出）~~ | `dsh-plan-mode` | **✅ 2026-11-02**：`exit_plan_mode` 阻塞审阅 |
 | ~~20~~ | ~~后台任务~~ | `dsh-jobs*` | **✅ 2026-11-02**：`JobRegistry` + 四个工具 |
 | 21 | 持久 shell / PTY | `dsh-terminal*` | **🟡 shell 已完成**（`PersistentShell`）；**PTY 未做** |
-| 22 | 技能提供者 | `dsh-skill*` | |
+| ~~22~~ | ~~技能提供者~~ | `dsh-skill*` | **✅ 2026-11-03**：`SkillDiscovery` + `SkillTool` |
 | 23 | 拦截钩子 | `dsh-hook-protocol` | |
 | 24 | 会话投影 / 轮次大纲 | `dsh-session-projection*` | |
 | 25 | 出站代理 | `dsh-http-proxy` | |
@@ -501,8 +501,8 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~30~~ | ~~消息级反馈（正负 + 分类，进日志不进模型）~~ | `dsh-feedback/message-feedback` | **✅ 2026-11-02**：`MessageFeedback` + `JsonlMessageFeedbackStore`（伴生文件，不碰会话日志） |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 5 项 + 1 项部分（2026-11-03）**。五项的关键取舍与复核修掉的
-缺陷记在 `porting-differences.md` D-19 至 D-22、D-24、D-25。
+**P2 已完成 6 项 + 1 项部分（2026-11-03）**。六项的关键取舍与复核修掉的
+缺陷记在 `porting-differences.md` D-19 至 D-22、D-24 至 D-26。
 
 ### 明确不做
 

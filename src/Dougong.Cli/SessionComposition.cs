@@ -51,6 +51,16 @@ public sealed class SessionComposition : IDisposable
     /// <summary>shell 执行器。<see cref="WorkingDirectoryTool"/> 换目录时要同步它。</summary>
     private LocalShellExecutor? _shellExecutor;
 
+    /// <summary>
+    /// 技能发现来源。
+    /// </summary>
+    /// <remarks>
+    /// <b>按原始项目扫，不按当前有效目录</b>：换目录是为了"在某处干活"，
+    /// 而技能是这个项目/这个用户的约定。若跟着换，模型从子目录切回根目录时
+    /// 技能列表会变——而它已经加载过的正文不会变，那是不一致。
+    /// </remarks>
+    private readonly SkillDiscovery? _skills;
+
     /// <summary>提问传输。默认走终端；ACP 路径注入自己的实现。</summary>
     private readonly IAskUserHost _askUserHost;
 
@@ -73,7 +83,8 @@ public sealed class SessionComposition : IDisposable
         MemoryStore? memoryStore = null,
         IAskUserHost? askUserHost = null,
         string? restoredDirectory = null,
-        IWorkingDirectoryStore? directoryStore = null)
+        IWorkingDirectoryStore? directoryStore = null,
+        SkillDiscovery? skills = null)
     {
         _sessionId = sessionId;
         _workspace = workspace;
@@ -86,6 +97,7 @@ public sealed class SessionComposition : IDisposable
         Memory = memory;
         MemoryStore = memoryStore;
         _directoryStore = directoryStore;
+        _skills = skills;
 
         // **原始项目永远是构造时的工作区**，恢复的有效目录只影响相对路径起点。
         // 恢复的目录已不存在时退回原始项目——一个指向已删目录的会话
@@ -332,10 +344,21 @@ public sealed class SessionComposition : IDisposable
                 .GetAwaiter().GetResult()?.Cwd;
         }
 
+        // 技能发现：项目级（原始项目）→ 用户级。
+        // **用原始项目而不是有效目录**：技能是项目/用户的约定，
+        // 不该因为模型 cd 到某个子目录就变。
+        var skills = new SkillDiscovery(
+        [
+            new SkillRoot(100, "project-dsh", Path.Combine(workspace, ".dougong", "skills")),
+            new SkillRoot(200, "project-agents", Path.Combine(workspace, ".agents", "skills")),
+            // DougongHome.SkillsDirectory 已经是 <home>/skills，直接用它。
+            new SkillRoot(400, "user-dsh", Dougong.Ai.DougongHome.SkillsDirectory),
+        ]);
+
         return new SessionComposition(
             sessionId, workspace, client, approver,
             shellEnabled, contextWindow, outputReserve, ParseMcpServers(), memory, memoryStore,
-            askUserHost: null, restoredDirectory, directoryStore)
+            askUserHost: null, restoredDirectory, directoryStore, skills)
         {
             TriggerRatio = triggerRatio,
             RetainRatio = retainRatio,
@@ -448,6 +471,11 @@ public sealed class SessionComposition : IDisposable
         // 计划工具：ACP plan 的唯一数据源。两个入口都要有，否则
         // "CLI 能看计划、ACP 看不到"——正是入口能力不一致的老问题。
         dispatcher.Register(new TodoWriteTool());
+
+        // 技能：本地 Markdown 指令，按需加载。
+        // **不把正文塞进系统提示**：技能可以很长，而每轮真正用到的通常是零个。
+        if (_skills is not null)
+            dispatcher.Register(new SkillTool(_skills));
 
         // 换目录：模型读到"代码在 src/api 下"之后应当自己换过去，
         // 而不是每次写全路径。
@@ -648,6 +676,7 @@ public sealed class SessionComposition : IDisposable
                 PromptBuilder = promptBuilder,
                 Time = CreateTimeContext(),
                 Directory = _directory,
+                Skills = _skills,
                 Retry = RetryPolicy.Default,
                 Spill = CreateSpillStore(),
                 PlanMode = _planMode,

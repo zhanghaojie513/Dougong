@@ -87,6 +87,16 @@ public static class DougongHome
     /// <summary>会话目录：<c>sessions</c>。</summary>
     public static string SessionsDirectory => Resolve("sessions");
 
+    /// <summary>
+    /// 用户级技能目录（<c>~/.dougong/skills</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <b>与 <see cref="SessionsDirectory"/> 同级</b>：技能是用户自己的配置，
+    /// 不属于某个会话或某个工作区。项目级技能另有位置（工作区下的
+    /// <c>.dougong/skills</c>），两者的优先级见 <c>SkillDiscovery</c>。
+    /// </remarks>
+    public static string SkillsDirectory => Resolve("skills");
+
     /// <summary>记忆目录：<c>memory</c>。</summary>
     public static string MemoryDirectory => Resolve("memory");
 
