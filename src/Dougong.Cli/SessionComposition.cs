@@ -32,6 +32,25 @@ public sealed class SessionComposition : IDisposable
     /// <summary>计划模式状态。**会话级**：用户开关一次，跨轮保持。</summary>
     private readonly PlanMode _planMode = new();
 
+    /// <summary>
+    /// 会话的有效工作目录。**会话级**：换过之后跨轮保持。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么放在装配层而不是工具里</b>：文件系统、shell、运行时注入
+    /// 三处都要它，而工具只是写入方之一（宿主也可以换）。
+    /// 放在工具里会让"用户在界面上换目录"必须伪造一次工具调用。
+    /// </remarks>
+    private readonly WorkingDirectory _directory;
+
+    /// <summary>目录变更的持久化；null 表示不持久化（无会话文件时）。</summary>
+    private readonly IWorkingDirectoryStore? _directoryStore;
+
+    /// <summary>文件能力的本地实现。<see cref="WorkingDirectoryTool"/> 换目录时要同步它。</summary>
+    private LocalFileSystem? _files;
+
+    /// <summary>shell 执行器。<see cref="WorkingDirectoryTool"/> 换目录时要同步它。</summary>
+    private LocalShellExecutor? _shellExecutor;
+
     /// <summary>提问传输。默认走终端；ACP 路径注入自己的实现。</summary>
     private readonly IAskUserHost _askUserHost;
 
@@ -52,7 +71,9 @@ public sealed class SessionComposition : IDisposable
         IReadOnlyList<McpServerSpec> mcpServers,
         IMemoryInjector? memory = null,
         MemoryStore? memoryStore = null,
-        IAskUserHost? askUserHost = null)
+        IAskUserHost? askUserHost = null,
+        string? restoredDirectory = null,
+        IWorkingDirectoryStore? directoryStore = null)
     {
         _sessionId = sessionId;
         _workspace = workspace;
@@ -64,6 +85,17 @@ public sealed class SessionComposition : IDisposable
         _mcpServers = mcpServers;
         Memory = memory;
         MemoryStore = memoryStore;
+        _directoryStore = directoryStore;
+
+        // **原始项目永远是构造时的工作区**，恢复的有效目录只影响相对路径起点。
+        // 恢复的目录已不存在时退回原始项目——一个指向已删目录的会话
+        // 会让每次相对路径操作都失败，而用户看不出原因。
+        _directory = new WorkingDirectory(workspace, restoredDirectory);
+        if (!_directory.TryEnsureExists(out _, out _))
+        {
+            // 原始项目也没了：保持构造值，让第一次工具调用给出明确错误
+            // （"目录不存在"），而不是在装配期抛一个用户无法处置的异常。
+        }
 
         // 默认走终端：REPL 是主入口，而"没有注入"不该让它不可用。
         _askUserHost = askUserHost ?? new ConsoleAskUserHost(null);
@@ -220,10 +252,16 @@ public sealed class SessionComposition : IDisposable
     /// **注意是预留，不是模型容量上限**——两者的区别见
     /// <see cref="ContextLimits.RequestOutputReserve"/>。
     /// </param>
+    /// <param name="sessionLogPath">
+    /// 会话日志路径。**给了它才持久化工作目录**——目录变更要与会话绑定，
+    /// 否则恢复会话后模型看到的目录和它上次以为的不一样，
+    /// 而它会按错的目录继续拼相对路径。null 表示不持久化（如无文件场景）。
+    /// </param>
     public static async Task<SessionComposition> CreateAsync(
         string sessionId, string workspace, IChatClient client, IToolApprover approver,
         string? memoryDirectory = null, CancellationToken cancellationToken = default,
-        int? contextWindow = null, int? requestOutputReserve = null)
+        int? contextWindow = null, int? requestOutputReserve = null,
+        string? sessionLogPath = null)
     {
         // 记忆按工作区分文件：跨工作区默认不传播（skills-evolution.md §3）。
         // 用路径哈希而不是文件名，避免不同工作区撞到同一个文件。
@@ -241,13 +279,14 @@ public sealed class SessionComposition : IDisposable
 
         return Create(
             sessionId, workspace, client, approver, memory, memoryStore,
-            contextWindow, requestOutputReserve);
+            contextWindow, requestOutputReserve, sessionLogPath);
     }
 
     private static SessionComposition Create(
         string sessionId, string workspace, IChatClient client, IToolApprover approver,
         IMemoryInjector? memory, MemoryStore? memoryStore,
-        int? configuredContextWindow = null, int? configuredOutputReserve = null)
+        int? configuredContextWindow = null, int? configuredOutputReserve = null,
+        string? sessionLogPath = null)
     {
         // 走冻结快照，不直接读环境变量：
         // 安全开关必须在进程启动时定下来，否则模型改了配置文件就能影响
@@ -281,9 +320,22 @@ public sealed class SessionComposition : IDisposable
         if (!TryReadCompactionRatios(out var triggerRatio, out var retainRatio, out var error))
             throw new InvalidOperationException($"压缩比例配置无效：{error}");
 
+        // 恢复已记录的目录。读不到（文件不存在）就是"从未换过"，按原始项目跑——
+        // 那是正确的缺省，不是错误。
+        IWorkingDirectoryStore? directoryStore = null;
+        string? restoredDirectory = null;
+        if (!string.IsNullOrWhiteSpace(sessionLogPath))
+        {
+            directoryStore = new JsonlWorkingDirectoryStore(
+                JsonlWorkingDirectoryStore.PathFor(sessionLogPath));
+            restoredDirectory = directoryStore.ReadLastAsync(CancellationToken.None)
+                .GetAwaiter().GetResult()?.Cwd;
+        }
+
         return new SessionComposition(
             sessionId, workspace, client, approver,
-            shellEnabled, contextWindow, outputReserve, ParseMcpServers(), memory, memoryStore)
+            shellEnabled, contextWindow, outputReserve, ParseMcpServers(), memory, memoryStore,
+            askUserHost: null, restoredDirectory, directoryStore)
         {
             TriggerRatio = triggerRatio,
             RetainRatio = retainRatio,
@@ -384,7 +436,8 @@ public sealed class SessionComposition : IDisposable
         // 文件工具来自 SDK，不是 CLI 自己那份——两个入口必须同源，
         // 否则路径校验、编码、大小限制会各走各的。
         // 文件能力经 seam 注入：换一个实现就能加沙箱或换成远程工作区。
-        var files = new LocalFileSystem(_workspace);
+        var files = new LocalFileSystem(_directory.Current);
+        _files = files;
         dispatcher.Register(new ReadFileTool(files));
         dispatcher.Register(new WriteFileTool(files));
         // 搜索与编辑：没有 grep 的编码 agent 等于没有眼睛。
@@ -395,6 +448,18 @@ public sealed class SessionComposition : IDisposable
         // 计划工具：ACP plan 的唯一数据源。两个入口都要有，否则
         // "CLI 能看计划、ACP 看不到"——正是入口能力不一致的老问题。
         dispatcher.Register(new TodoWriteTool());
+
+        // 换目录：模型读到"代码在 src/api 下"之后应当自己换过去，
+        // 而不是每次写全路径。
+        //
+        // **shell 执行器要一起换根**，否则"模型以为换了、命令还在旧目录跑"——
+        // 那种不一致只会表现为"命令找不到文件"，而原因看不出来。
+        // 持久 shell 与后台作业不在此列：它们持有自己的进程与目录。
+        dispatcher.Register(new WorkingDirectoryTool(
+            _directory,
+            _directoryStore,
+            files,
+            _shellExecutor));
 
         // 计划模式：模型调 exit_plan_mode 提交完整 Markdown 计划，
         // 工具**阻塞**等用户审阅（dsh 的做法），批准后同一轮继续。
@@ -426,11 +491,18 @@ public sealed class SessionComposition : IDisposable
         if (CreateWebFetchTool() is { } webFetch)
             dispatcher.Register(webFetch);
 
-        // 工作区必须显式传：命令策略用它判"cd 是否越界"。
+        // 工作区必须显式传：命令策略用它判"cd 越界"。
         // 不传时 ShellTool 会退回进程当前目录，那是启动时的工作目录，
         // 与这次会话的工作区不一定相同——守卫会拦错地方。
+        //
+        // **执行器要留一个引用**：会话换目录时它也要跟着换根
+        // （见上面的 working_directory 注册），而内联构造就拿不到了。
         if (_shellEnabled)
-            dispatcher.Register(new ShellTool(_workspace));
+        {
+            _shellExecutor = new LocalShellExecutor(_directory.Current);
+            dispatcher.Register(new ShellTool(
+                _shellExecutor, timeout: null, maxOutputBytes: 64 * 1024, workspace: _directory.Project));
+        }
 
         return dispatcher;
     }
@@ -575,6 +647,7 @@ public sealed class SessionComposition : IDisposable
                 MemoryWorkspace = _workspace,
                 PromptBuilder = promptBuilder,
                 Time = CreateTimeContext(),
+                Directory = _directory,
                 Retry = RetryPolicy.Default,
                 Spill = CreateSpillStore(),
                 PlanMode = _planMode,
@@ -600,6 +673,7 @@ public sealed class SessionComposition : IDisposable
             MemoryWorkspace = _workspace,
             PromptBuilder = promptBuilder,
             Time = CreateTimeContext(),
+            Directory = _directory,
             // 交互场景打开重试：一次瞬时 429 不该结束整轮。
             // SDK 默认不重试（自动化要确定性），这里是我们替用户做的选择。
             Retry = RetryPolicy.Default,
@@ -807,7 +881,8 @@ public static class AcpComposition
                 storePath is null
                     ? Path.Combine(context.Workspace, ".dougong")
                     : (Path.GetDirectoryName(Path.GetFullPath(storePath)) ?? context.Workspace)),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            sessionLogPath: storePath).ConfigureAwait(false);
 
         // 账目：与 REPL 一样包一层装饰器。
         var ledger = new UsageLedger();

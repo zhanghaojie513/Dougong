@@ -128,7 +128,7 @@
 | `dsh-session-reference` | 跨会话快照引用 | **无** | **缺** |
 | `dsh-session-log-export` | 会话日志导出 | **无** | **缺** |
 | `dsh-session-telemetry*` | 会话遥测 | `DougongTelemetry`（Meter） | **部分** |
-| `dsh-session/working-directory` | 切换单个会话的工作目录（不影响已起进程） | **无** | **缺**：工作目录在启动时固定；变更后不参与重放 |
+| `dsh-session/working-directory` | 切换单个会话的工作目录（不影响已起进程） | `WorkingDirectory` + `working_directory` 工具 | **已有**：原始项目与有效目录分开；变更存伴生文件可恢复 |
 | `dsh-deliverables/workspace-changes` | 每轮改了哪些文件（逐文件行数 + 首尾对比） | **无** | **缺**：桌面端自己用文件指纹算，给不出行级 diff |
 | `dsh-deliverables/tool-present` | 显式声明交付物 | **无** | **缺**：模型只能靠正文描述"我改了哪些文件" |
 | `dsh-feedback/message-feedback` | 消息级正负反馈（分类 + 备注，进日志不进模型） | `JsonlMessageFeedbackStore` | **已有**：不进日志、不进模型，存会话旁伴生文件；理由见 `porting-differences.md` D-24 |
@@ -497,12 +497,12 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | 26 | 重复工具调用提醒 | `dsh-repeat-tool-reminder` | |
 | 27 | 权限预设 | `dsh-permission-presets` | |
 | ~~28~~ | ~~文件引用 `@file`~~ | `dsh-file-reference*` | **✅ 2026-11-02**：`FileReferenceIndex` |
-| 29 | 会话内切换工作目录 | `dsh-session/working-directory` | |
+| ~~29~~ | ~~会话内切换工作目录~~ | `dsh-session/working-directory` | **✅ 2026-11-03**：`WorkingDirectory` + `working_directory` 工具 |
 | ~~30~~ | ~~消息级反馈（正负 + 分类，进日志不进模型）~~ | `dsh-feedback/message-feedback` | **✅ 2026-11-02**：`MessageFeedback` + `JsonlMessageFeedbackStore`（伴生文件，不碰会话日志） |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 4 项 + 1 项部分（2026-11-02）**。四项的关键取舍与复核修掉的
-缺陷记在 `porting-differences.md` D-19 至 D-22、D-24。
+**P2 已完成 5 项 + 1 项部分（2026-11-03）**。五项的关键取舍与复核修掉的
+缺陷记在 `porting-differences.md` D-19 至 D-22、D-24、D-25。
 
 ### 明确不做
 

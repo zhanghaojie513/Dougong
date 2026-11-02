@@ -21,7 +21,7 @@
 
 ## [未发布]
 
-**P2：后台作业、计划模式、文件引用、消息级反馈。**
+**P2：后台作业、计划模式、文件引用、消息级反馈、会话内换目录。**
 
 ### Added
 
@@ -37,6 +37,12 @@
   经 `AskUser` 通道带 `intent.kind=plan-review` 送出。
 - **`FileReferenceIndex`**：`@file` 补全。只返回工作区内的相对路径、不读文件内容
   （dsh 契约原话）；按深度/长度/字典序稳定排序；不越出工作区、跳过噪声目录。
+- **`WorkingDirectory` + `working_directory` 工具**：会话内换目录。原始项目与有效目录
+  分开——相对路径跟着有效目录走，**写权限边界仍是原始项目**；已有的持久 shell
+  与后台作业保持自己的目录。目录变更存会话旁的
+  `<session>.jsonl.cwd`（只追加），重开会话可恢复；目录消失时退回原始项目。
+- **`LocalFileSystem.UseDirectory` / `LocalShellExecutor.UseDirectory`**：接缝的根
+  不再是构造时固化的字符串。这是换目录能生效的前提。
 - **`MessageFeedback` + `JsonlMessageFeedbackStore`**：消息级正负反馈，带七个分类与
   可选备注。按日志序号（`RecordSequence`）定位被评价的消息，严格版本守卫、
   删除留墓碑。**不进会话日志、不进模型上下文**——存会话文件旁的 `<session>.jsonl.feedback`。
@@ -61,6 +67,8 @@
   我们不这么做，因为**加新记录类型会让旧程序在 `Enum.Parse<StoreRecordKind>`
   抛异常、整个会话打不开**。代价是反馈不随会话文件一起分发，需要单独带走
   `<session>.jsonl.feedback`。见 `porting-differences.md` D-24。
+- **换目录不影响已启动的进程**：持久 shell、后台作业、之前起的命令都保持它们
+  自己的目录。这是 dsh 的语义，也是唯一能推断"我在哪"的形态。见 D-25。
 - **反馈的并发保证是单进程的**：同一会话由调用方保证只有一个写入者。
   多进程同时写会让版本校验失去意义——两边都读到旧版本、都以为自己改的是最新值。
 

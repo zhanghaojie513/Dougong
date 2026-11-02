@@ -16,10 +16,26 @@ namespace Dougong.Agent;
 /// 上限是呈现约束，属于工具。
 /// </para>
 /// </remarks>
-/// <param name="workspace">命令的工作目录。</param>
+/// <param name="workspace">
+/// 命令的工作目录。<b>可在会话中途变化</b>——见 <see cref="UseDirectory"/>。
+/// </param>
 public sealed class LocalShellExecutor(string workspace) : IShellExecutor
 {
-    private readonly string _workspace = Path.GetFullPath(workspace);
+    private string _workspace = Path.GetFullPath(workspace);
+
+    /// <summary>换个工作目录（会话换目录时用）。</summary>
+    /// <remarks>
+    /// <b>只影响之后启动的进程</b>：已经跑着的（持久 shell、后台作业）
+    /// 保持它们自己的目录。这是刻意的——那些进程里可能已经 <c>cd</c> 过，
+    /// 把它们的目录改掉会让"我在哪"变得不可推断。dsh 的原话是
+    /// "已有终端和持久 shell 保留自己的目录"。
+    /// </remarks>
+    /// <param name="directory">新的绝对目录。</param>
+    public void UseDirectory(string directory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+        _workspace = Path.GetFullPath(directory);
+    }
 
     /// <inheritdoc />
     public async ValueTask<ShellExecutionResult> ExecuteAsync(

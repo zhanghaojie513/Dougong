@@ -16,13 +16,37 @@ namespace Dougong.Agent;
 /// 但那要先证明它是瓶颈——现在没证据。
 /// </para>
 /// </remarks>
-/// <param name="workspace">工作区根。所有相对路径相对它解析。</param>
+/// <param name="workspace">
+/// 工作区根。所有相对路径相对它解析。
+/// <b>它是"会话的有效目录"，可以在会话中途变化</b>——所以构造后通过
+/// <see cref="UseDirectory"/> 换根，而不是每次新建一个实现。
+/// </param>
 public sealed class LocalFileSystem(string workspace) : IFileSystem
 {
-    private readonly string _root = Path.GetFullPath(workspace);
+    private string _root = Path.GetFullPath(workspace);
 
     /// <summary>工作区根的绝对路径。</summary>
     public string Root => _root;
+
+    /// <summary>
+    /// 换一个根目录（会话换目录时用）。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么不是"新建一个 LocalFileSystem 换进去"</b>：工具持有的是这一个实例，
+    /// dispatcher 已按实例注册。换实例要实现注册表层面的热替换，而这里要变的
+    /// 只是一个字符串。dsh 也是同一个 Session 投影持有有效目录，不是重建工具。
+    /// <para>
+    /// <b>不做越界校验</b>：守卫的根仍是原始项目（见 <see cref="WorkingDirectory"/>），
+    /// 换根只影响相对路径的起点。在这里再拦一次"必须在项目内"会让
+    /// "去项目外的目录看东西"变得不可能，而那是这条能力的用途之一。
+    /// </para>
+    /// </remarks>
+    /// <param name="directory">新的绝对根目录。</param>
+    public void UseDirectory(string directory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+        _root = Path.GetFullPath(directory);
+    }
 
     /// <inheritdoc />
     public async ValueTask<string> ReadTextAsync(

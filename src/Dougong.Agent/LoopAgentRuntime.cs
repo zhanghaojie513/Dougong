@@ -87,6 +87,23 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     public TimeContext? Time { get; init; }
 
     /// <summary>
+    /// 会话的工作目录；null 表示不注入目录上下文。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么模型需要知道它在哪</b>：换过目录之后，相对路径按新目录解析。
+    /// 提示里不出现当前目录时，模型会按原始项目猜路径，然后连续几次
+    /// "文件不存在"——而它从错误里学到的东西是"这个文件不存在"，
+    /// 不是"我在另一个目录"。
+    /// <para>
+    /// <b>与 <see cref="Time"/> 同一形态</b>：作为 user 角色的一行读数注入，
+    /// 不进系统提示——它是随会话变化的运行时状态，不是行为纪律。
+    /// 初始值与每次变更后的值都要到达模型（dsh 对此的要求是
+    /// "必需的用户上下文快照，即使可选运行时上下文被禁用"）。
+    /// </para>
+    /// </remarks>
+    public WorkingDirectory? Directory { get; init; }
+
+    /// <summary>
     /// 模型请求失败后的重试策略；null 表示不重试。
     /// </summary>
     /// <remarks>
@@ -337,8 +354,9 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             // 这是可接受的——那 10 秒对"用户是刚回复还是隔了一小时"的判断没有影响。
             var requestHistory = BuildRequestMessages(
                 systemPrompt,
-                AppendTimeContext(
-                    await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false)));
+                AppendDirectoryContext(
+                    AppendTimeContext(
+                        await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false))));
 
             // **重试边界**：一次 "尝试" 覆盖"建流 + 读完整条流"。
             // 可重试的失败两种形态都会出现，而且**前者比后者常见**：
@@ -1208,6 +1226,24 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// 那只会占预算而没有信息。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 追加当前工作目录。
+    /// </summary>
+    /// <remarks>
+    /// <b>每轮都注入</b>（不像时间上下文有最小间隔）：目录只在被显式切换时才变，
+    /// 而它一变就必须让模型立刻知道——一条过时的目录读数比没有更糟，
+    /// 因为它会让模型自信地用错路径。不变时重复注入的代价很小（一行文本）。
+    /// </remarks>
+    private List<ChatMessage> AppendDirectoryContext(List<ChatMessage> history)
+    {
+        if (Directory is null) return history;
+
+        var withDirectory = new List<ChatMessage>(history.Count + 1);
+        withDirectory.AddRange(history);
+        withDirectory.Add(new ChatMessage(ChatRole.User, Directory.DescribeForModel()));
+        return withDirectory;
+    }
+
     private List<ChatMessage> AppendTimeContext(List<ChatMessage> history)
     {
         if (Time?.TryRender() is not { } reading) return history;
