@@ -71,6 +71,7 @@ public static class Program
         "store",
         "surface",
         "telemetry",
+        "time-context",
         "timeout",
         "token",
         "tool-plugin-checks",
@@ -78,6 +79,14 @@ public static class Program
         "usage",
         "wire",
         "wiring",
+        "ws-instructions",
+        "retry",
+        "spill",
+        "session-search",
+        "session-title",
+        "ask-user",
+        "web-fetch",
+        "workspace-changes",
         "workspace-lock",
     ];
 
@@ -235,9 +244,38 @@ public static class Program
         if (args.FirstOrDefault() == "shell-policy")
             return await ShellPolicyChecks.RunAsync();
 
+        // 时间上下文：读数形态、最小间隔、时钟回退。
+        if (args.FirstOrDefault() == "time-context")
+            return await TimeContextChecks.RunAsync();
+
         // 工具超时：挂住的工具会挂住整轮，终态必须与"用户取消"分开。
         if (args.FirstOrDefault() == "timeout")
             return await TimeoutChecks.RunAsync();
+
+        // 工作区指令：AGENTS.md 的加载、去重、预算与 UTF-8 截断。
+        if (args.FirstOrDefault() == "ws-instructions")
+            return await WorkspaceInstructionChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "retry")
+            return await RetryChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "spill")
+            return await SpillChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "session-search")
+            return await SessionSearchChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "session-title")
+            return await SessionTitleChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "ask-user")
+            return await AskUserChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "web-fetch")
+            return await WebFetchChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "workspace-changes")
+            return await WorkspaceChangeChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

@@ -125,6 +125,12 @@ public sealed class ActivityReporter : IAsyncDisposable
                     _state.OnCompacting(now);
                     break;
 
+                // 重试等待期间没有别的输出，状态行必须反映它——
+                // 否则转圈动画看起来只是"慢"，用户不知道在等重试。
+                case AgentEvent.RetryScheduled retry:
+                    _state.OnRetrying(now, retry.Attempt, retry.MaxAttempts);
+                    break;
+
                 case AgentEvent.RunFinished finished:
                     _state.OnRunFinished(now, finished.Outcome != AgentRunOutcome.Completed);
                     break;

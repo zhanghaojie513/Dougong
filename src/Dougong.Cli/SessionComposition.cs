@@ -380,6 +380,12 @@ public sealed class SessionComposition
         // "CLI 能看计划、ACP 看不到"——正是入口能力不一致的老问题。
         dispatcher.Register(new TodoWriteTool());
 
+        // 联网抓取：默认关闭。**这是唯一会主动向外发请求的工具**，
+        // 而"我的 agent 会不会把内部 URL 发出去"是用户该自己决定的事。
+        // 打开方式：DOUGONG_WEB_FETCH=1。
+        if (CreateWebFetchTool() is { } webFetch)
+            dispatcher.Register(webFetch);
+
         // 工作区必须显式传：命令策略用它判"cd 是否越界"。
         // 不传时 ShellTool 会退回进程当前目录，那是启动时的工作目录，
         // 与这次会话的工作区不一定相同——守卫会拦错地方。
@@ -401,10 +407,72 @@ public sealed class SessionComposition
     /// 分节（如 shell 沙箱边界）等有沙箱之后再加——现在写进去等于声明没有的能力。
     /// </para>
     /// </remarks>
+    /// <remarks>
+    /// <b>顺序即优先级</b>：工作区在哪（100）→ 这个项目的约定（150）→ 工具纪律（200）。
+    /// 先立坐标，再给上下文，最后才是怎么用工具。
+    /// <para>
+    /// 全局指令目录取自 <see cref="DougongHome"/>：与配置、凭据同处一个根，
+    /// 用户搬 home 时它跟着搬。
+    /// </para>
+    /// </remarks>
     public SystemPromptBuilder CreatePromptBuilder() =>
         new SystemPromptBuilder()
             .Add(new WorkspaceSection())
+            .Add(new WorkspaceInstructionsSection(DougongHome.Root))
             .Add(new FileToolPolicySection());
+
+    /// <summary>
+    /// 时间上下文；<c>DOUGONG_TIME_CONTEXT=0</c> 关闭。
+    /// </summary>
+    /// <remarks>
+    /// <b>默认开启</b>：模型没有时钟时，"今天"、"上周"、"三天前"这些判断全错，
+    /// 而代价是每 10 分钟一条几十字节的消息。
+    /// <para>
+    /// <b>可关</b>：自动化场景（批量脚本、检查套件）不需要它，而那些场景跑得最多——
+    /// 一条每次都变的读数会让"同一输入产生同一请求"不成立。
+    /// </para>
+    /// </remarks>
+    public static TimeContext? CreateTimeContext() =>
+        Environment.GetEnvironmentVariable("DOUGONG_TIME_CONTEXT") is "0" or "false"
+            ? null
+            : new TimeContext();
+
+    /// <summary>
+    /// 大结果落盘的存储；<c>DOUGONG_SPILL=0</c> 时关闭。
+    /// </summary>
+    /// <remarks>
+    /// <b>可关</b>：它会在工作区里写文件。用户在一个"只读分析"的场景里未必
+    /// 希望多出一个 <c>.dougong/spill</c> 目录，所以给它一个开关。
+    /// <para>
+    /// <b>默认开</b>：截断的结果若不落盘，模型对中间段的唯一出路是重跑命令，
+    /// 那更贵也可能拿不到同样结果。落盘是更省的选择。
+    /// </para>
+    /// </remarks>
+    /// <summary>
+    /// 联网抓取工具；<c>DOUGONG_WEB_FETCH</c> 未开启时返回 null。
+    /// </summary>
+    /// <remarks>
+    /// <b>默认关闭</b>：这是唯一会主动向外发请求的工具，而"我的 agent 会不会
+    /// 把内部 URL 发出去"该由用户决定，不该由 SDK 替他决定。
+    /// <para>
+    /// <b>打开方式</b>：<c>DOUGONG_WEB_FETCH=1</c>。与其它开关一致，
+    /// 用"未设置即关闭"，而不是"设置即关闭"——前者的默认值是安全的那个。
+    /// </para>
+    /// </remarks>
+    public static WebFetchTool? CreateWebFetchTool()
+    {
+        if (Environment.GetEnvironmentVariable("DOUGONG_WEB_FETCH") is not ("1" or "true"))
+            return null;
+
+        // 超时给 30 秒：文档页通常几秒内回来，而慢站点不该让整轮卡死。
+        // 这个值与工具超时是两层保险——外层拦"完全没响应"，这里拦"太慢"。
+        return new WebFetchTool(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
+    }
+
+    public SpillStore? CreateSpillStore() =>
+        Environment.GetEnvironmentVariable("DOUGONG_SPILL") is "0" or "false"
+            ? null
+            : new SpillStore(_workspace);
 
     /// <summary>
     /// 建立运行时。用量记账在这里包一层，两个入口自动都有账目。
@@ -440,6 +508,9 @@ public sealed class SessionComposition
                 Memory = Memory,
                 MemoryWorkspace = _workspace,
                 PromptBuilder = promptBuilder,
+                Time = CreateTimeContext(),
+                Retry = RetryPolicy.Default,
+                Spill = CreateSpillStore(),
             };
 
         return new LoopAgentRuntime(
@@ -461,6 +532,12 @@ public sealed class SessionComposition
             Memory = Memory,
             MemoryWorkspace = _workspace,
             PromptBuilder = promptBuilder,
+            Time = CreateTimeContext(),
+            // 交互场景打开重试：一次瞬时 429 不该结束整轮。
+            // SDK 默认不重试（自动化要确定性），这里是我们替用户做的选择。
+            Retry = RetryPolicy.Default,
+            // 大结果落盘到工作区下的 .dougong/spill，模型可用 read_file 取回。
+            Spill = CreateSpillStore(),
         };
     }
 

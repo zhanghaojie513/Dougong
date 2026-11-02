@@ -65,27 +65,30 @@ public static class SessionBranch
             source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false,
             bufferSize: 4096, leaveOpen: true);
 
+        // 版本行要原样保留（分叉后的新文件仍需声明格式），
+        // 但它不是记录、不参与序号与配对计算。
+        string? formatLine = null;
+        var reachedFileEnd = false;
+
         while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
         {
-            if (string.IsNullOrWhiteSpace(line)) continue;
-
-            long sequence;
-            try
+            // 格式行的识别在 SessionRecordReader 里统一做：Read 返回 Skip 时，
+            // 若这一行是格式行就记下来（要带到新文件），否则只是空行。
+            switch (SessionRecordReader.Read(line, out var parsed))
             {
-                using var document = JsonDocument.Parse(line);
-                var root = document.RootElement;
-                if (!root.TryGetProperty("Sequence", out var seq)
-                    || seq.ValueKind is not JsonValueKind.Number)
+                case SessionLineKind.End:
+                case SessionLineKind.Stop:
+                    reachedFileEnd = true;
                     break;
-                sequence = seq.GetInt64();
+                case SessionLineKind.Skip:
+                    if (SessionRecordReader.IsFormatLine(line)) formatLine ??= line;
+                    continue;
+            }
 
-                TrackPendingCalls(root, pendingCalls);
-            }
-            catch (JsonException)
-            {
-                // 尾部半条记录：到此为止，不影响已提交部分。
-                break;
-            }
+            if (reachedFileEnd) break;
+
+            long sequence = parsed!.Sequence;
+            TrackPendingCalls(parsed.Root, pendingCalls);
 
             kept.Add(line);
             lastSequence = sequence;
@@ -100,33 +103,26 @@ public static class SessionBranch
                 while (pendingCalls.Count > 0
                     && await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } extra)
                 {
-                    if (string.IsNullOrWhiteSpace(extra)) continue;
-
-                    try
+                    // 补齐循环里也用同一个读取器：格式行、空行、坏行的判据三处必须一致。
+                    switch (SessionRecordReader.Read(extra, out var extraParsed))
                     {
-                        using var document = JsonDocument.Parse(extra);
-                        var root = document.RootElement;
-                        if (!root.TryGetProperty("Sequence", out var seq)
-                            || seq.ValueKind is not JsonValueKind.Number)
-                            break;
-
-                        var kind = root.TryGetProperty("Kind", out var kindElement)
-                            ? kindElement.GetString() : null;
-                        if (kind is nameof(StoreRecordKind.UserInput))
-                        {
-                            throw new InvalidOperationException(
-                                "分支点处的工具调用在下一个用户输入之前没有结果；"
-                                + "该分支会留下悬空的 tool_calls，provider 无法接受。");
-                        }
-
-                        TrackPendingCalls(root, pendingCalls);
-                        kept.Add(extra);
-                        lastSequence = seq.GetInt64();
+                        case SessionLineKind.End:
+                        case SessionLineKind.Stop:
+                            break;   // 无法继续补齐
+                        case SessionLineKind.Skip:
+                            continue;
                     }
-                    catch (JsonException)
+
+                    if (extraParsed!.Kind is nameof(StoreRecordKind.UserInput))
                     {
-                        break;
+                        throw new InvalidOperationException(
+                            "分支点处的工具调用在下一个用户输入之前没有结果；"
+                            + "该分支会留下悬空的 tool_calls，provider 无法接受。");
                     }
+
+                    TrackPendingCalls(extraParsed.Root, pendingCalls);
+                    kept.Add(extra);
+                    lastSequence = extraParsed.Sequence;
                 }
 
                 break;
@@ -149,6 +145,17 @@ public static class SessionBranch
             targetPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
             bufferSize: 4096, useAsync: true))
         {
+            // **先写版本行**：分支是新会话，必须自带格式声明。
+            // 源文件有版本行就继承它；源是没有版本行的旧文件时按当前版本写。
+            //
+            // 漏了这一步的后果：分支文件变成"无版本行"，而读取端把那种文件
+            // 按**当前**版本处理——于是格式升级后，这些分支会被按一个
+            // 它们并不符合的格式解析，而且不会报错。
+            // 构造格式行统一走 SessionRecordReader.FormatLine：写入侧的
+            // 拼法也必须只有一处，否则改前缀时又会漏。
+            var headerBytes = Encoding.UTF8.GetBytes(SessionRecordReader.FormatLine(formatLine));
+            await target.WriteAsync(headerBytes, cancellationToken).ConfigureAwait(false);
+
             foreach (var line in kept)
             {
                 var bytes = Encoding.UTF8.GetBytes(line + "\n");
@@ -248,26 +255,22 @@ public static class SessionBranch
 
             while (reader.ReadLine() is { } line)
             {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                try
+                // 格式行的识别统一在 SessionRecordReader 里：此前这段手写在六处。
+                switch (SessionRecordReader.Read(line, out var parsed))
                 {
-                    using var document = JsonDocument.Parse(line);
-                    if (!document.RootElement.TryGetProperty("Sequence", out var seq)
-                        || seq.ValueKind is not JsonValueKind.Number)
-                        break;
+                    case SessionLineKind.End:
+                    case SessionLineKind.Stop:
+                        return (first, last, records, gap);   // 坏行或结束：停止统计
+                    case SessionLineKind.Skip:
+                        continue;
+                }
 
-                    var sequence = seq.GetInt64();
-                    if (records == 0) first = sequence;
-                    if (sequence != expected) gap = true;
-                    expected = sequence + 1;
-                    last = sequence;
-                    records++;
-                }
-                catch (JsonException)
-                {
-                    // 尾部半条记录：停止扫描，已提交部分仍然有效。
-                    break;
-                }
+                var sequence = parsed!.Sequence;
+                if (records == 0) first = sequence;
+                if (sequence != expected) gap = true;
+                expected = sequence + 1;
+                last = sequence;
+                records++;
             }
         }
         catch (IOException)

@@ -114,10 +114,22 @@ public sealed class HttpClientChatClient : IChatClient
             // 消息文本要靠正则解析才能取状态码，而解析会失败——
             // 上游任何一处改措辞，失败分类就静默退化成 Unknown。
             // .NET 的 HttpRequestException 有专门的 StatusCode 属性，用它。
-            throw new HttpRequestException(
+            var failure = new HttpRequestException(
                 $"provider 返回 {(int)response.StatusCode}：{snippet}",
                 inner: null,
                 response.StatusCode);
+
+            // **把 Retry-After 带上去**：provider 知道自己的限流窗口有多长，
+            // 我们的本地退避只是猜。这条信息只有在异常上才传得到重试策略那里。
+            //
+            // 放在 Data 里而不是自定义异常类型：Agent 层不依赖 Ai 层
+            // （依赖方向是 Ai → Agent），所以只能通过 BCL 的 Data 传递。
+            // 键名用 Agent 层的公开常量，避免两边字符串写岔——写岔不会报错，
+            // 只会静默退回本地退避，那种 bug 很难发现。
+            if (ReadRetryAfter(response) is { } retryAfter)
+                failure.Data[RetryClassifier.ProviderDelayKey] = retryAfter;
+
+            throw failure;
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken)
@@ -183,6 +195,47 @@ public sealed class HttpClientChatClient : IChatClient
             // 自定义附加属性对它们不可见，账目会静默丢失。
             yield return new ChatResponseUpdate(ChatRole.Assistant, [new UsageContent(usage)]);
         }
+    }
+
+    /// <summary>
+    /// 读 <c>Retry-After</c> 响应头，转成等待时长。
+    /// </summary>
+    /// <remarks>
+    /// <b>两种格式都要认</b>（RFC 9110 §10.2.3）：秒数（<c>Retry-After: 30</c>）
+    /// 与 HTTP-date（<c>Retry-After: Wed, 21 Oct 2015 07:28:00 GMT</c>）。
+    /// 只认一种会让另一半 provider 的建议静默失效。
+    /// <para>
+    /// <b>解析不了就返回 null，不猜</b>：退回本地退避是安全的默认。
+    /// 猜一个值会让程序在错误的时刻重发，正好撞在限流窗口上。
+    /// </para>
+    /// <para>
+    /// <b>HTTP-date 已经过去时返回零</b>：那表示"可以立刻重试"，
+    /// 而负值没有意义（上层会把非正值当作"没有建议"）。
+    /// </para>
+    /// </remarks>
+    private static TimeSpan? ReadRetryAfter(HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("Retry-After", out var values)) return null;
+
+        var raw = values.FirstOrDefault()?.Trim();
+        if (string.IsNullOrEmpty(raw)) return null;
+
+        // 秒数形态。
+        if (int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var seconds))
+        {
+            return seconds > 0 ? TimeSpan.FromSeconds(seconds) : null;
+        }
+
+        // HTTP-date 形态。
+        if (DateTimeOffset.TryParse(raw, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal, out var when))
+        {
+            var wait = when - DateTimeOffset.UtcNow;
+            return wait > TimeSpan.Zero ? wait : TimeSpan.Zero;
+        }
+
+        return null;
     }
 
     private HttpRequestMessage CreateRequest(JsonObject body)

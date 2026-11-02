@@ -27,12 +27,14 @@ public static class DoctorChecks
             IndependentChecksAsync);
         failures += await CheckAsync("doctor-reports-unwritable-workspace", UnwritableWorkspaceAsync);
         failures += await CheckAsync("doctor-exit-code-reflects-failures", ExitCodeAsync);
+        failures += await CheckAsync("doctor-instructions-lists-each-file-once", InstructionsNeitherDuplicatedNorMissingAsync);
         failures += await CheckAsync("log-silent-by-default", LogSilentByDefaultAsync);
         failures += await CheckAsync("log-info-adds-startup-facts", LogInfoAddsFactsAsync);
         failures += await CheckAsync("log-unknown-value-is-reported", LogUnknownValueAsync);
         failures += await CheckAsync("unknown-arg-errors-instead-of-starting-repl",
             UnknownArgRejectedAsync);
         failures += await CheckAsync("known-arg-forms-not-misjudged", KnownArgsAcceptedAsync);
+        failures += await CheckAsync("every-cli-flag-appears-in-help", FlagsDocumentedAsync);
         failures += await CheckAsync("connectivity-hint-diagnoses-protocol-mismatch",
             ProtocolMismatchHintAsync);
         failures += await CheckAsync("doctor-flags-impossible-context-window",
@@ -172,6 +174,90 @@ public static class DoctorChecks
             return $"不存在的工作区没有报失败。stdout={Trim(result.Stdout)}";
 
         return null;
+    }
+
+    /// <summary>
+    /// 指令文件检查：同一文件不重复列出，不同位置都要列出。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条钉的是"诊断与实现脱节"</b>：<c>--doctor</c> 此前把
+    /// <c>DougongHome.Root</c> 与 workspace 无条件都查一遍。当两者是同一目录时，
+    /// 同一个 <c>AGENTS.md</c> 被列成"全局 AGENTS.md、项目 AGENTS.md"两条，
+    /// 而实际只加载了一次——用户会去找那个不存在的第二个文件。
+    /// <para>
+    /// 反过来也要成立：两个目录不同时，两份都必须列出，不能因为去重把它们并掉。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> InstructionsNeitherDuplicatedNorMissingAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "dougong-doctor-instr-" + Guid.NewGuid().ToString("N"));
+        var home = Path.Combine(root, "home");
+        var workspace = Path.Combine(root, "ws");
+
+        try
+        {
+            Directory.CreateDirectory(home);
+            Directory.CreateDirectory(workspace);
+            File.WriteAllText(Path.Combine(home, "AGENTS.md"), "全局约定");
+            File.WriteAllText(Path.Combine(workspace, "AGENTS.md"), "项目约定");
+
+            // 情形一：两个目录不同 → 两条都在。
+            var distinct = await RunDoctorAsync(new Dictionary<string, string?>
+            {
+                ["DOUGONG_PROVIDER_BASE"] = "https://127.0.0.1:1",
+                ["DOUGONG_PROVIDER_MODEL"] = "m",
+                ["DOUGONG_PROVIDER_KEY"] = "k",
+                ["DOUGONG_HOME"] = home,
+                ["DOUGONG_WORKSPACE"] = workspace,
+            });
+
+            var line = InstructionLine(distinct.Stdout);
+            if (line is null) return "doctor 输出里没有「指令文件」这一项";
+
+            if (!line.Contains("全局 AGENTS.md", StringComparison.Ordinal))
+                return $"不同目录时漏了全局那份：{line}";
+            if (!line.Contains("项目 AGENTS.md", StringComparison.Ordinal))
+                return $"不同目录时漏了项目那份：{line}";
+
+            // 情形二：workspace == home → 只列一次。
+            var same = await RunDoctorAsync(new Dictionary<string, string?>
+            {
+                ["DOUGONG_PROVIDER_BASE"] = "https://127.0.0.1:1",
+                ["DOUGONG_PROVIDER_MODEL"] = "m",
+                ["DOUGONG_PROVIDER_KEY"] = "k",
+                ["DOUGONG_HOME"] = home,
+                ["DOUGONG_WORKSPACE"] = home,
+            });
+
+            var sameLine = InstructionLine(same.Stdout);
+            if (sameLine is null) return "同一目录时 doctor 输出里没有「指令文件」这一项";
+
+            var mentions = CountOccurrences(sameLine, "AGENTS.md");
+            return mentions == 1
+                ? null
+                : $"同一目录被列了 {mentions} 次（应只列一次）：{sameLine}";
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); }
+            catch { /* 清理失败不影响结论 */ }
+        }
+    }
+
+    private static string? InstructionLine(string stdout) =>
+        stdout.Split((char)10).FirstOrDefault(l => l.Contains("指令文件", StringComparison.Ordinal));
+
+    private static int CountOccurrences(string text, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
     }
 
     /// <summary>退出码语义：全部通过 0，有失败 1。</summary>
@@ -512,6 +598,40 @@ public static class DoctorChecks
     /// 这是上一条的对偶检查，防的是"修静默失败却修坏正常用法"。
     /// 三种形式都要覆盖：无值开关、<c>--name=value</c>、<c>--name value</c>。
     /// </remarks>
+    /// <summary>
+    /// 每个 CLI 参数都要出现在 <c>--help</c> 里。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条钉的是"加了功能但用户不知道"</b>：<c>--search</c> 与
+    /// <c>--changes</c> 实现完、检查全绿，但 <c>--help</c> 里没有它们——
+    /// 用户只能靠读源码发现。功能存在与功能可被发现是两件事。
+    /// <para>
+    /// 判据是"帮助文本里出现这个字面量"，不是"帮助写得好看"。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> FlagsDocumentedAsync()
+    {
+        var help = await RunWithArgsAsync(["--help"], FullProviderEnvironment());
+        if (help.ExitCode != 0) return $"--help 应退出 0，实际 {help.ExitCode}";
+
+        // **直接引用参数解析用的那份清单**，不另列一份。
+        // 两份清单时，加参数漏改一处不会报错——症状是"参数能用了但帮助里没有"，
+        // 而这正是这条检查要抓的东西。
+        string[] flags =
+        [
+            .. Dougong.Cli.Program.SwitchArguments,
+            .. Dougong.Cli.Program.ValuedArguments,
+        ];
+
+        var missing = flags
+            .Where(f => !help.Stdout.Contains(f, StringComparison.Ordinal))
+            .ToArray();
+
+        return missing.Length == 0
+            ? null
+            : $"这些参数没有出现在 --help 里：{string.Join(", ", missing)}";
+    }
+
     private static async Task<string?> KnownArgsAcceptedAsync()
     {
         // 无值开关：--help 应正常输出帮助并退出 0。

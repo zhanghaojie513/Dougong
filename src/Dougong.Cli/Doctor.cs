@@ -44,6 +44,7 @@ public static class Doctor
             CheckRuntime(),
             CheckProviderConfig(),
             CheckWorkspace(),
+            CheckInstructions(),
             CheckSessionDirectory(),
             CheckMemorySwitch(),
             CheckCompactionConfig(),
@@ -226,9 +227,103 @@ public static class Doctor
             + "\n    要让它能改文件：先 cd 到你的项目目录，或设 DOUGONG_WORKSPACE=<可写目录>";
     }
 
-    private static CheckResult CheckSessionDirectory()
+    /// <summary>
+    /// 检查工作区与全局目录下的指令文件是否**可读**。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条检查补的是一个静默缺口</b>：<see cref="WorkspaceInstructionsSection"/>
+    /// 读不到文件时只能跳过——<c>ISystemPromptSection</c> 只有"产出或不产出"两种结果，
+    /// 没有诊断通道。于是权限错误会表现为"我写了 AGENTS.md 但约定没生效"，
+    /// 而用户没有任何地方能看到原因。这里是那个缺口唯一的出口。
+    /// <para>
+    /// <b>只查可读，不查内容</b>：内容为空、太长、写得不好都不是 doctor 该判的事。
+    /// </para>
+    /// <para>
+    /// <b>有问题时是警告不是失败</b>：约定文件是增强，不是启动前提。
+    /// </para>
+    /// </remarks>
+    private static CheckResult CheckInstructions()
     {
-        var sessionDir = Dougong.Ai.DougongHome.SessionsDirectory;
+        var workspace = Environment.GetEnvironmentVariable("DOUGONG_WORKSPACE")
+            ?? Directory.GetCurrentDirectory();
+
+        var found = new List<string>();
+        var unreadable = new List<string>();
+
+        // 全局链优先：它出问题时症状与项目链一样，但原因完全不同
+        // （一个是 ~/.dougong 权限，一个是项目目录权限）。
+        var places = new List<string> { DougongHome.Root };
+
+        // **两个目录相同时只查一次**：否则同一个文件会被列成
+        // "全局 AGENTS.md、项目 AGENTS.md" 两条，而实际只加载了一次——
+        // 诊断信息与实现脱节比不诊断更糟，用户会去找第二个文件。
+        if (!SamePath(workspace, DougongHome.Root)) places.Add(workspace);
+
+        foreach (var directory in places)
+        {
+            foreach (var name in WorkspaceInstructionsSection.FileNames)
+            {
+                var path = Path.Combine(directory, name);
+                if (!File.Exists(path)) continue;
+
+                try
+                {
+                    // 真读一次：只判 File.Exists 查不出 ACL 与独占锁。
+                    using var stream = File.OpenRead(path);
+                    found.Add(Describe(path, directory));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    unreadable.Add($"{Describe(path, directory)}（{ex.GetType().Name}）");
+                }
+            }
+        }
+
+        if (unreadable.Count > 0)
+        {
+            return new(Level.Warn, "指令文件",
+                $"找到但读不到：{string.Join("；", unreadable)}",
+                "这些文件的内容不会进入提示词——你会看到「我写了约定但没生效」。"
+                + "检查文件权限，或确认没有其他程序独占它。");
+        }
+
+        return found.Count > 0
+            ? new(Level.Pass, "指令文件", $"已加载：{string.Join("、", found)}")
+            : new(Level.Pass, "指令文件", "无（不产出「约定」节）");
+    }
+
+    /// <summary>两个路径是否指向同一目录。</summary>
+    /// <remarks>
+    /// 用 <see cref="Path.GetFullPath(string)"/> 规范化后比较：<c>~/.dougong</c>
+    /// 与环境变量可能一个带尾斜杠、一个不带。规范化失败时按"不同"处理——
+    /// 宁可多查一次，也不要在路径奇怪时漏掉项目目录。
+    /// </remarks>
+    private static bool SamePath(string a, string b)
+    {
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar),
+                Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>把路径显示成不泄漏完整用户目录的形态。</summary>
+    private static string Describe(string path, string directory)
+    {
+        var prefix = string.Equals(directory, DougongHome.Root, StringComparison.Ordinal)
+            ? "全局"
+            : "项目";
+        return $"{prefix} {Path.GetFileName(path)}";
+    }
+
+    private static CheckResult CheckSessionDirectory()
+    {        var sessionDir = Dougong.Ai.DougongHome.SessionsDirectory;
 
         try
         {

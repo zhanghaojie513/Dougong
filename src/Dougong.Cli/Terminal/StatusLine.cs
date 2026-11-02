@@ -30,6 +30,9 @@ public static class StatusLine
         [ActivityPhase.Reasoning] = ["(⌐■_■)", "( ͡° ͜ʖ ͡°)", "(¬_¬)"],
         [ActivityPhase.Working] = ["( •_•)", "(¬_¬)", "(◔_◔)"],
         [ActivityPhase.Compacting] = ["(´･_･`)", "(◔_◔)"],
+        // 重试是"出了问题但在自己处理"，用略显吃力的脸，
+        // 与"思考中"的轻松感区分——用户据此判断要不要干预。
+        [ActivityPhase.Retrying] = ["(´･_･`)", "(¬_¬)"],
         [ActivityPhase.Failed] = ["(°ロ°)"],
     };
 
@@ -45,8 +48,15 @@ public static class StatusLine
         [ActivityPhase.Reasoning] = "推理中…",
         [ActivityPhase.Working] = "处理中…",
         [ActivityPhase.Compacting] = "整理中…",
+        [ActivityPhase.Retrying] = "重试中…",
         [ActivityPhase.Failed] = "出错了",
     };
+
+    /// <summary>该阶段是否有文案。供覆盖性检查使用。</summary>
+    public static bool HasLabel(ActivityPhase phase) => Labels.ContainsKey(phase);
+
+    /// <summary>该阶段是否有面孔。供覆盖性检查使用。</summary>
+    public static bool HasFace(ActivityPhase phase) => Faces.ContainsKey(phase);
 
     /// <summary>
     /// 生成活动行。返回 null 表示当前不该显示。

@@ -227,6 +227,33 @@ public abstract record AgentEvent
         int OriginalChars,
         int KeptChars) : AgentEvent;
 
+    /// <summary>
+    /// 即将重试一次模型请求，附原因与等待时长。
+    /// </summary>
+    /// <remarks>
+    /// <b>必须是可观察事件，不能只是内部日志</b>：退避最长可能等 10 秒，
+    /// 界面若无任何反馈，用户会以为程序卡死并去按 Ctrl+C——
+    /// 而那正好取消了本来要成功的重试。
+    /// <para>
+    /// <b>先发事件再等</b>：等到之后才发的话，宿主在整段等待期间都是盲的。
+    /// </para>
+    /// <para>
+    /// <b>不进对话历史</b>：它是运行时状态，不是模型该看到的上下文。
+    /// 让模型知道"刚才重试了 3 次"只会引入它无法处理的元信息。
+    /// </para>
+    /// </remarks>
+    /// <param name="Attempt">第几次重试（从 1 开始，不含首次请求）。</param>
+    /// <param name="MaxAttempts">策略允许的最多重试次数。</param>
+    /// <param name="DelayMilliseconds">本次等待时长。</param>
+    /// <param name="Reason">失败类别（<c>RateLimited</c> / <c>ServerError</c> 等）。</param>
+    /// <param name="Diagnostic">原始错误说明，供用户判断"等下去有没有意义"。</param>
+    public sealed record RetryScheduled(
+        int Attempt,
+        int MaxAttempts,
+        int DelayMilliseconds,
+        string Reason,
+        string? Diagnostic = null) : AgentEvent;
+
     /// <summary>运行结束，携带终止原因。</summary>
     public sealed record RunFinished(AgentRunOutcome Outcome, string? Diagnostic = null) : AgentEvent;
 }

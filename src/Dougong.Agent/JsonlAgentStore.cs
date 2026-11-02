@@ -75,6 +75,12 @@ public sealed class JsonlAgentStore : IAgentStore
         long lastSequence;
         try
         {
+            // **先校验格式版本，再扫描**。
+            // 顺序不能反：扫描遇到解析失败会 break 并当成"尾部半条记录"，
+            // 于是格式不兼容会被静默读成空会话——用户的历史凭空消失且不报错。
+            await EnsureFormatCompatibleAsync(stream, path, cancellationToken)
+                .ConfigureAwait(false);
+
             lastSequence = await ScanForLastSequenceAsync(stream, cancellationToken)
                 .ConfigureAwait(false);
             stream.Seek(0, SeekOrigin.End);
@@ -148,21 +154,19 @@ public sealed class JsonlAgentStore : IAgentStore
 
                 while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
                 {
-                    if (string.IsNullOrWhiteSpace(line)) continue;
-                    PersistedRecord? parsed;
-                    try
+                    // 格式行与坏行的处理统一在 SessionRecordReader 里——
+                    // 此前这段逻辑手写在六处，漏一处的症状都是"数据看起来没了"。
+                    switch (SessionRecordReader.Read(line, out var parsed))
                     {
-                        parsed = JsonSerializer.Deserialize<PersistedRecord>(line);
-                    }
-                    catch (JsonException)
-                    {
-                        // 尾部半条记录：停止读取，已提交部分仍然有效。
-                        yield break;
+                        case SessionLineKind.End:
+                        case SessionLineKind.Stop:
+                            yield break;
+                        case SessionLineKind.Skip:
+                            continue;
                     }
 
-                    if (parsed is null) yield break;
                     yield return new StoreRecord(
-                        parsed.Sequence,
+                        parsed!.Sequence,
                         Enum.Parse<StoreRecordKind>(parsed.Kind),
                         parsed.Payload);
                 }
@@ -206,6 +210,41 @@ public sealed class JsonlAgentStore : IAgentStore
         }
     }
 
+    /// <summary>
+    /// 校验文件格式版本；新文件写入版本行。
+    /// </summary>
+    /// <remarks>
+    /// <b>没有版本行的旧文件按 <see cref="SessionFormat.Current"/> 处理</b>：
+    /// 它们本来就是那一版，而这个缺省不需要解码器。
+    /// <para>
+    /// <b>读到更高版本时抛 <see cref="SessionFormatException"/>，不尝试解析</b>：
+    /// 硬解析可能得到"看起来正常但内容错乱"的结果，而那种错误只会在
+    /// 用户发现历史不对时才暴露，届时已经很难区分是数据坏了还是读错了。
+    /// </para>
+    /// </remarks>
+    private static async Task EnsureFormatCompatibleAsync(
+        FileStream stream, string path, CancellationToken cancellationToken)
+    {
+        stream.Seek(0, SeekOrigin.Begin);
+        using var reader = new StreamReader(
+            stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false,
+            bufferSize: 4096, leaveOpen: true);
+
+        var firstLine = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+
+        // 校验逻辑统一在 SessionRecordReader.ValidateHeader：那里同时处理
+        // "空文件要写格式行""旧文件无格式行""版本无效""版本过高"四种情况。
+        SessionRecordReader.ValidateHeader(firstLine, path, out var needsFormatLine);
+        if (!needsFormatLine) return;
+
+        // 空文件（新建或刚清空）：写版本行，让后续版本能判断格式。
+        var bytes = Encoding.UTF8.GetBytes(SessionRecordReader.FormatLine(null));
+        stream.Seek(0, SeekOrigin.Begin);
+        await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        stream.Flush(flushToDisk: true);
+    }
+
     private static async Task<long> ScanForLastSequenceAsync(
         FileStream stream, CancellationToken cancellationToken)
     {
@@ -217,16 +256,15 @@ public sealed class JsonlAgentStore : IAgentStore
         long last = 0;
         while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
         {
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            try
+            switch (SessionRecordReader.Read(line, out var parsed))
             {
-                var parsed = JsonSerializer.Deserialize<PersistedRecord>(line);
-                if (parsed is not null) last = parsed.Sequence;
-            }
-            catch (JsonException)
-            {
-                // 尾部半条记录：忽略，序号停在最后一条完整记录。
-                break;
+                case SessionLineKind.Record:
+                    last = parsed!.Sequence;
+                    break;
+                case SessionLineKind.Skip:
+                    continue;
+                default:
+                    return last;   // 坏行或文件结束
             }
         }
 
