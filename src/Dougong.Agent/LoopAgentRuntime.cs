@@ -32,6 +32,16 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     private readonly Func<string, CancellationToken, ValueTask<string>>? _summarize;
 
     /// <summary>
+    /// 待注入的重复调用提醒。
+    /// </summary>
+    /// <remarks>
+    /// <b>攒到下一次请求再发</b>：工具调用发生在一次请求之后，那时已经没有
+    /// "当前请求"可以附加消息了。留到下一轮请求是唯一的时机——
+    /// 也够用：模型下一次判断要不要重复时就会看到。
+    /// </remarks>
+    private readonly List<string> _pendingReminders = [];
+
+    /// <summary>
     /// L1 偏好注入器。为 null 时不注入任何偏好。
     /// </summary>
     /// <remarks>
@@ -116,6 +126,21 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// </para>
     /// </remarks>
     public SkillDiscovery? Skills { get; init; }
+
+    /// <summary>
+    /// 重复调用检测；null 表示不检测。
+    /// </summary>
+    /// <remarks>
+    /// <b>它只提醒，不阻止</b>：确实需要重试的场景（等编译产物、轮询状态）
+    /// 会因阻止变成硬失败。而"卡在循环里"与"有意重试"的区别，
+    /// 模型比我们更清楚——给它一条提示比替它做决定更合适。
+    /// <para>
+    /// <b>状态是会话级</b>：同一个实例在一轮内跨迭代保持，链不会在轮次边界清零。
+    /// 但**跨轮不清零会让"用户让我再做一次同样的事"立刻触发提醒**——
+    /// 那正是该清零的地方。所以每轮开始（RunAsync 入口）重置。
+    /// </para>
+    /// </remarks>
+    public RepeatToolReminder? RepeatDetection { get; init; }
 
     /// <summary>
     /// 模型请求失败后的重试策略；null 表示不重试。
@@ -204,6 +229,9 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         yield return new AgentEvent.RunStarted(request.SessionId, request.TurnId);
+
+        // 每轮清零：用户说"再跑一次"时，那是一次新的开始，不是上一个循环的延续。
+        RepeatDetection?.Reset();
 
         // 屏障 1：用户输入必须在任何模型调用之前提交。
         // 提交失败即停止——不继续、不降级、不假装成功。
@@ -368,10 +396,11 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             // 这是可接受的——那 10 秒对"用户是刚回复还是隔了一小时"的判断没有影响。
             var requestHistory = BuildRequestMessages(
                 systemPrompt,
-                AppendSkillCatalog(
-                    AppendDirectoryContext(
+                AppendRepeatReminders(
+                    AppendSkillCatalog(
+                        AppendDirectoryContext(
                         AppendTimeContext(
-                            await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false)))));
+                            await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false))))));
 
             // **重试边界**：一次 "尝试" 覆盖"建流 + 读完整条流"。
             // 可重试的失败两种形态都会出现，而且**前者比后者常见**：
@@ -849,6 +878,12 @@ public sealed class LoopAgentRuntime : IAgentRuntime
 
                 yield return new AgentEvent.ToolCallRequested(call.Id, call.ToolId, args);
 
+                // 重复检测：**在派发之前**记一次。时机不重要（我们不阻止），
+                // 但放在这里能保证"模型请求过的调用"与"检测到的调用"一一对应，
+                // 而不是被派发失败（未注册、参数非法）过滤掉一部分。
+                if (RepeatDetection?.Observe(call.ToolId, args) is { } reminder)
+                    _pendingReminders.Add(reminder.Render());
+
                 // 屏障 3：工具开始记录必须落盘，才允许执行（可能产生副作用）。
                 // 参数必须入库：恢复时若只有 id+tool，宿主连"当时要做什么"都不知道，
                 // 无法对账未知结果，更无法判断能否安全重试（G10）。
@@ -1262,6 +1297,30 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// 代价是技能列表不变时每轮多一行文本，写进 D-26 的取舍里。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 追加重复调用提醒。
+    /// </summary>
+    /// <remarks>
+    /// <b>发过就清空</b>：同一条提醒重复出现在后续每一轮里会挤占预算，
+    /// 而它的价值只在"下一次决定要不要重复"那一刻。
+    /// <para>
+    /// <b>以 user 角色注入</b>：与时间、目录同一判据——它是环境读数，
+    /// 不是模型该长期遵守的纪律。
+    /// </para>
+    /// </remarks>
+    private List<ChatMessage> AppendRepeatReminders(List<ChatMessage> history)
+    {
+        if (_pendingReminders.Count == 0) return history;
+
+        var withReminders = new List<ChatMessage>(history.Count + 1);
+        withReminders.AddRange(history);
+        withReminders.Add(new ChatMessage(
+            ChatRole.User, string.Join(Environment.NewLine + Environment.NewLine, _pendingReminders)));
+
+        _pendingReminders.Clear();
+        return withReminders;
+    }
+
     private List<ChatMessage> AppendSkillCatalog(List<ChatMessage> history)
     {
         if (Skills is null) return history;

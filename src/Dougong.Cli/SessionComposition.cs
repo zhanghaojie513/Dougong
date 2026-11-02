@@ -61,6 +61,15 @@ public sealed class SessionComposition : IDisposable
     /// </remarks>
     private readonly SkillDiscovery? _skills;
 
+    /// <summary>
+    /// 重复调用检测。
+    /// </summary>
+    /// <remarks>
+    /// <b>会话级单实例</b>：链要跨迭代保持，所以不能每次装配一个新对象。
+    /// 它在每轮开始时自行清零（见 <c>RepeatToolReminder.Reset</c>）。
+    /// </remarks>
+    private readonly RepeatToolReminder? _repeatDetection = new();
+
     /// <summary>提问传输。默认走终端；ACP 路径注入自己的实现。</summary>
     private readonly IAskUserHost _askUserHost;
 
@@ -677,6 +686,7 @@ public sealed class SessionComposition : IDisposable
                 Time = CreateTimeContext(),
                 Directory = _directory,
                 Skills = _skills,
+                RepeatDetection = _repeatDetection,
                 Retry = RetryPolicy.Default,
                 Spill = CreateSpillStore(),
                 PlanMode = _planMode,

@@ -95,6 +95,7 @@ public static class Program
         "working-directory",
         "skills",
         "intercept",
+        "repeat-reminder",
         "workspace-lock",
     ];
 
@@ -308,6 +309,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "intercept")
             return await InterceptorChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "repeat-reminder")
+            return await RepeatReminderChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

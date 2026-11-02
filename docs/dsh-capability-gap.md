@@ -174,7 +174,7 @@
 | `dsh-tool-ralph` | Ralph 循环 | **无** | 不必有 |
 | `dsh-tool-call-timeout-policy` | 逐工具超时 | `ToolExecutionPlan.Timeout` + `ToolDispatcher.DefaultToolTimeout` | 已有：逐工具上限优先；`TimedOut` 与"用户取消"分开 |
 | `dsh-tool-lsp` | 语言服务器代码导航（定义/引用/实现/悬停） | **无** | **缺**：我们能搜文本，但不能"跳到定义" |
-| `dsh-repeat-tool-reminder` | 重复调用提醒 | **无** | **缺** |
+| `dsh-repeat-tool-reminder` | 重复调用提醒 | `RepeatToolReminder` | **已有** |
 
 **工具面现在有 7 个**：read / write / edit / glob / grep / shell / todo。
 编码 agent 的最小闭环已经成立（能找、能读、能改、能跑）。
@@ -494,15 +494,15 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~23~~ | ~~拦截钩子~~ | `dsh-hook-protocol` | **✅ 2026-11-03**：`IToolInterceptor`（类型化拦截点） |
 | 24 | 会话投影 / 轮次大纲 | `dsh-session-projection*` | |
 | 25 | 出站代理 | `dsh-http-proxy` | |
-| 26 | 重复工具调用提醒 | `dsh-repeat-tool-reminder` | |
+| ~~26~~ | ~~重复工具调用提醒~~ | `dsh-repeat-tool-reminder` | **✅ 2026-11-03**：`RepeatToolReminder` |
 | 27 | 权限预设 | `dsh-permission-presets` | |
 | ~~28~~ | ~~文件引用 `@file`~~ | `dsh-file-reference*` | **✅ 2026-11-02**：`FileReferenceIndex` |
 | ~~29~~ | ~~会话内切换工作目录~~ | `dsh-session/working-directory` | **✅ 2026-11-03**：`WorkingDirectory` + `working_directory` 工具 |
 | ~~30~~ | ~~消息级反馈（正负 + 分类，进日志不进模型）~~ | `dsh-feedback/message-feedback` | **✅ 2026-11-02**：`MessageFeedback` + `JsonlMessageFeedbackStore`（伴生文件，不碰会话日志） |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 7 项 + 1 项部分（2026-11-03）**。七项的关键取舍与复核修掉的
-缺陷记在 `porting-differences.md` D-19 至 D-22、D-24 至 D-27。
+**P2 已完成 8 项 + 1 项部分（2026-11-03）**。八项的关键取舍与复核修掉的
+缺陷记在 `porting-differences.md` D-19 至 D-22、D-24 至 D-28。
 
 ### 明确不做
 
