@@ -454,6 +454,8 @@ public static class Program
         // 让所有正文输出自动与底部区域协作：写之前擦、写之后画。
         Output.LiveRegion = liveRegion;
 
+        try
+        {
         while (true)
         {
             Output.Text("> ");
@@ -467,12 +469,10 @@ public static class Program
                         input, messages, sessionPath, ledger, sessionId, composition,
                         swappable, models, ref activeProvider))
                 {
-                    foreach (var registry in mcpRegistries) registry.Dispose();
-                    foreach (var mcpClient in mcpClients) await mcpClient.DisposeAsync();
-                    // 内核宿主必须显式释放：它持有租约与排空状态，
-                    // 不释放会让内核对"停用"的判定停在半路。
-                    if (kernelHost is not null) await kernelHost.DisposeAsync();
-                    return 0;
+                    // **不在分支里就地清理**：清理逻辑必须两条退出路径共用
+                    // （`/exit` 与 EOF/Ctrl+D）。此前只有 `/exit` 清理，
+                    // 而 Ctrl+D 直接 break 出去，MCP 客户端与内核宿主都被漏掉。
+                    break;
                 }
                 continue;
             }
@@ -604,6 +604,19 @@ public static class Program
                 messages.Add(new AgentMessage(AgentRole.Assistant, assistantText.ToString()));
             messages.Add(new AgentMessage(AgentRole.User, input));
             Output.Line();
+        }
+        }
+        finally
+        {
+            // **两条退出路径共用这一处**：`/exit` 与 EOF 都走到这里。
+            // 顺序有讲究——先注销工具注册，再断 MCP 客户端，最后释放内核
+            // （它持有租约与排空状态，先释放会让"停用"的判定停在半路）。
+            foreach (var registry in mcpRegistries) registry.Dispose();
+            foreach (var mcpClient in mcpClients) await mcpClient.DisposeAsync();
+            if (kernelHost is not null) await kernelHost.DisposeAsync();
+
+            // 后台作业最后释放：它持有子进程句柄，不释放会留下孤儿进程。
+            composition.Dispose();
         }
 
         return 0;

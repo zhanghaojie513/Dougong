@@ -87,6 +87,7 @@ public static class Program
         "ask-user",
         "web-fetch",
         "workspace-changes",
+        "jobs",
         "workspace-lock",
     ];
 
@@ -276,6 +277,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "workspace-changes")
             return await WorkspaceChangeChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "jobs")
+            return await JobChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

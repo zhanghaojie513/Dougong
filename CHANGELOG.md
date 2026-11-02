@@ -19,6 +19,37 @@
 
 ---
 
+## [0.1.17-alpha.1] — 2026-11-02
+
+**P2 开始：后台作业。**
+
+### Added
+
+- **`JobRegistry`**：进程内后台作业注册表。启动子进程后立即返回，
+  之后按游标多次读取输出。照 dsh 的 `dsh-jobs-local`：
+  环形缓冲按字节保留（默认 256 KiB）、游标只进不退、按 owner 限并发（默认 10）。
+- **四个作业工具**：`job_start` / `job_output` / `job_stop` / `job_list`。
+  分动作而不是一个带 `mode` 参数的工具——模型靠名字选择，
+  `job(mode=read)` 会让它频繁选错。
+- **`JobSnapshot`**：作业状态快照，带 `NextCursor` 与 `OmittedBytes`。
+
+### Changed
+
+- **`SessionComposition` 实现 `IDisposable`**：释放后台作业注册表。
+  不释放会留下孤儿进程——用户看到的是"关掉了会话但 CPU 还在转"。
+- **REPL 的清理路径统一**：`/exit` 与 EOF 现在走同一个 `finally`。
+  此前只有 `/exit` 清理，Ctrl+D 直接退出会漏掉 MCP 客户端与内核宿主
+  （既有缺陷，本次顺带修）。
+
+### 已知限制
+
+- **作业不持久化**：活在进程内，程序退出就没了。把进程内句柄落盘再恢复
+  是不可能的——重启后那些子进程已经不存在。
+- **进程树结束未完全验证**：代码显式传 `Kill(entireProcessTree: true)`，
+  但 Windows 上构造不出可靠的"父活子活"场景（`cmd /c` 不派生子进程，
+  `start /b` 产生的是有意分离的进程）。检查因此在 Windows 跳过，
+  只在 POSIX 用""心跳文件观察""真验。见 `porting-differences.md` D-19。
+
 ## [0.1.16-alpha.1] — 2026-11-02
 
 **P1 九项能力落地：工作区指令、时间上下文、重试、spill、会话搜索与标题、

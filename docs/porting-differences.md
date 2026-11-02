@@ -109,6 +109,7 @@
 | 改动清单按轮聚合且不假称完整 | `workspace-changes`：`changes-splits-by-user-turn`、`changes-excludes-read-tools`、`changes-dedupes-within-turn`、`changes-includes-write-and-edit`、`changes-omits-shell-commands`、`changes-keeps-final-turn`、`changes-tolerates-corrupt-tail`、`changes-survives-legacy-payload` | 去掉工具白名单（按有没有 path 判断）→ `changes-excludes-read-tools` 报"读操作被算成了改动"，`changes-omits-shell-commands` 也红；改成每见工具调用就切轮 → 6 项同时失败；不收尾最后一轮 → `changes-keeps-final-turn` 报"最后一轮丢了（0 轮）" |
 | 每个 CLI 参数都能在帮助里找到 | `doctor`：`every-cli-flag-appears-in-help` | 从 `--help` 删掉 `--changes` → 报"没有出现在 --help 里"；白名单加 `--stats` 但不写进 help → 同样报错（检查直接引用参数解析用的清单，不另列一份） |
 | 检查测的是当前代码而非陈旧副本 | `terminal`：`comparison-uses-release-cli-assembly` | 把检查目录里的 `Dougong.Cli.dll` 时间戳改成 2020 年 → 报"比 Release 旧……任何负控结论都不作数"；恢复后转绿 |
+| 后台作业游标与环形缓冲守恒 | `jobs`：`job-start-returns-without-waiting`、`job-output-respects-cursor`、`job-output-reports-discarded-bytes`、`job-caps-concurrency-per-owner`、`job-limit-is-per-owner-not-global`、`job-unknown-id-is-not-silent`、`job-registry-dispose-kills-children`、`job-tool-declares-execute-permission`、`job-stop-kills-grandchildren-on-posix` | `OmittedBytes` 恒 0 → `job-output-reports-discarded-bytes` 报"总输出 7200 字节却报 omitted=0"；并发上限改全局 → `job-limit-is-per-owner-not-global` 失败 |
 | 每个会被显示的阶段都有文案 | `terminal`：`every-phase-has-visible-label`、`binary-is-not-stale` | 新增 `Retrying` 时若只加枚举不加文案 → `every-phase-has-visible-label` 报"阶段 Retrying 会被显示却没有文案"；改源码不重建 Release → `binary-is-not-stale` 报"跑的是旧构建" |
 | 压缩比例默认值与可配置性 | `compaction`、`wiring`、`doctor` | 把 `DefaultTriggerRatio` 改成 0.99 → `compaction` 套的触发点检查失败；给 `--doctor` 传入 `retain >= trigger` → `doctor` 套的非法规格检查失败 |
 
@@ -345,6 +346,20 @@ home 决定"所有状态放哪一整个根"，`memory_dir` 决定"记忆是否�
 | **没有 `present` 工具** | dsh 的 `dsh-tool-present` 让模型主动声明"这是交付物"，需要它判断什么算交付物。我们的清单是机械推导的，不替模型做那个判断。这一项因此在进度表里是 🟡。 |
 | **验证** | `workspace-changes` 套 8 项；3 组负控见 §三。 |
 | **源码位置** | `src/Dougong.Agent/WorkspaceChanges.cs`、`src/Dougong.Cli/Program.cs` |
+
+### D-19 作业活在进程内，进程树结束未完全验证
+
+| | |
+|---|---|
+| **哪不一样** | dsh 的 `dsh-jobs-local` 是进程内注册表 + 环形缓冲 + 游标；我们把同样的契约实现在 `JobRegistry`，但**不持久化**，且进程树结束只有代码保证、没有检查钉住。 |
+| **为什么与 `IShellExecutor` 并列而非继承** | 那个接口的类型注释明确只描述"起一个进程并等它结束"。作业的形态是"起进程、立刻返回、之后多次读"——硬合成一个接口会让"换沙箱实现"变成"换语义"，那不是替换。 |
+| **四个工具而不是一个带 mode** | 模型靠工具名与描述选择。`job(mode=read)` 会让它频繁选错 mode，而每次选错浪费一整轮。dsh 的 `dsh-tool-jobs` 也是动作分工具。 |
+| **并发上限按 owner 且拒绝而非排队** | 排队会让模型以为已启动，而它可能几分钟后才真正开始——那时它已经基于错误假设继续做事。拒绝让它立刻知道要等或要停。 |
+| **环形缓冲必须报丢弃字节** | 只报"还剩多少"会让模型以为那就是全部输出。检查用守恒判据：`total == 保留 + 丢弃`，同时证明两边统计一致。 |
+| **进程树结束：诚实降级** | 代码里显式传 `Kill(entireProcessTree: true)`，但**没有能在 Windows 上稳定验证它的检查**。试过两条路：`cmd /c ping` 不产生独立子进程；`start /b` 产生的是**有意分离**的进程（kill tree 本就不该管）。两种形态数进程的结果一样，无法区分 true 与 false。所以检查改名为 `job-stop-reaches-finished-state`（只验"停了"），另加只在 POSIX 跑的 `job-stop-kills-grandchildren-on-posix`（用心跳文件观察子进程是否还活着）。**把"已验证"写成结论就是假声称**，这一栏如实记录。 |
+| **不做持久化** | 作业活在进程内，进程退出就没了。理由：把「进程内句柄」落盘再恢复是不可能的——重启后那些子进程已经不存在。这点写进工具描述，因为模型会合理假设"我启动的东西还在"。 |
+| **验证** | `jobs` 套 10 项；2 组负控见 §三。其中进程树那条在 Windows 上跳过、在 Linux/CI 上真跑。 |
+| **源码位置** | `src/Dougong.Agent/JobRegistry.cs`、`src/Dougong.Agent/JobTools.cs` |
 
 ## 五、这份台账的边界
 

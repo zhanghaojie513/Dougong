@@ -18,13 +18,15 @@ namespace Dougong.Cli;
 /// 治法是让两个入口都调用这里，而不是各自维护一份清单——否则下次加能力还会漏掉一边。
 /// </para>
 /// </remarks>
-public sealed class SessionComposition
+public sealed class SessionComposition : IDisposable
 {
     private readonly string _workspace;
     private readonly string _sessionId;
     private readonly IChatClient _client;
     private readonly IToolApprover _approver;
     private readonly bool _shellEnabled;
+    // 作业注册表要随会话释放：留着会让子进程变成孤儿。
+    private JobRegistry? _jobRegistry;
     private readonly int _contextWindow;
     private readonly int _requestOutputReserve;
     private readonly IReadOnlyList<McpServerSpec> _mcpServers;
@@ -380,6 +382,20 @@ public sealed class SessionComposition
         // "CLI 能看计划、ACP 看不到"——正是入口能力不一致的老问题。
         dispatcher.Register(new TodoWriteTool());
 
+        // 后台作业：让模型启动长任务而不占住整轮。
+        // **与 shell 做的是同一件事，区别只在"要不要等"**——所以它归在同一
+        // 个开关下（`DOUGONG_SHELL=0` 时一起关掉），而不是另给一个开关。
+        // 分开开关会让用户以为"禁了 shell 就安全了"，而作业照样能执行命令。
+        if (_shellEnabled)
+        {
+            var jobs = new JobRegistry(_workspace);
+            _jobRegistry = jobs;
+            dispatcher.Register(new JobStartTool(jobs, _sessionId));
+            dispatcher.Register(new JobOutputTool(jobs));
+            dispatcher.Register(new JobStopTool(jobs));
+            dispatcher.Register(new JobListTool(jobs, _sessionId));
+        }
+
         // 联网抓取：默认关闭。**这是唯一会主动向外发请求的工具**，
         // 而"我的 agent 会不会把内部 URL 发出去"是用户该自己决定的事。
         // 打开方式：DOUGONG_WEB_FETCH=1。
@@ -448,6 +464,25 @@ public sealed class SessionComposition
     /// 那更贵也可能拿不到同样结果。落盘是更省的选择。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 释放会话持有的进程资源。
+    /// </summary>
+    /// <remarks>
+    /// <b>必须释放后台作业注册表</b>：它持有子进程句柄。不释放的话，
+    /// REPL 退出后那些进程继续跑——一个 <c>npm test</c> 派生的十几个子进程
+    /// 会变成孤儿，占着端口与文件锁，而用户以为它们已经停了。
+    /// <para>
+    /// 这里不释放 MCP 注册器与内核宿主：它们由调用方按特定顺序释放
+    /// （先注销工具、再断客户端、最后内核），顺序错了会让内核对"停用"的
+    /// 判定停在半路。见 <c>Program.cs</c> 的退出路径。
+    /// </para>
+    /// </remarks>
+    public void Dispose()
+    {
+        _jobRegistry?.Dispose();
+        _jobRegistry = null;
+    }
+
     /// <summary>
     /// 联网抓取工具；<c>DOUGONG_WEB_FETCH</c> 未开启时返回 null。
     /// </summary>
@@ -690,6 +725,24 @@ public sealed class SessionComposition
 /// 这个区别在本次改动里立刻显现——spike 手写装配时漏了用量记账，
 /// 而真实 CLI 有，于是测试报告"ACP 没有账目"，实际是测试装置的问题。
 /// </remarks>
+/// <summary>
+/// 把 <see cref="SessionComposition"/> 的生命周期接进 <c>SessionResources</c>。
+/// </summary>
+/// <remarks>
+/// <b>为什么需要这层包装</b>：<see cref="SessionComposition"/> 实现的是同步
+/// <see cref="IDisposable"/>，而 <c>SessionResources</c> 要 <see cref="IAsyncDisposable"/>。
+/// 直接在调用处 <c>new Wrapper(...)</c> 会让"忘了挂"这种错误重复出现——
+/// 包成一个有名字的类型，至少读代码时能看出它是一项资源。
+/// </remarks>
+internal sealed class CompositionLifetime(SessionComposition composition) : IAsyncDisposable
+{
+    public ValueTask DisposeAsync()
+    {
+        composition.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}
+
 public static class AcpComposition
 {
     /// <summary>
@@ -788,6 +841,10 @@ public static class AcpComposition
         List<IAsyncDisposable> resources = [.. registries];
         resources.AddRange(clients);
         if (kernelHost is not null) resources.Add(kernelHost);
+
+        // **后台作业也要随会话释放**：它持有子进程句柄。会话结束时不停它们，
+        // 那些进程会继续跑——用户看到的是"关掉了会话但 CPU 还在转"。
+        resources.Add(new CompositionLifetime(composition));
 
         return new AcpSessionRuntime(runtime, dispatcher) { SessionResources = resources };
     }
