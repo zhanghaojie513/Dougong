@@ -112,6 +112,7 @@
 | 后台作业游标与环形缓冲守恒 | `jobs`：`job-start-returns-without-waiting`、`job-output-respects-cursor`、`job-output-reports-discarded-bytes`、`job-caps-concurrency-per-owner`、`job-limit-is-per-owner-not-global`、`job-unknown-id-is-not-silent`、`job-registry-dispose-kills-children`、`job-tool-declares-execute-permission`、`job-stop-kills-grandchildren-on-posix`、`job-finished-output-survives-until-read` | `OmittedBytes` 恒 0 → `job-output-reports-discarded-bytes` 报"总输出 7200 字节却报 omitted=0"；并发上限改全局 → `job-limit-is-per-owner-not-global` 失败 |
 | 持久 shell 的状态与输出干净度 | `persistent-shell`：`shell-keeps-cwd-across-commands`、`shell-exit-code-is-this-command`、`shell-failure-does-not-break-session`、`shell-output-has-no-prompt-noise`、`shell-reports-current-directory`、`shell-times-out-instead-of-hanging`、`shell-dispose-terminates-process`、`shell-reuses-one-process`、`shell-recovers-after-timeout`、`shell-output-has-no-leading-blank` | 每条命令重建进程 → 3 项同时失败（cd 失效、目录报错、变量丢失） |
 | 计划审阅挡住执行且批准后可继续 | `plan-mode`：`plan-approval-continues-same-turn`、`plan-approval-exits-plan-mode`、`plan-rejection-keeps-plan-mode`、`plan-cancel-is-distinct-from-reject`、`plan-requires-markdown-title`、`plan-rejects-oversized-document`、`plan-mode-blocks-write-tools`、`plan-mode-allows-read-tools`、`plan-mode-off-executes-normally`、`plan-section-only-when-active`、`plan-intent-carries-approve-label`、`exit-plan-mode-rejected-outside-plan-mode`、`plan-mode-whitelist-matches-real-tools` | 批准后不 `Disable` → `plan-approval-exits-plan-mode` 报"后续写操作会被误拦"；取消报成 `PlanRejected` → `plan-cancel-is-distinct-from-reject` 失败 |
+| 文件补全只给路径且排序确定 | `file-references`：`refs-returns-relative-slash-paths`、`refs-match-is-substring-and-case-insensitive`、`refs-order-is-stable`、`refs-prefers-shallow-paths`、`refs-skips-noise-directories`、`refs-reports-total-and-truncation`、`refs-does-not-read-file-contents`、`refs-empty-query-lists-all` | 去掉 `Sort` → `refs-order-is-stable` 报"zz.cs 在 aa.cs 之前"；不排除噪声目录 → `refs-skips-noise-directories` 报"候选里出现噪声目录"；总数报成返回数 → `refs-reports-total-and-truncation` 报"总数应为 6，实际 2" |
 | 每个会被显示的阶段都有文案 | `terminal`：`every-phase-has-visible-label`、`binary-is-not-stale` | 新增 `Retrying` 时若只加枚举不加文案 → `every-phase-has-visible-label` 报"阶段 Retrying 会被显示却没有文案"；改源码不重建 Release → `binary-is-not-stale` 报"跑的是旧构建" |
 | 压缩比例默认值与可配置性 | `compaction`、`wiring`、`doctor` | 把 `DefaultTriggerRatio` 改成 0.99 → `compaction` 套的触发点检查失败；给 `--doctor` 传入 `retain >= trigger` → `doctor` 套的非法规格检查失败 |
 
@@ -413,6 +414,19 @@ home 决定"所有状态放哪一整个根"，`memory_dir` 决定"记忆是否�
 
 1. **"状态标志"的写入点要数清**。作业那条缺陷的根因是 `EverRead` 由 `Snapshot` 设置，而 `Start` 的返回也调 `Snapshot`——**作业刚启动就被标成"读过"**。修法是把标记改成 `Snapshot` 的参数，只让真正的读取传 `true`。
 2. **失败路径要验"之后还能用"**。持久 shell 超时那条在原检查里只验了"超时能返回"，没验"超时后还能执行"——而后者才是用户真正会遇到的场景。
+
+### D-23 文件引用补全只给路径，不建索引
+
+| | |
+|---|---|
+| **哪不一样** | dsh 的 `file-reference-local` 有 `maxEntries`（索引上限），说明它建了索引。我们每次遍历，不建。 |
+| **契约一致的部分** | dsh 原文："path-only completion candidates within an Agent cwd; providers own namespace access and ranking **without reading file contents**"。三条我们都照做：只返回相对路径、不越工作区、排序由实现负责。 |
+| **"不读内容"是硬要求** | 补全是"你想引用哪个文件"，不是"这个文件里有什么"。读内容会让一次按键触发几十次磁盘 IO。检查用一个"读到就记录"的 `IFileSystem` 装饰器验证——`refs-does-not-read-file-contents`。 |
+| **为什么不建索引** | 工作区通常几千个文件，一次遍历毫秒级；而索引要解决失效（文件增删改后何时重建），那是持续成本。等真出现"补全卡顿"的反馈再做。但**必须有 `maxEntries`**：仓库根目录无界遍历会扫进十万级目录。 |
+| **排序规则** | 深度 → 长度 → 字典序。意图：浅层文件更常用；同深度时短的更贴近；字典序兜底保证确定性（否则用户按 Tab 会发现候选在跳）。 |
+| **检查曾空转过一次** | 第一版 `refs-order-is-stable` 只验"两次查询结果相同"，而**这台机器上文件系统的枚举顺序恰好有序**——去掉 `Sort` 它照样通过。改成注入"按倒序返回目录项"的装饰器 + 直接断言排序规则后，负控才真的会红。这是"检查本身也要被验证"的又一例。 |
+| **验证** | `file-references` 套 8 项；3 组负控见 §三。 |
+| **源码位置** | `src/Dougong.Agent/FileReferenceIndex.cs` |
 
 ## 五、这份台账的边界
 

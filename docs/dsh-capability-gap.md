@@ -496,12 +496,12 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | 25 | 出站代理 | `dsh-http-proxy` | |
 | 26 | 重复工具调用提醒 | `dsh-repeat-tool-reminder` | |
 | 27 | 权限预设 | `dsh-permission-presets` | |
-| 28 | 文件引用 `@file` | `dsh-file-reference*` | |
+| ~~28~~ | ~~文件引用 `@file`~~ | `dsh-file-reference*` | **✅ 2026-11-02**：`FileReferenceIndex` |
 | 29 | 会话内切换工作目录 | `dsh-session/working-directory` | |
 | 30 | 消息级反馈（正负 + 分类，进日志不进模型） | `dsh-feedback/message-feedback` | |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 2 项 + 1 项部分（2026-11-02）**。三项的关键取舍与复核修掉的
+**P2 已完成 3 项 + 1 项部分（2026-11-02）**。三项的关键取舍与复核修掉的
 缺陷记在 `porting-differences.md` D-19 至 D-22。
 
 ### 明确不做

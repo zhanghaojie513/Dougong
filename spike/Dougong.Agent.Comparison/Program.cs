@@ -90,6 +90,7 @@ public static class Program
         "jobs",
         "persistent-shell",
         "plan-mode",
+        "file-references",
         "workspace-lock",
     ];
 
@@ -288,6 +289,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "plan-mode")
             return await PlanModeChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "file-references")
+            return await FileReferenceChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")
