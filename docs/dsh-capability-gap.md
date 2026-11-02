@@ -320,7 +320,7 @@ Roslyn 只解析 C#。把 Roslyn 写进 SDK 恰好是把 harness 绑定到单一
 | `dsh-web-search-deepseek` | 搜索 provider | **无** | **缺** |
 | `dsh-mcp-client` | MCP 客户端 | `McpToolRegistry` | **已有** |
 | `dsh-mcp-resources` | MCP 资源读写 | `McpResourceCatalog` | **部分** |
-| `dsh-http-proxy` | 出站代理策略 | **无** | **缺**：企业环境跑不起来 |
+| `dsh-http-proxy` | 出站代理策略 | `OutboundHttp` | **已有** |
 | `dsh-webhook*` | Webhook 运行时 | **无** | 不必有 |
 
 ---
@@ -493,7 +493,7 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~22~~ | ~~技能提供者~~ | `dsh-skill*` | **✅ 2026-11-03**：`SkillDiscovery` + `SkillTool` |
 | ~~23~~ | ~~拦截钩子~~ | `dsh-hook-protocol` | **✅ 2026-11-03**：`IToolInterceptor`（类型化拦截点） |
 | 24 | 会话投影 / 轮次大纲 | `dsh-session-projection*` | |
-| 25 | 出站代理 | `dsh-http-proxy` | |
+| ~~25~~ | ~~出站代理~~ | `dsh-http-proxy` | **✅ 2026-11-03**：`OutboundHttp` |
 | ~~26~~ | ~~重复工具调用提醒~~ | `dsh-repeat-tool-reminder` | **✅ 2026-11-03**：`RepeatToolReminder` |
 | ~~27~~ | ~~权限预设~~ | `dsh-permission-presets` | **✅ 2026-11-03**：`PermissionPresets`（仅审批维） |
 | ~~28~~ | ~~文件引用 `@file`~~ | `dsh-file-reference*` | **✅ 2026-11-02**：`FileReferenceIndex` |
@@ -501,8 +501,8 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~30~~ | ~~消息级反馈（正负 + 分类，进日志不进模型）~~ | `dsh-feedback/message-feedback` | **✅ 2026-11-02**：`MessageFeedback` + `JsonlMessageFeedbackStore`（伴生文件，不碰会话日志） |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 9 项 + 1 项部分（2026-11-03）**。九项的关键取舍与复核修掉的
-缺陷记在 `porting-differences.md` D-19 至 D-22、D-24 至 D-29。
+**P2 已完成 10 项 + 1 项部分（2026-11-03）**。十项的关键取舍与复核修掉的
+缺陷记在 `porting-differences.md` D-19 至 D-22、D-24 至 D-30。
 
 ### 明确不做
 

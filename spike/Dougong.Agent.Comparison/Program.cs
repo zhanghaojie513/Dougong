@@ -97,6 +97,7 @@ public static class Program
         "intercept",
         "repeat-reminder",
         "permission-preset",
+        "outbound-http",
         "workspace-lock",
     ];
 
@@ -316,6 +317,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "permission-preset")
             return await PermissionPresetChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "outbound-http")
+            return await OutboundHttpChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

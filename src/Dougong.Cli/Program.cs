@@ -336,7 +336,7 @@ public static class Program
         // 重建会把内核租约、MCP 连接与排空状态一起拆掉，代价远大于一次赋值。
         // **只建一个连接器**：可切换客户端包住它，装配拿到的也是它，
         // 于是"换模型"对摘要器等所有下游同时生效，不会出现半新半旧。
-        var swappable = new SwappableChatClient(ChatClientFactory.Create(config));
+        var swappable = new SwappableChatClient(ChatClientFactory.Create(config, OutboundHttp.Create()));
         var models = catalog;
         var activeProvider = config.Name;
 
@@ -814,7 +814,7 @@ public static class Program
             return;
         }
 
-        var next = ChatClientFactory.Create(target);
+        var next = ChatClientFactory.Create(target, OutboundHttp.Create());
         var previous = swappable.Swap(next);
         activeProvider = target.Name;
 
@@ -1380,7 +1380,7 @@ public static class Program
 
         Console.Error.WriteLine($"[acp] dougong 作为 ACP Agent 启动，模型={config.Model}");
 
-        using var client = ChatClientFactory.Create(config);
+        using var client = ChatClientFactory.Create(config, OutboundHttp.Create());
 
         // host 与工厂互相依赖：工厂里要创建审批器，而审批器要能向 host 发请求。
         // 用延迟绑定打破这个循环，而不是引入可变字段。

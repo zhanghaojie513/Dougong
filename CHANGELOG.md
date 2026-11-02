@@ -21,7 +21,7 @@
 
 ## [未发布]
 
-**P2：后台作业、计划模式、文件引用、消息级反馈、会话内换目录、技能、拦截钩子、重复调用提醒、权限预设。**
+**P2：后台作业、计划模式、文件引用、消息级反馈、会话内换目录、技能、拦截钩子、重复调用提醒、权限预设、出站代理。**
 
 ### Added
 
@@ -37,6 +37,10 @@
   经 `AskUser` 通道带 `intent.kind=plan-review` 送出。
 - **`FileReferenceIndex`**：`@file` 补全。只返回工作区内的相对路径、不读文件内容
   （dsh 契约原话）；按深度/长度/字典序稳定排序；不越出工作区、跳过噪声目录。
+- **`OutboundHttp`**：统一的出站 HTTP 客户端构造。读 `HTTPS_PROXY` / `HTTP_PROXY` /
+  `ALL_PROXY` 与 `NO_PROXY`（`HttpClient` 默认**不读**这些变量，它用系统设置）。
+  **非法代理值会拦住请求而不是悄悄直连**——流量必须走代理时，直连是安全边界问题。
+  四个客户端构造点（主连接器、`/model`、`--doctor`）全部接入。
 - **`PermissionPresets` + `PresetApprover`**：把审批策略打包成具名档
   （`interactive` / `unattended`），`/permission` 切换、`/permission <键>` 生效。
   `custom` 是派生值、不能选；预设不覆盖内层审批器的拒绝。
@@ -86,6 +90,9 @@
   我们不这么做，因为**加新记录类型会让旧程序在 `Enum.Parse<StoreRecordKind>`
   抛异常、整个会话打不开**。代价是反馈不随会话文件一起分发，需要单独带走
   `<session>.jsonl.feedback`。见 `porting-differences.md` D-24。
+- **代理凭据仍写在环境变量里**：支持 `http://user:pass@proxy`，但那种写法会把密码
+  带进配置与环境变量。优先用不带凭据的代理地址 + 系统凭据。
+- **不做代理自动探测**：只读环境变量，不猜常见端口——流量去向不该猜。
 - **权限预设不含沙箱维**：dsh 的预设是"沙箱模式 + 审批策略"两件套，我们只有审批。
   因此键名刻意不用 dsh 的 `workspace-write` / `danger-full-access`——那两个名字在
   描述沙箱范围。见 D-29。
