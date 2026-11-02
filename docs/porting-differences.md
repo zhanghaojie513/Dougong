@@ -361,7 +361,7 @@ home 决定"所有状态放哪一整个根"，`memory_dir` 决定"记忆是否�
 | **环形缓冲必须报丢弃字节** | 只报"还剩多少"会让模型以为那就是全部输出。检查用守恒判据：`total == 保留 + 丢弃`，同时证明两边统计一致。 |
 | **进程树结束：诚实降级** | 代码里显式传 `Kill(entireProcessTree: true)`，但**没有能在 Windows 上稳定验证它的检查**。试过两条路：`cmd /c ping` 不产生独立子进程；`start /b` 产生的是**有意分离**的进程（kill tree 本就不该管）。两种形态数进程的结果一样，无法区分 true 与 false。所以检查改名为 `job-stop-reaches-finished-state`（只验"停了"），另加只在 POSIX 跑的 `job-stop-kills-grandchildren-on-posix`（用心跳文件观察子进程是否还活着）。**把"已验证"写成结论就是假声称**，这一栏如实记录。 |
 | **不做持久化** | 作业活在进程内，进程退出就没了。理由：把「进程内句柄」落盘再恢复是不可能的——重启后那些子进程已经不存在。这点写进工具描述，因为模型会合理假设"我启动的东西还在"。 |
-| **验证** | `jobs` 套 11 项；2 组负控见 §三。其中进程树那条在 Windows 上跳过、在 Linux/CI 上真跑。 |
+| **验证** | `jobs` 套 12 项；2 组负控见 §三。其中进程树那条在 Windows 上跳过、在 Linux/CI 上真跑。 |
 | **源码位置** | `src/Dougong.Agent/JobRegistry.cs`、`src/Dougong.Agent/JobTools.cs` |
 
 ### D-20 持久 shell 用管道，不做 PTY
