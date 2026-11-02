@@ -27,7 +27,7 @@ namespace Dougong.Cli;
 /// </remarks>
 public sealed class ConsoleElicitationTool : IAgentTool
 {
-    private readonly Func<string?> _readLine;
+    private readonly ConsoleAskUserHost _host;
 
     /// <summary>构造，默认从标准输入读。</summary>
     public ConsoleElicitationTool() : this(null)
@@ -40,7 +40,7 @@ public sealed class ConsoleElicitationTool : IAgentTool
     /// 而检查无法驱动真实键盘。
     /// </remarks>
     public ConsoleElicitationTool(Func<string?>? readLine) =>
-        _readLine = readLine ?? Console.ReadLine!;
+        _host = new ConsoleAskUserHost(readLine);
 
     public ToolDescriptor Descriptor { get; } = new(
         "ask_user", "ask_user", "1.0.0",
@@ -108,7 +108,7 @@ public sealed class ConsoleElicitationTool : IAgentTool
 
     public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) => [];
 
-    public ValueTask<AgentToolResult> ExecuteAsync(
+    public async ValueTask<AgentToolResult> ExecuteAsync(
         ToolInvocation invocation, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(invocation);
@@ -116,88 +116,13 @@ public sealed class ConsoleElicitationTool : IAgentTool
         // 形状校验复用 Agent 层：不合法的问题根本不该打扰用户。
         var validation = AskUser.Validate(invocation.Arguments, out var questions);
         if (validation is not null)
-            return ValueTask.FromResult(Pack(AskUser.Invalid(validation)));
+            return Pack(AskUser.Invalid(validation));
 
-        var answers = new List<AskAnswer>(questions.Count);
-
-        foreach (var question in questions)
-        {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                // **取消与拒绝必须分开**：用户按了 Ctrl+C 不等于拒绝了这个选择。
-                return ValueTask.FromResult(Pack(new AskResult(
-                    AskOutcome.Cancelled,
-                    "本轮被取消，用户未答完问题。", answers)));
-            }
-
-            var answer = AskOne(question);
-            if (answer is null)
-            {
-                // 用户输入了 EOF（Ctrl+D / 管道结束）：明确报告不可用，
-                // 不假装他拒绝——他可能根本没看到问题。
-                //
-                // **已答的要留在结果里**：中断发生在第几个问题要说清楚。
-                // 只报"输入已结束"会让模型以为一个答案都没拿到，从而全部重问——
-                // 而用户刚才已经答过的那部分白费了。
-                var partial = answers.Count > 0
-                    ? $"（已答 {answers.Count} 个：{string.Join("、", answers.Select(a => a.Question))}）"
-                    : string.Empty;
-
-                return ValueTask.FromResult(Pack(new AskResult(
-                    AskOutcome.Unavailable,
-                    $"输入已结束，无法继续提问。{partial}",
-                    answers)));
-            }
-
-            if (answer.Declined)
-            {
-                return ValueTask.FromResult(Pack(new AskResult(
-                    AskOutcome.Declined, "用户选择了跳过。", answers)));
-            }
-
-            answers.Add(new AskAnswer(question.Header, answer.Text));
-        }
-
-        return ValueTask.FromResult(Pack(new AskResult(AskOutcome.Answered, null, answers)));
+        var result = await _host.AskAsync(questions, cancellationToken).ConfigureAwait(false);
+        return Pack(result);
     }
 
-    /// <summary>展示一个问题并读回答；返回 null 表示输入结束。</summary>
-    private ParsedAnswer? AskOne(AskedQuestion question)
-    {
-        Output.Line();
-        Output.Line($"── {question.Header} ──────────────────────────────");
-        Output.Line($"  {question.Question}");
-        Output.Line();
-
-        for (var i = 0; i < question.Options.Count; i++)
-        {
-            var option = question.Options[i];
-            Output.Line($"  {i + 1}) {option.Label}");
-            Output.Line($"     {option.Description}");
-        }
-
-        Output.Line();
-        Output.Line("  输入序号或选项文字；输入 s 跳过。");
-
-        // **给两次机会**：输错一次就放弃不符合"人在终端里"的实际体验，
-        // 而无限重问会让管道输入卡死。
-        for (var attempt = 0; attempt < 2; attempt++)
-        {
-            Output.Text("  > ");
-            var line = _readLine();
-            if (line is null) return null;
-
-            var parsed = ParseAnswer(line, question);
-            if (parsed is not null) return parsed;
-
-            Output.Line($"  （无法识别 '{line.Trim()}'，再试一次）");
-        }
-
-        // 两次都失败：返回 null 让调用方按"不可用"报告。
-        // **不猜他想选什么**，也不当成拒绝——那是两件不同的事。
-        Output.Line("  两次未能识别，本次提问作废。");
-        return null;
-    }
+    /// <summary>一条解析后的答复。</summary>
 
     /// <summary>解析一行输入。</summary>
     /// <remarks>
@@ -252,11 +177,6 @@ public sealed class ConsoleElicitationTool : IAgentTool
         return null;
     }
 
-    /// <summary>一条解析后的答复。</summary>
-    /// <param name="Text">答案文本；跳过时为空串。</param>
-    /// <param name="Declined">用户选择了跳过。</param>
-    internal sealed record ParsedAnswer(string Text, bool Declined);
-
     private static AgentToolResult Pack(AskResult result)
     {
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(new
@@ -269,3 +189,113 @@ public sealed class ConsoleElicitationTool : IAgentTool
         return new AgentToolResult(document.RootElement.Clone());
     }
 }
+
+/// <summary>
+/// 终端上的提问传输：逐题展示选项、读一行、解析。
+/// </summary>
+/// <remarks>
+/// <b>为什么单独抽出来</b>：同一个交互要服务两种工具——
+/// <c>ask_user</c>（普通提问）与 <c>exit_plan_mode</c>（计划审阅）。
+/// 两者的问题形状一样，只是 intent 不同；传输逻辑只该有一份。
+/// <para>
+/// <b>计划审阅在终端里的呈现</b>：完整 Markdown 计划会先打出来再问，
+/// 因为用户需要看着计划决定批不批。不打出来等于让他盲批。
+/// </para>
+/// </remarks>
+public sealed class ConsoleAskUserHost(Func<string?>? readLine) : IAskUserHost
+{
+    private readonly Func<string?> _readLine = readLine ?? Console.ReadLine!;
+
+    public ValueTask<AskResult> AskAsync(
+        IReadOnlyList<AskedQuestion> questions, CancellationToken cancellationToken = default)
+    {
+        var answers = new List<AskAnswer>(questions.Count);
+
+        foreach (var question in questions)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // **取消与拒绝必须分开**：用户按了 Ctrl+C 不等于拒绝了这个选择。
+                return ValueTask.FromResult(new AskResult(
+                    AskOutcome.Cancelled, "本轮被取消，用户未答完问题。", answers));
+            }
+
+            // 计划审阅：先把完整文档打出来。不看内容就批准等于盲批。
+            if (question.Intent?.Kind == AskIntent.PlanReview.Kind
+                && question.Detail is { Length: > 0 } detail)
+            {
+                Output.Line();
+                Output.Line("── 待审阅的计划 ────────────────────────────");
+                Output.Line();
+                Output.Line(detail);
+                Output.Line();
+                Output.Line("──────────────────────────────────────────");
+            }
+
+            var answer = AskOne(question);
+            if (answer is null)
+            {
+                // 用户输入了 EOF（Ctrl+D / 管道结束）：明确报告不可用，
+                // 不假装他拒绝——他可能根本没看到问题。
+                //
+                // **已答的要留在结果里**：中断发生在第几个问题要说清楚。
+                var partial = answers.Count > 0
+                    ? $"（已答 {answers.Count} 个）"
+                    : string.Empty;
+
+                return ValueTask.FromResult(new AskResult(
+                    AskOutcome.Unavailable, $"输入已结束，无法继续提问。{partial}", answers));
+            }
+
+            if (answer.Declined)
+                return ValueTask.FromResult(new AskResult(
+                    AskOutcome.Declined, "用户选择了跳过。", answers));
+
+            answers.Add(new AskAnswer(question.Header, answer.Text));
+        }
+
+        return ValueTask.FromResult(new AskResult(AskOutcome.Answered, null, answers));
+    }
+
+    /// <summary>展示一个问题并读回答；返回 null 表示输入结束。</summary>
+    private ParsedAnswer? AskOne(AskedQuestion question)
+    {
+        Output.Line();
+        Output.Line($"── {question.Header} ──────────────────────────────");
+        Output.Line($"  {question.Question}");
+        Output.Line();
+
+        for (var i = 0; i < question.Options.Count; i++)
+        {
+            var option = question.Options[i];
+            Output.Line($"  {i + 1}) {option.Label}");
+            Output.Line($"     {option.Description}");
+        }
+
+        Output.Line();
+        Output.Line("  输入序号或选项文字；输入 s 跳过。");
+
+        // **给两次机会**：输错一次就放弃不符合"人在终端里"的实际体验，
+        // 而无限重问会让管道输入卡死。
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            Output.Text("  > ");
+            var line = _readLine();
+            if (line is null) return null;
+
+            var parsed = ConsoleElicitationTool.ParseAnswer(line, question);
+            if (parsed is not null) return parsed;
+
+            Output.Line($"  （无法识别 '{line.Trim()}'，再试一次）");
+        }
+
+        // 两次都失败：返回 null 让调用方按"不可用"报告。
+        Output.Line("  两次未能识别，本次提问作废。");
+        return null;
+    }
+}
+
+/// <summary>一条解析后的答复。</summary>
+/// <param name="Text">答案文本；跳过时为空串。</param>
+/// <param name="Declined">用户选择了跳过。</param>
+internal sealed record ParsedAnswer(string Text, bool Declined);

@@ -108,12 +108,11 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// 计划模式；null 表示不做计划审阅。
     /// </summary>
     /// <remarks>
-    /// <b>它改变的是"什么时候结束"</b>：激活后，模型提交计划的那一轮会以
-    /// <see cref="AgentRunOutcome.PlanAwaitingReview"/> 结束，而不是继续执行。
-    /// 这让"审阅"真的发生在动手之前。
+    /// <b>它拦的是"审阅前动手"</b>：激活时非只读工具被拒。
+    /// 而"提交计划等审阅"由 <c>exit_plan_mode</c> 工具自己阻塞完成——
+    /// 那不在运行时这里，因为它是工具内部的一次提问。
     /// <para>
-    /// <b>默认 null</b>：自动化场景（脚本、检查）不需要人点头，
-    /// 而多一次中断就是多一次失败点。
+    /// <b>默认 null</b>：自动化场景（脚本、检查）不需要人点头。
     /// </para>
     /// </remarks>
     public PlanMode? PlanMode { get; init; }
@@ -174,13 +173,6 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         yield return new AgentEvent.RunStarted(request.SessionId, request.TurnId);
-
-        // **每轮重置计划提交标记**。不清的话，用户审阅后的下一轮会立刻
-        // 因为"上一轮提交过"而停下——而那一轮本该执行。
-        //
-        // 这也是 PlanMode.Submitted 叫"本轮的提交标记"而不是"会话的"的原因：
-        // 会话级的标记会让第一次审阅之后再也不需要审阅。
-        PlanMode?.Reset();
 
         // 屏障 1：用户输入必须在任何模型调用之前提交。
         // 提交失败即停止——不继续、不降级、不假装成功。
@@ -760,10 +752,10 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             // 只读工具必须放行：计划要"看"才能写，禁止读会让模型只能凭猜。
             // 判据用工具自己声明的权限（DescribePermission），不在这里硬编码
             // 工具名——否则新增工具时要记得改两处，而漏改不会报错。
-            if (PlanMode is { IsActive: true } planning)
+            if (PlanMode is { IsActive: true })
             {
                 var forbidden = calls
-                    .Where(c => !IsReadOnlyForPlanning(c))
+                    .Where(c => !PlanModePolicy.IsAllowed(c.ToolId))
                     .ToList();
 
                 if (forbidden.Count > 0)
@@ -884,19 +876,6 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                     yield return new AgentEvent.PlanUpdated(plan);
                 }
 
-                // **按工具名标记，不依赖能读出计划条目**。
-                //
-                // 第一版把 MarkSubmitted 放在 TryReadPlan 成功分支里，于是
-                // "工具成功了但返回体形状不同"时不会标记——实测假 dispatcher
-                // 返回 {"ok":true} 就走不到，而真工具的返回体形状是可变的。
-                // 计划模式的语义是"模型提交了计划"，判据应当是"调了那个工具
-                // 且成功"，不是"我们能解析出条目"。
-                if (result.Outcome == ToolCallOutcome.Succeeded
-                    && string.Equals(call.ToolId, PlanTool.ToolId, StringComparison.Ordinal))
-                {
-                    PlanMode?.MarkSubmitted();
-                }
-
                 toolResults.Add((call.Id, call.ToolId, result));
             }
 
@@ -915,59 +894,10 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 // 截断不是错误，但必须让宿主知道模型看到的是裁过的内容。
                 yield return truncation;
             }
-
-            // **计划模式的早退**：模型提交了计划，本轮到此为止。
-            // 放在回填之后（历史必须完整，否则会话恢复时少一次交互），
-            // 但放在进入下一轮之前——下一轮就属于"用户同意后的执行"了。
-            if (PlanMode?.ShouldStopForReview == true)
-            {
-                yield return await FinishAsync(
-                    AgentRunOutcome.PlanAwaitingReview,
-                    "已提交计划，等待用户审阅。",
-                    cancellationToken).ConfigureAwait(false);
-                yield break;
-            }
         }
 
         yield return await FinishAsync(AgentRunOutcome.ToolRoundLimitReached, null, cancellationToken).ConfigureAwait(false);
     }
-
-    /// <summary>
-    /// 计划模式下允许执行的工具。**白名单，不是黑名单。**
-    /// </summary>
-    /// <remarks>
-    /// <b>为什么是白名单</b>：黑名单（列出禁止的写工具）会让新增工具默认放行，
-    /// 而那正是最危险的方向——一个没被列进黑名单的写工具会在"审阅前"执行。
-    /// 白名单让新工具默认被拦，漏加只表现成"计划模式下用不了"，可发现。
-    /// <para>
-    /// <b>为什么硬编码名字而不是查工具权限</b>：<c>IDispatcherAccessor</c>
-    /// 只暴露 <c>GetToolsAsync</c>（返回 <c>ToolDescriptor</c>），拿不到
-    /// <c>DescribePermission</c>。想按权限判断得先扩接口，那是更大的改动。
-    /// 这里选择"显式的名字列表"，并接受它的代价：新增只读工具时要在两处登记。
-    /// </para>
-    /// <para>
-    /// <b>计划工具必须在其中</b>——它就是计划模式要收集的东西。
-    /// </para>
-    /// </remarks>
-    private static readonly HashSet<string> PlanModeAllowedTools = new(StringComparer.Ordinal)
-    {
-        // 计划本身
-        PlanTool.ToolId,
-
-        // 只读的文件与搜索
-        "read_file", "glob", "grep",
-
-        // 只读的会话/作业查询
-        "job_list", "job_output",
-    };
-
-    /// <summary>计划模式下这个调用是否允许执行。</summary>
-    /// <remarks>
-    /// 未注册的工具按"不允许"处理：计划模式下宁可多拦一个，
-    /// 也不要在审阅前执行未知副作用。
-    /// </remarks>
-    private static bool IsReadOnlyForPlanning(PendingCall call) =>
-        PlanModeAllowedTools.Contains(call.ToolId);
 
     /// <summary>
     /// 若有注入器，把启用中的偏好拼成一条 system 消息放在最前。

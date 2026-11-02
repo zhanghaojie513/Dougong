@@ -209,7 +209,60 @@ public sealed record AskedQuestion(
     string Question,
     string Header,
     IReadOnlyList<AskOption> Options,
-    bool MultiSelect);
+    bool MultiSelect)
+{
+    /// <summary>
+    /// 问题的完整附件（Markdown）。没有时为空。
+    /// </summary>
+    /// <remarks>
+    /// <b>与 <see cref="Question"/> 分工</b>：后者是一句话的提问，
+    /// 前者是可以滚动阅读的完整文档。计划审阅需要"完整计划"而不是摘要——
+    /// 摘要会让用户在没看全的情况下批准。
+    /// <para>
+    /// dsh 的 <c>userQuestions.ask</c> 有这个字段，且明确写着
+    /// "its detail is the only complete document"。
+    /// </para>
+    /// </remarks>
+    public string? Detail { get; init; }
+
+    /// <summary>
+    /// 这次提问属于哪一类交互。null 表示普通提问。
+    /// </summary>
+    /// <remarks>
+    /// <b>客户端据此选 UI</b>：普通提问显示成问题卡片，计划审阅显示成
+    /// 审阅卡片（带"查看完整计划"与"批准"）。dsh 的 e2e 明确断言
+    /// "plan-review 请求**不能**落到通用问题流上"。
+    /// </remarks>
+    public AskIntent? Intent { get; init; }
+}
+
+/// <summary>
+/// 提问的交互类别。
+/// </summary>
+/// <remarks>
+/// <b>用数据而不是类型区分</b>：客户端的槽位注册要能按 intent 分发，
+/// 而"多态问题类型"会让宿主必须为每种类型实现一个渲染器。
+/// dsh 用 <c>intent: { kind: 'plan-review', approve: 'Approve' }</c> 这个形状。
+/// </remarks>
+public sealed record AskIntent
+{
+    /// <summary>计划审阅：附件是完整计划，批准后退出计划模式。</summary>
+    public static readonly AskIntent PlanReview = new("plan-review");
+
+    private AskIntent(string kind) => Kind = kind;
+
+    /// <summary>类别标识。</summary>
+    public string Kind { get; }
+
+    /// <summary>
+    /// 哪个选项代表"批准"。null 表示该类别没有批准语义。
+    /// </summary>
+    /// <remarks>
+    /// <b>用选项文本而不是序号</b>：序号在不同渲染顺序下不稳定，
+    /// 而选项文本是用户看到并点的那一个。
+    /// </remarks>
+    public string? ApproveLabel { get; init; }
+}
 
 /// <summary>一个可选项。</summary>
 /// <param name="Label">选项本身，1–5 个词。</param>

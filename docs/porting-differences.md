@@ -111,7 +111,7 @@
 | 检查测的是当前代码而非陈旧副本 | `terminal`：`comparison-uses-release-cli-assembly` | 把检查目录里的 `Dougong.Cli.dll` 时间戳改成 2020 年 → 报"比 Release 旧……任何负控结论都不作数"；恢复后转绿 |
 | 后台作业游标与环形缓冲守恒 | `jobs`：`job-start-returns-without-waiting`、`job-output-respects-cursor`、`job-output-reports-discarded-bytes`、`job-caps-concurrency-per-owner`、`job-limit-is-per-owner-not-global`、`job-unknown-id-is-not-silent`、`job-registry-dispose-kills-children`、`job-tool-declares-execute-permission`、`job-stop-kills-grandchildren-on-posix` | `OmittedBytes` 恒 0 → `job-output-reports-discarded-bytes` 报"总输出 7200 字节却报 omitted=0"；并发上限改全局 → `job-limit-is-per-owner-not-global` 失败 |
 | 持久 shell 的状态与输出干净度 | `persistent-shell`：`shell-keeps-cwd-across-commands`、`shell-exit-code-is-this-command`、`shell-failure-does-not-break-session`、`shell-output-has-no-prompt-noise`、`shell-reports-current-directory`、`shell-times-out-instead-of-hanging`、`shell-dispose-terminates-process`、`shell-reuses-one-process` | 每条命令重建进程 → 3 项同时失败（cd 失效、目录报错、变量丢失） |
-| 计划审阅真的发生在执行之前 | `plan-mode`：`plan-mode-stops-after-submission`、`plan-mode-rejects-write-before-review`、`plan-mode-allows-read-tools`、`plan-mode-off-executes-normally`、`plan-mode-section-only-when-active`、`plan-mode-submission-is-per-turn`、`plan-mode-disable-after-review` | 让只读判据恒放行 → `plan-mode-rejects-write-before-review` 报"写工具应被拒，实际 Succeeded"；去掉提交后早退 → 结局变 Completed；`Reset` 改成不清 → `plan-mode-submission-is-per-turn` 报"那是会话级而不是本轮级" |
+| 计划审阅挡住执行且批准后可继续 | `plan-mode`：`plan-approval-continues-same-turn`、`plan-approval-exits-plan-mode`、`plan-rejection-keeps-plan-mode`、`plan-cancel-is-distinct-from-reject`、`plan-requires-markdown-title`、`plan-rejects-oversized-document`、`plan-mode-blocks-write-tools`、`plan-mode-allows-read-tools`、`plan-mode-off-executes-normally`、`plan-section-only-when-active`、`plan-intent-carries-approve-label` | 批准后不 `Disable` → `plan-approval-exits-plan-mode` 报"后续写操作会被误拦"；取消报成 `PlanRejected` → `plan-cancel-is-distinct-from-reject` 失败 |
 | 每个会被显示的阶段都有文案 | `terminal`：`every-phase-has-visible-label`、`binary-is-not-stale` | 新增 `Retrying` 时若只加枚举不加文案 → `every-phase-has-visible-label` 报"阶段 Retrying 会被显示却没有文案"；改源码不重建 Release → `binary-is-not-stale` 报"跑的是旧构建" |
 | 压缩比例默认值与可配置性 | `compaction`、`wiring`、`doctor` | 把 `DefaultTriggerRatio` 改成 0.99 → `compaction` 套的触发点检查失败；给 `--doctor` 传入 `retain >= trigger` → `doctor` 套的非法规格检查失败 |
 
@@ -377,20 +377,23 @@ home 决定"所有状态放哪一整个根"，`memory_dir` 决定"记忆是否�
 | **验证** | `persistent-shell` 套 8 项；1 组负控见 §三。 |
 | **源码位置** | `src/Dougong.Agent/PersistentShell.cs`、`src/Dougong.Agent/PersistentShellTool.cs` |
 
-### D-21 计划模式靠运行时强制，不只靠提示
+### D-21 计划模式照 dsh 实现：专用工具 + 阻塞审阅
 
 | | |
 |---|---|
-| **哪不一样** | dsh 的 `dsh-plan-mode` 暴露一个 `plan:policy` 提示段落，在激活时注入。我们同样用提示分节，但**加了一条硬约束**：`todo_write` 成功即结束本轮（`PlanAwaitingReview`），且非只读工具在计划模式下被拒。 |
-| **为什么必须强制** | 只说"提交计划后停下"是软约束，模型经常顺手把第一步也做了——而那时用户还没看过计划。强制中止让"审阅"真的发生在动手之前，这是本能力的全部意义。 |
-| **两条硬约束缺一不可** | 只做"提交后停下"的话，模型可以先 `edit_file` 再提交计划，改动已经发生，审阅成了形式。所以还要拦非只读工具。 |
-| **只读工具必须放行** | 计划要"看"才能写。全拦会让模型只能凭猜写计划，而猜测的计划没法审阅。 |
-| **白名单而不是黑名单** | 黑名单会让新增工具默认放行——那正是最危险的方向。白名单让新工具默认被拦，漏加只表现成"计划模式下用不了"，可发现。 |
-| **为什么硬编码工具名** | `IDispatcherAccessor` 只暴露 `GetToolsAsync`（返回 `ToolDescriptor`），拿不到 `DescribePermission`。想按权限判断得先扩接口。这里选显式列表并接受代价：新增只读工具时要在两处登记。 |
-| **提交标记是本轮的不是会话的** | 会话级会让第一次审阅之后再也不需要审阅。`RunAsync` 开头重置，`PlanMode.Reset` 也供 `/plan` 切换时调用。这一条有独立检查（`plan-mode-submission-is-per-turn`），因为"忘记重置"的症状是"用户同意后仍然不执行"。 |
-| **`AgentRunOutcome.PlanAwaitingReview` 追加在末尾** | 与 `Completed` 分开：两者都不是错误，但含义相反——前者"做完了"，后者"准备这么做，等你点头"。混成一个 UI 无法决定显示结果还是显示待审阅的计划。插在中间会让后面成员数字顺移（ApiCompat CP0011）。 |
-| **验证** | `plan-mode` 套 7 项；3 组负控见 §三。 |
-| **源码位置** | `src/Dougong.Agent/PlanMode.cs`、`src/Dougong.Cli/Program.cs`（`/plan`） |
+| **哪不一样（第一版错在哪）** | 第一版复用了 `todo_write` 提交条目列表，并以 `PlanAwaitingReview` **结束本轮**。读过 dsh 源码后发现三处实质性偏离——`todo_write` 是持续维护的进度清单，而计划是**一次性提交的文档**；条目列表装不下"为什么这么做"；结束本轮让用户批准后还要重新起轮。 |
+| **dsh 的做法** | `exit_plan_mode` 工具，参数 `{ plan: "<完整 Markdown>" }`；工具**内部阻塞**等审阅；批准后返回 `"Plan approved"`，模型**在同一轮继续**。计划地址是 `dsh-resource://plan/<session>/<callId>`，可存进侧边栏并重新打开。 |
+| **为什么专用工具而不是复用 todo_write** | `todo_write` 可调多次、语义是"更新进度"；`exit_plan_mode` 是一次性动作"提交文档、请求退出"。复用会让模型分不清该在什么时候停。 |
+| **为什么是完整 Markdown 而不是条目列表** | 计划要说明**为什么这么做、有什么风险**，条目列表装不下。dsh 的 e2e 明确断言审阅卡片 `getByRole('list').count()` 为 0——只显示标题 + "查看完整计划"。 |
+| **为什么阻塞而不是结束本轮** | 结束本轮后用户批准，模型要重新起轮；阻塞让批准直接变成工具结果，模型不必猜"用户那句'开始吧'是不是批准"。判据是"模型被调了第二次"，不只是结局。 |
+| **走 AskUser 通道带 intent** | dsh 用 `userQuestions.ask` + `intent: { kind: 'plan-review', approve: 'Approve' }`，且明确要求"plan-review 请求**不能**落到通用问题流"。我们扩展 `AskedQuestion` 加 `Detail`（完整文档）与 `Intent`（类别 + 批准选项），并把传输抽成 `IAskUserHost`——ACP 与 REPL 各一份。 |
+| **`intent` 用数据不用类型** | 客户端的槽位要能按 intent 分发；"多态问题类型"会让宿主必须为每种类型实现渲染器。 |
+| **批准选项用文本不用序号** | 序号在不同渲染顺序下不稳定，而选项文本是用户看到并点的那个。 |
+| **标题必须存在** | 客户端用 `# 标题` 显示"这份计划关于什么"。缺标题时拒收，且**不发起审阅**（不打扰用户）。 |
+| **取消 ≠ 拒绝** | 取消意味着用户没看到或被打断；拒绝意味着方案被否决。前者该重试，后者该改方案。分别报 `PlanCancelled` / `PlanRejected`。 |
+| **计划模式下拦非只读工具** | 白名单（`PlanModePolicy.AllowedTools`）而不是黑名单：黑名单让新增工具默认放行，那是最危险的方向。 |
+| **验证** | `plan-mode` 套 11 项；2 组负控见 §三。 |
+| **源码位置** | `src/Dougong.Agent/PlanMode.cs`、`src/Dougong.Cli/ConsoleElicitationTool.cs`（`ConsoleAskUserHost`） |
 
 ## 五、这份台账的边界
 

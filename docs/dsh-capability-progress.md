@@ -214,7 +214,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 
 | 状态 | 能力 | 实现方式 | dsh | 我们 | 备注 |
 |---|---|---|---|---|---|
-| ✅ | 计划模式 | `[自有]` | `dsh-plan-mode` | `PlanMode` + `PlanModeSection` + `/plan` | **带审阅的退出**：提交计划即结束本轮（`PlanAwaitingReview`）；计划模式下只放行只读工具白名单；2026-11-02 |
+| ✅ | 计划模式 | `[自有]` | `dsh-plan-mode` | `PlanMode` + `ExitPlanModeTool` + `/plan` | **照 dsh 做**：`exit_plan_mode` 工具**阻塞**等审阅，批准后同一轮继续；`plan` 是完整 Markdown 文档（须 `# 标题`）；走 `AskUser` 通道带 `intent.kind=plan-review`；2026-11-02 |
 | ⬜ | 技能提供者注册 | `[—]` | `dsh-skill*` | — | L1 记忆是另一回事 |
 | ⬜ | 会话内目标 | `[—]` | `dsh-goal*` | — | |
 | ⬜ | 子 agent | `[—]` | `dsh-subagent*` | — | |

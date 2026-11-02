@@ -5,29 +5,41 @@ using Microsoft.Extensions.AI;
 namespace Dougong.Agent.Comparison;
 
 /// <summary>
-/// 计划模式的验收。
+/// 计划模式的验收（照 dsh 的 <c>exit_plan_mode</c> 模型）。
 /// </summary>
 /// <remarks>
-/// <b>可观察面是"宿主看到了什么"</b>，两条硬约束：
-/// <list type="number">
-/// <item><b>提交计划就停</b>——不是"提示模型停"，而是运行时结束本轮</item>
-/// <item><b>审阅前不许动手</b>——写/执行类工具在计划模式下被拒</item>
+/// <b>与第一版的关键差别</b>：提交计划**不结束本轮**，而是工具内部阻塞等审阅。
+/// 批准后模型在同一轮继续——判据是"模型被调用了第二次"，
+/// 而不只是"结局是什么"。
+/// <para>
+/// <b>可观察面</b>：
+/// <list type="bullet">
+/// <item>批准 → 工具结果 <c>PlanApproved</c> 且计划模式关闭</item>
+/// <item>要改 → <c>PlanRejected</c> 且模式保持</item>
+/// <item>取消 → <c>PlanCancelled</c>，与"拒绝"分开</item>
+/// <item>缺标题 / 太长 → 拒收，不打扰用户</item>
+/// <item>计划模式下非只读工具被拦</item>
 /// </list>
-/// 第 2 条比第 1 条重要：只有第 1 条时，模型可以先改文件再提交计划，
-/// 而那时用户的审阅已经没有意义。
+/// </para>
 /// </remarks>
 public static class PlanModeChecks
 {
+    private const string GoodPlan = "# 加 --greeting 参数\n\n## 步骤\n\n- 改 Program.cs\n- 加测试";
+
     public static async Task<int> RunAsync()
     {
         var failures = 0;
-        failures += await CheckAsync("plan-mode-stops-after-submission", StopsAfterSubmitAsync);
-        failures += await CheckAsync("plan-mode-rejects-write-before-review", RejectsWriteAsync);
-        failures += await CheckAsync("plan-mode-allows-read-tools", AllowsReadAsync);
+        failures += await CheckAsync("plan-approval-continues-same-turn", ApprovalContinuesAsync);
+        failures += await CheckAsync("plan-approval-exits-plan-mode", ApprovalExitsModeAsync);
+        failures += await CheckAsync("plan-rejection-keeps-plan-mode", RejectionKeepsModeAsync);
+        failures += await CheckAsync("plan-cancel-is-distinct-from-reject", CancelDistinctAsync);
+        failures += await CheckAsync("plan-requires-markdown-title", RequiresTitleAsync);
+        failures += await CheckAsync("plan-rejects-oversized-document", RejectsOversizedAsync);
+        failures += await CheckAsync("plan-mode-blocks-write-tools", BlocksWritesAsync);
+        failures += await CheckAsync("plan-mode-allows-read-tools", AllowsReadsAsync);
         failures += await CheckAsync("plan-mode-off-executes-normally", OffExecutesAsync);
-        failures += await CheckAsync("plan-mode-section-only-when-active", SectionGatingAsync);
-        failures += await CheckAsync("plan-mode-submission-is-per-turn", PerTurnAsync);
-        failures += await CheckAsync("plan-mode-disable-after-review", DisableAfterReviewAsync);
+        failures += await CheckAsync("plan-section-only-when-active", SectionGatingAsync);
+        failures += await CheckAsync("plan-intent-carries-approve-label", IntentCarriesLabelAsync);
 
         Console.WriteLine(failures == 0
             ? "PLAN-MODE: ALL PASS"
@@ -35,198 +47,279 @@ public static class PlanModeChecks
         return failures;
     }
 
-    /// <summary>提交计划后本轮立即结束。</summary>
+    /// <summary>批准后模型在同一轮继续。</summary>
     /// <remarks>
-    /// <b>判据有两条</b>：结局是 <c>PlanAwaitingReview</c>，
-    /// 且模型只被调用一次——只验结局的话，"又跑了一轮才停"也会通过。
+    /// <b>这是与"结束本轮"模型的本质区别</b>：第一种做法下用户批准后要重新起轮，
+    /// 而 dsh 是工具返回 <c>Plan approved</c>，模型接着做。
+    /// 判据必须是"模型被调了第二次"——只看结局的话两种实现都能过。
     /// </remarks>
-    private static async Task<string?> StopsAfterSubmitAsync()
+    private static async Task<string?> ApprovalContinuesAsync()
     {
-        var client = new ScriptedClient(
-            ["""{"invocation":"c1","tool":"todo_write","args":{"todos":[{"content":"改 a.txt","priority":"high","status":"pending"}]}}"""]);
+        var (outcome, calls, results) = await RunAsync("Approve");
 
-        var mode = new PlanMode();
-        mode.Enable();
+        var result = results.FirstOrDefault(r => r.ToolId == PlanModePolicy.ExitPlanModeToolId);
+        if (result?.Result?.Content.GetRawText().Contains("PlanApproved", StringComparison.Ordinal) != true)
+            return $"工具结果不是 PlanApproved：{result?.Result?.Content.GetRawText()}";
 
-        var outcome = await RunAsync(client, mode);
-
-        if (outcome is not AgentRunOutcome.PlanAwaitingReview)
-            return $"结局应为 PlanAwaitingReview，实际 {outcome}";
-
-        return client.Calls == 1
-            ? null
-            : $"提交计划后又调了模型 {client.Calls} 次（应只 1 次）";
-    }
-
-    /// <summary>审阅前写文件必须被拒。</summary>
-    /// <remarks>
-    /// <b>这是整个能力的意义所在</b>：只做"提交后停下"的话，
-    /// 模型可以先 edit_file 再提交计划——改动已经发生，审阅成了形式。
-    /// </remarks>
-    private static async Task<string?> RejectsWriteAsync()
-    {
-        var client = new ScriptedClient(
-            ["""{"invocation":"c1","tool":"write_file","args":{"path":"a.txt","content":"x"}}"""]);
-
-        var mode = new PlanMode();
-        mode.Enable();
-
-        var (outcome, results) = await RunDetailedAsync(client, mode);
-
-        var write = results.FirstOrDefault(r => r.ToolId == "write_file");
-        if (write is null) return "没有 write_file 的结果";
-
-        if (write.Outcome is not ToolCallOutcome.RejectedNotApproved)
-            return $"写工具应被拒，实际 {write.Outcome}";
-
-        // 诊断要告诉模型该做什么，而不只是"被拒"。
-        if (write.Diagnostic?.Contains("计划", StringComparison.Ordinal) != true)
-            return $"拒绝诊断没提到计划模式：{write.Diagnostic}";
-
-        return outcome is AgentRunOutcome.PlanAwaitingReview
-            ? null
-            : $"结局应为 PlanAwaitingReview，实际 {outcome}";
-    }
-
-    /// <summary>只读工具必须放行——计划要"看"才能写。</summary>
-    /// <remarks>
-    /// <b>全拦会让模型只能凭猜写计划</b>，而猜测的计划没法审阅。
-    /// </remarks>
-    private static async Task<string?> AllowsReadAsync()
-    {
-        var client = new ScriptedClient(
-            ["""{"invocation":"c1","tool":"read_file","args":{"path":"a.txt"}}"""]);
-
-        var mode = new PlanMode();
-        mode.Enable();
-
-        var (_, results) = await RunDetailedAsync(client, mode);
-
-        var read = results.FirstOrDefault(r => r.ToolId == "read_file");
-        return read?.Outcome is ToolCallOutcome.Succeeded
-            ? null
-            : $"只读工具应放行，实际 {read?.Outcome}";
-    }
-
-    /// <summary>非计划模式下一切照常。</summary>
-    /// <remarks>
-    /// <b>防的是"拦截条件写反"</b>：如果判据成了 <c>!IsActive</c>，
-    /// 所有场景都会异常，而只测计划模式时看不出来。
-    /// </remarks>
-    private static async Task<string?> OffExecutesAsync()
-    {
-        var client = new ScriptedClient(
-            ["""{"invocation":"c1","tool":"write_file","args":{"path":"a.txt","content":"x"}}"""]);
-
-        var (outcome, results) = await RunDetailedAsync(client, planMode: null);
-
-        var write = results.FirstOrDefault(r => r.ToolId == "write_file");
-        if (write?.Outcome is not ToolCallOutcome.Succeeded)
-            return $"非计划模式下写工具应执行，实际 {write?.Outcome}";
+        if (calls < 2)
+            return $"批准后模型只被调了 {calls} 次——说明本轮被结束了，没有继续";
 
         return outcome is AgentRunOutcome.Completed
             ? null
             : $"结局应为 Completed，实际 {outcome}";
     }
 
-    /// <summary>提示分节只在激活时产出。</summary>
+    /// <summary>批准后计划模式必须关闭，否则模型接下来仍会被拦。</summary>
+    private static async Task<string?> ApprovalExitsModeAsync()
+    {
+        var mode = new PlanMode();
+        await RunAsync("Approve", mode);
+
+        return mode.IsActive
+            ? "批准后计划模式仍是激活状态——后续写操作会被误拦"
+            : null;
+    }
+
+    /// <summary>要改时保持计划模式，让模型改完重新提交。</summary>
+    private static async Task<string?> RejectionKeepsModeAsync()
+    {
+        var mode = new PlanMode();
+        var (_, _, results) = await RunAsync("Keep planning", mode);
+
+        var result = results.FirstOrDefault(r => r.ToolId == PlanModePolicy.ExitPlanModeToolId);
+        if (result?.Result?.Content.GetRawText().Contains("PlanRejected", StringComparison.Ordinal) != true)
+            return $"工具结果不是 PlanRejected：{result?.Result?.Content.GetRawText()}";
+
+        return mode.IsActive ? null : "未批准却关闭了计划模式——模型会直接动手";
+    }
+
+    /// <summary>取消与拒绝必须是不同结果。</summary>
+    /// <remarks>
+    /// <b>混成一个会让模型误判</b>：取消意味着用户没看到或被打断，
+    /// 拒绝意味着方案被否决。前者该重试，后者该改方案。
+    /// </remarks>
+    private static async Task<string?> CancelDistinctAsync()
+    {
+        var mode = new PlanMode();
+        var (_, _, results) = await RunAsync(planMode: mode, cancelled: true);
+
+        var raw = results.FirstOrDefault(r => r.ToolId == PlanModePolicy.ExitPlanModeToolId)
+            ?.Result?.Content.GetRawText() ?? string.Empty;
+
+        if (!raw.Contains("PlanCancelled", StringComparison.Ordinal))
+            return $"取消应报 PlanCancelled，实际：{raw}";
+
+        if (raw.Contains("PlanRejected", StringComparison.Ordinal))
+            return "取消同时被报成了拒绝";
+
+        return mode.IsActive ? null : "取消却关闭了计划模式";
+    }
+
+    /// <summary>没有 Markdown 标题的计划要被拒。</summary>
+    /// <remarks>
+    /// <b>标题是客户端的唯一标识</b>：审阅卡片用标题显示"这份计划关于什么"。
+    /// 没有标题就只剩一句话，用户无法从卡片判断该不该点进去看。
+    /// </remarks>
+    private static async Task<string?> RequiresTitleAsync()
+    {
+        var (_, calls, results) = await RunAsync("Approve", plan: "这里没有标题，只有一段正文。");
+
+        var raw = results.FirstOrDefault(r => r.ToolId == PlanModePolicy.ExitPlanModeToolId)
+            ?.Result?.Content.GetRawText() ?? string.Empty;
+
+        if (!raw.Contains("PlanRejected", StringComparison.Ordinal))
+            return $"缺标题应被拒，实际：{raw}";
+
+        // **不断言模型调用次数**：拒收后模型会拿到工具结果、可以改完重提，
+        // 那正是设计意图。要验的是"没有发起审阅"——用 host 是否被调过来判。
+        return _lastHostAsked
+            ? "缺标题却仍发起了审阅（打扰了用户）"
+            : null;
+    }
+
+    private static async Task<string?> RejectsOversizedAsync()
+    {
+        var huge = "# 标题\n\n" + string.Concat(Enumerable.Repeat("很长的一段说明。", 6000));
+        var (_, _, results) = await RunAsync("Approve", plan: huge);
+
+        var raw = results.FirstOrDefault(r => r.ToolId == PlanModePolicy.ExitPlanModeToolId)
+            ?.Result?.Content.GetRawText() ?? string.Empty;
+
+        return raw.Contains("PlanRejected", StringComparison.Ordinal)
+            ? null
+            : $"超长计划应被拒，实际：{raw[..Math.Min(80, raw.Length)]}";
+    }
+
+    private static async Task<string?> BlocksWritesAsync()
+    {
+        var client = new ScriptedClient(
+            """{"invocation":"c1","tool":"write_file","args":{"path":"a.txt","content":"x"}}""");
+
+        var mode = new PlanMode();
+        mode.Enable();
+
+        var results = await RunWithAsync(client, mode);
+        var write = results.FirstOrDefault(r => r.ToolId == "write_file");
+
+        return write?.Outcome is ToolCallOutcome.RejectedNotApproved
+            ? null
+            : $"计划模式下写工具应被拒，实际 {write?.Outcome}";
+    }
+
+    private static async Task<string?> AllowsReadsAsync()
+    {
+        var client = new ScriptedClient(
+            """{"invocation":"c1","tool":"read_file","args":{"path":"a.txt"}}""");
+
+        var mode = new PlanMode();
+        mode.Enable();
+
+        var results = await RunWithAsync(client, mode);
+        var read = results.FirstOrDefault(r => r.ToolId == "read_file");
+
+        return read?.Outcome is ToolCallOutcome.Succeeded
+            ? null
+            : $"计划模式下只读工具应放行，实际 {read?.Outcome}";
+    }
+
+    private static async Task<string?> OffExecutesAsync()
+    {
+        var client = new ScriptedClient(
+            """{"invocation":"c1","tool":"write_file","args":{"path":"a.txt","content":"x"}}""");
+
+        var results = await RunWithAsync(client, planMode: null);
+        var write = results.FirstOrDefault(r => r.ToolId == "write_file");
+
+        return write?.Outcome is ToolCallOutcome.Succeeded
+            ? null
+            : $"非计划模式下写工具应执行，实际 {write?.Outcome}";
+    }
+
     private static async Task<string?> SectionGatingAsync()
     {
         var mode = new PlanMode();
         var section = new PlanModeSection(() => mode.IsActive);
+        var context = new SystemPromptContext("/tmp", []);
 
-        var off = await section.BuildAsync(new SystemPromptContext("/tmp", []), CancellationToken.None);
+        var off = await section.BuildAsync(context, CancellationToken.None);
         if (off is not null) return $"未激活时不应产出分节，实际：[{off}]";
 
         mode.Enable();
-        var on = await section.BuildAsync(new SystemPromptContext("/tmp", []), CancellationToken.None);
-
+        var on = await section.BuildAsync(context, CancellationToken.None);
         if (on is null) return "激活后没有产出分节";
 
-        // 分节必须说清"先提交计划再停"，否则模型不知道要等审阅。
-        return on.Contains("todo_write", StringComparison.Ordinal)
-            && on.Contains("停下", StringComparison.Ordinal)
-                ? null
-                : $"分节没有说清提交与停止：{on}";
-    }
+        // dsh 的原文以 "You are in plan mode." 开头，我们也要求明确的状态声明。
+        if (!on.Contains("plan mode", StringComparison.OrdinalIgnoreCase))
+            return $"分节没有声明计划模式：{on}";
 
-    /// <summary>提交标记是本轮的，不是会话的。</summary>
-    /// <remarks>
-    /// <b>做成了会话级的话，用户同意之后就再也不需要审阅了</b>——
-    /// 而那正是它要防的。重置由每轮开始负责，这里验证 <c>Reset</c> 的效果。
-    /// </remarks>
-    private static Task<string?> PerTurnAsync()
-    {
-        var mode = new PlanMode();
-        mode.Enable();
-        mode.MarkSubmitted();
-
-        if (!mode.ShouldStopForReview) return Task.FromResult<string?>("提交后应停下");
-
-        mode.Reset();
-        return Task.FromResult<string?>(mode.ShouldStopForReview
-            ? "重置后仍然要停下——那是会话级而不是本轮级"
-            : null);
-    }
-
-    /// <summary>审阅通过后关闭模式，下一轮可以执行。</summary>
-    private static async Task<string?> DisableAfterReviewAsync()
-    {
-        var mode = new PlanMode();
-        mode.Enable();
-        mode.MarkSubmitted();
-
-        if (mode.ShouldStopForReview is false)
-            return "开启并提交后应停下";
-
-        // 用户同意：关模式。
-        mode.Disable();
-        if (mode.IsActive) return "Disable 后仍处于激活状态";
-        if (mode.ShouldStopForReview) return "Disable 后仍要停下";
-
-        // 关闭后写工具应放行。
-        var client = new ScriptedClient(
-            ["""{"invocation":"c1","tool":"write_file","args":{"path":"a.txt","content":"x"}}"""]);
-
-        var (outcome, results) = await RunDetailedAsync(client, mode);
-        var write = results.FirstOrDefault(r => r.ToolId == "write_file");
-
-        return write?.Outcome is ToolCallOutcome.Succeeded && outcome is AgentRunOutcome.Completed
+        return on.Contains(PlanModePolicy.ExitPlanModeToolId, StringComparison.Ordinal)
             ? null
-            : $"审阅后仍被拦：{write?.Outcome} / {outcome}";
+            : "分节没有说要调 exit_plan_mode 提交";
+    }
+
+    /// <summary>审阅意图要带"哪个选项代表批准"。</summary>
+    /// <remarks>
+    /// <b>客户端据此决定哪个按钮是主按钮</b>。用选项文本而不是序号：
+    /// 序号在不同渲染顺序下不稳定。
+    /// </remarks>
+    private static async Task<string?> IntentCarriesLabelAsync()
+    {
+        var host = new RecordingHost("Approve");
+        var mode = new PlanMode();
+        mode.Enable();
+
+        var tool = new ExitPlanModeTool(host, mode);
+        await tool.ExecuteAsync(
+            new ToolInvocation("c1", PlanModePolicy.ExitPlanModeToolId, Args(GoodPlan)),
+            CancellationToken.None);
+
+        var asked = host.LastQuestion;
+        if (asked is null) return "没有发起提问";
+
+        if (asked.Detail != GoodPlan) return "提问没有携带完整计划文档";
+
+        if (asked.Intent?.Kind != AskIntent.PlanReview.Kind)
+            return $"intent.kind 应为 plan-review，实际 {asked.Intent?.Kind}";
+
+        return asked.Intent.ApproveLabel == "Approve"
+            ? null
+            : $"intent 没有标出批准选项：{asked.Intent.ApproveLabel}";
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────
 
-    private static async Task<AgentRunOutcome> RunAsync(IChatClient client, PlanMode? planMode)
-    {
-        var (outcome, _) = await RunDetailedAsync(client, planMode);
-        return outcome;
-    }
+    private static JsonElement Args(string plan) =>
+        JsonDocument.Parse(JsonSerializer.Serialize(new { plan })).RootElement.Clone();
 
-    private static async Task<(AgentRunOutcome Outcome, List<ToolDispatchResult> Tools)>
-        RunDetailedAsync(IChatClient client, PlanMode? planMode)
+    private static async Task<(AgentRunOutcome Outcome, int Calls, List<ToolDispatchResult> Results)>
+        RunAsync(string? verdict = null, PlanMode? planMode = null,
+            string plan = GoodPlan, bool cancelled = false)
     {
-        var runtime = new LoopAgentRuntime(client, new FakeDispatcher())
-        {
-            PlanMode = planMode,
-        };
+        // **始终打开**：这些用例测的都是"计划模式下"的行为。
+        // 关掉模式的用例走 RunWithAsync（那条路径不传 mode）。
+        var mode = planMode ?? new PlanMode();
+        mode.Enable();
+        _lastHostAsked = false;
+
+        var client = new ScriptedClient(
+            "{\"invocation\":\"c1\",\"tool\":\"exit_plan_mode\",\"args\":"
+            + JsonSerializer.Serialize(new { plan }) + "}");
+
+        var host = new RecordingHost(cancelled ? null : verdict);
+        var dispatcher = new PlanDispatcher(mode, host);
+
+        var runtime = new LoopAgentRuntime(client, dispatcher) { PlanMode = mode };
 
         var results = new List<ToolDispatchResult>();
         AgentRunOutcome outcome = AgentRunOutcome.Failed;
 
         await foreach (var e in runtime.RunAsync(
-            new AgentRunRequest("s", "t", [], "做点什么"), CancellationToken.None))
+            new AgentRunRequest("s", "t", [], "做事"), CancellationToken.None))
         {
             if (e is AgentEvent.ToolCallCompleted done) results.Add(done.Result);
             if (e is AgentEvent.RunFinished finished) outcome = finished.Outcome;
         }
 
-        return (outcome, results);
+        return (outcome, client.Calls, results);
     }
 
-    /// <summary>按脚本逐轮产出工具调用；脚本用尽后给纯文本。</summary>
-    private sealed class ScriptedClient(params string[] rounds) : IChatClient
+    private static async Task<List<ToolDispatchResult>> RunWithAsync(
+        IChatClient client, PlanMode? planMode)
+    {
+        var runtime = new LoopAgentRuntime(client, new PlainDispatcher()) { PlanMode = planMode };
+
+        var results = new List<ToolDispatchResult>();
+        await foreach (var e in runtime.RunAsync(
+            new AgentRunRequest("s", "t", [], "做事"), CancellationToken.None))
+        {
+            if (e is AgentEvent.ToolCallCompleted done) results.Add(done.Result);
+        }
+
+        return results;
+    }
+
+    private static bool _lastHostAsked;
+
+    private sealed class RecordingHost(string? verdict) : IAskUserHost
+    {
+        public AskedQuestion? LastQuestion { get; private set; }
+
+        public ValueTask<AskResult> AskAsync(
+            IReadOnlyList<AskedQuestion> questions, CancellationToken cancellationToken = default)
+        {
+            LastQuestion = questions.FirstOrDefault();
+            _lastHostAsked = true;
+
+            if (verdict is null)
+                return ValueTask.FromResult(new AskResult(AskOutcome.Cancelled, "取消", []));
+
+            return ValueTask.FromResult(new AskResult(
+                AskOutcome.Answered, null,
+                [new AskAnswer(questions[0].Header, verdict)]));
+        }
+    }
+
+    private sealed class ScriptedClient(string call) : IChatClient
     {
         public int Calls { get; private set; }
 
@@ -240,14 +333,13 @@ public static class PlanModeChecks
         {
             await Task.Yield();
 
-            var index = Calls++;
-            if (index >= rounds.Length)
+            if (Calls++ > 0)
             {
                 yield return new ChatResponseUpdate(ChatRole.Assistant, "done");
                 yield break;
             }
 
-            using var document = JsonDocument.Parse(rounds[index]);
+            using var document = JsonDocument.Parse(call);
             var root = document.RootElement;
 
             var args = root.GetProperty("args").EnumerateObject()
@@ -266,11 +358,36 @@ public static class PlanModeChecks
         public void Dispose() { }
     }
 
-    private sealed class FakeDispatcher : IToolDispatcher
+    /// <summary>真的调用 <see cref="ExitPlanModeTool"/> 的 dispatcher。</summary>
+    private sealed class PlanDispatcher(PlanMode mode, IAskUserHost host) : IToolDispatcher
     {
         public IReadOnlyList<ToolDescriptor> Tools { get; } =
         [
-            Tool("todo_write", """{"type":"object","properties":{"todos":{"type":"array"}}}"""),
+            new ToolDescriptor(
+                PlanModePolicy.ExitPlanModeToolId, PlanModePolicy.ExitPlanModeToolId, "1.0.0",
+                string.Empty,
+                JsonDocument.Parse(
+                    """{"type":"object","properties":{"plan":{"type":"string"}}}""")
+                    .RootElement.Clone()),
+        ];
+
+        public IDisposable Register(IAgentTool tool) => throw new NotSupportedException();
+
+        public async ValueTask<ToolDispatchResult> DispatchAsync(
+            ToolInvocation invocation, CancellationToken cancellationToken = default)
+        {
+            var tool = new ExitPlanModeTool(host, mode);
+            var result = await tool.ExecuteAsync(invocation, cancellationToken).ConfigureAwait(false);
+            return new ToolDispatchResult(
+                invocation.InvocationId, invocation.ToolId, ToolCallOutcome.Succeeded, result);
+        }
+    }
+
+    /// <summary>只回固定结果的 dispatcher，用于测工具拦截。</summary>
+    private sealed class PlainDispatcher : IToolDispatcher
+    {
+        public IReadOnlyList<ToolDescriptor> Tools { get; } =
+        [
             Tool("write_file", """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}"""),
             Tool("read_file", """{"type":"object","properties":{"path":{"type":"string"}}}"""),
         ];

@@ -32,6 +32,9 @@ public sealed class SessionComposition : IDisposable
     /// <summary>计划模式状态。**会话级**：用户开关一次，跨轮保持。</summary>
     private readonly PlanMode _planMode = new();
 
+    /// <summary>提问传输。默认走终端；ACP 路径注入自己的实现。</summary>
+    private readonly IAskUserHost _askUserHost;
+
     /// <summary>计划模式（供 REPL 的 <c>/plan</c> 命令切换）。</summary>
     public PlanMode PlanMode => _planMode;
     private readonly int _contextWindow;
@@ -48,7 +51,8 @@ public sealed class SessionComposition : IDisposable
         int requestOutputReserve,
         IReadOnlyList<McpServerSpec> mcpServers,
         IMemoryInjector? memory = null,
-        MemoryStore? memoryStore = null)
+        MemoryStore? memoryStore = null,
+        IAskUserHost? askUserHost = null)
     {
         _sessionId = sessionId;
         _workspace = workspace;
@@ -60,6 +64,9 @@ public sealed class SessionComposition : IDisposable
         _mcpServers = mcpServers;
         Memory = memory;
         MemoryStore = memoryStore;
+
+        // 默认走终端：REPL 是主入口，而"没有注入"不该让它不可用。
+        _askUserHost = askUserHost ?? new ConsoleAskUserHost(null);
     }
 
     /// <summary>
@@ -388,6 +395,11 @@ public sealed class SessionComposition : IDisposable
         // 计划工具：ACP plan 的唯一数据源。两个入口都要有，否则
         // "CLI 能看计划、ACP 看不到"——正是入口能力不一致的老问题。
         dispatcher.Register(new TodoWriteTool());
+
+        // 计划模式：模型调 exit_plan_mode 提交完整 Markdown 计划，
+        // 工具**阻塞**等用户审阅（dsh 的做法），批准后同一轮继续。
+        // 它不执行命令，所以不受 shell 开关约束。
+        dispatcher.Register(new ExitPlanModeTool(_askUserHost, _planMode));
 
         // 后台作业：让模型启动长任务而不占住整轮。
         // **与 shell 做的是同一件事，区别只在"要不要等"**——所以它归在同一
