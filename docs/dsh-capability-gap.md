@@ -487,7 +487,7 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 |---|---|---|
 | 17 | 子 agent 委派 | `dsh-subagent*` |
 | 18 | 会话内目标（goal） | `dsh-goal*` |
-| 19 | 计划模式（带审阅退出） | `dsh-plan-mode` |
+| ~~19~~ | ~~计划模式（带审阅退出）~~ | `dsh-plan-mode` | **✅ 2026-11-02**：`PlanMode` + `/plan` |
 | ~~20~~ | ~~后台任务~~ | `dsh-jobs*` | **✅ 2026-11-02**：`JobRegistry` + 四个工具 |
 | 21 | 持久 shell / PTY | `dsh-terminal*` |
 | 22 | 技能提供者 | `dsh-skill*` |

@@ -652,6 +652,7 @@ public static class Program
                 Output.Line("  /usage    显示本会话的 token 用量与调用次数");
                 Output.Line("  /memory   显示 L1 偏好记忆（含未启用的候选）");
                 Output.Line("  /model    列出全部 provider（/model <名字> 切换）");
+                Output.Line("  /plan     切换计划模式（先看计划再执行）");
                 return true;
 
             case "/history":
@@ -673,6 +674,26 @@ public static class Program
             case "/status":
                 PrintStatus(sessionPath, sessionId, composition);
                 return true;
+
+            // 计划模式：开了之后模型先提交计划、停下等审阅。
+            // 审阅通过再敲一次 /plan 关掉，下一轮就能执行。
+            case "/plan":
+            {
+                var mode = composition.PlanMode;
+                if (mode.IsActive)
+                {
+                    mode.Disable();
+                    Output.Line("  计划模式：已关闭。下一轮可以执行改动。");
+                }
+                else
+                {
+                    mode.Enable();
+                    Output.Line("  计划模式：已开启。模型会先提交计划并停下等审阅。");
+                    Output.Line("  看完计划后再敲 /plan 关闭，然后让它开始。");
+                }
+
+                return true;
+            }
 
             default:
                 Output.Line($"  未知命令：{input}");

@@ -275,4 +275,19 @@ public enum AgentRunOutcome
 
     /// <summary>运行时内部错误。</summary>
     Failed,
+
+    /// <summary>
+    /// 计划模式下模型提交了计划，本轮停下等用户审阅。
+    /// </summary>
+    /// <remarks>
+    /// <b>与 <see cref="Completed"/> 分开</b>：两者都不是错误，但对宿主的
+    /// 含义相反——前者是"这一轮做完了"，后者是"我准备这么做，等你点头"。
+    /// 混成一个会让 UI 无法决定该显示结果还是显示待确认的计划。
+    /// <para>
+    /// <b>追加在末尾，不插在中间</b>：这个枚举可能被序列化，也可能进宿主的
+    /// 状态判断。插在中间会让后面成员的数字顺移——ApiCompat 报 CP0011，
+    /// 而历史数据里的数字会静默指向错误的结局。
+    /// </para>
+    /// </remarks>
+    PlanAwaitingReview,
 }

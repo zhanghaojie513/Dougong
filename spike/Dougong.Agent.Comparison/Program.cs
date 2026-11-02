@@ -89,6 +89,7 @@ public static class Program
         "workspace-changes",
         "jobs",
         "persistent-shell",
+        "plan-mode",
         "workspace-lock",
     ];
 
@@ -284,6 +285,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "persistent-shell")
             return await PersistentShellChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "plan-mode")
+            return await PlanModeChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

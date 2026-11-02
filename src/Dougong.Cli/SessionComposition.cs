@@ -28,6 +28,12 @@ public sealed class SessionComposition : IDisposable
     // 作业注册表要随会话释放：留着会让子进程变成孤儿。
     private JobRegistry? _jobRegistry;
     private PersistentShell? _persistentShell;
+
+    /// <summary>计划模式状态。**会话级**：用户开关一次，跨轮保持。</summary>
+    private readonly PlanMode _planMode = new();
+
+    /// <summary>计划模式（供 REPL 的 <c>/plan</c> 命令切换）。</summary>
+    public PlanMode PlanMode => _planMode;
     private readonly int _contextWindow;
     private readonly int _requestOutputReserve;
     private readonly IReadOnlyList<McpServerSpec> _mcpServers;
@@ -441,6 +447,9 @@ public sealed class SessionComposition : IDisposable
         new SystemPromptBuilder()
             .Add(new WorkspaceSection())
             .Add(new WorkspaceInstructionsSection(DougongHome.Root))
+            // 计划模式的分节排在工具纪律之前：它是"这一轮怎么工作"，
+            // 比"工具怎么用"更靠前。
+            .Add(new PlanModeSection(() => _planMode.IsActive))
             .Add(new FileToolPolicySection());
 
     /// <summary>
@@ -556,6 +565,7 @@ public sealed class SessionComposition : IDisposable
                 Time = CreateTimeContext(),
                 Retry = RetryPolicy.Default,
                 Spill = CreateSpillStore(),
+                PlanMode = _planMode,
             };
 
         return new LoopAgentRuntime(
@@ -583,6 +593,7 @@ public sealed class SessionComposition : IDisposable
             Retry = RetryPolicy.Default,
             // 大结果落盘到工作区下的 .dougong/spill，模型可用 read_file 取回。
             Spill = CreateSpillStore(),
+            PlanMode = _planMode,
         };
     }
 
