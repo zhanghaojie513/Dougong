@@ -43,6 +43,7 @@ public static class TerminalChecks
         failures += Check("narrow-terminal-activity-line-is-minimal", ActivityNarrow);
         failures += Check("gauge-fills-proportionally", GaugeProportional);
         failures += Check("token-format-is-compact", TokenFormat);
+        failures += Check("every-phase-has-visible-label", EveryPhaseLabelled);
         failures += Check("live-region-disabled-when-redirected", LiveDisabledWhenRedirected);
         failures += Check("activity-line-never-exceeds-terminal-width", ActivityNeverOverflows);
         failures += Check("status-line-accounting-for-wide-chars", StatusAccountsWideChars);
@@ -66,6 +67,7 @@ public static class TerminalChecks
         failures += Check("clear-then-write-does-not-resurrect-region", ClearThenWrite);
         failures += Check("stderr-line-does-not-collide-with-region", StderrDoesNotCollide);
         failures += Check("binary-is-not-stale", BinaryNotStale);
+        failures += Check("comparison-uses-release-cli-assembly", ComparisonUsesFreshCli);
         failures += Check("padded-activity-line-does-not-wrap", PaddedLineNoWrap);
         failures += Check("reasoning-phase-shows-distinct-label", ReasoningPhaseDistinct);
         failures += Check("reasoning-falls-back-to-thinking", ReasoningFallsBack);
@@ -204,6 +206,30 @@ public static class TerminalChecks
 
     private static string Escape(string s) =>
         s.Replace("\r", "\\r").Replace("\n", "\\n");
+
+    /// <summary>
+    /// 每个 <c>ActivityPhase</c> 都必须有可显示的文案与面孔。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条钉的是"加阶段但忘了加文案"</b>：枚举加一个成员是编译期的事，
+    /// 而文案表是两个字典——漏了不报错，只在运行时那个阶段显示空白/回落到
+    /// 通用文案。新增 <c>Retrying</c> 时正是这种风险，所以补上穷举。
+    /// </remarks>
+    private static string? EveryPhaseLabelled()
+    {
+        foreach (var phase in Enum.GetValues<ActivityPhase>())
+        {
+            // **只查真的会被渲染的阶段**。Idle 与 Streaming 被 ShouldDisplay
+            // 排除（前者隐藏、后者正文本身就是内容），它们不需要文案——
+            // 要求它们有文案是检查写错了，不是代码缺了。
+            if (phase is ActivityPhase.Idle or ActivityPhase.Streaming) continue;
+
+            if (!StatusLine.HasLabel(phase))
+                return $"阶段 {phase} 会被显示却没有文案";
+        }
+
+        return null;
+    }
 
     private static int Check(string name, Func<string?> action)
     {
@@ -1495,6 +1521,48 @@ public static class TerminalChecks
     /// 任何结论都无效。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 检查程序集自己引用的 CLI 副本不能比 Release 产物旧。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条钉的是一次真实的判断失误</b>：<c>binary-is-not-stale</c> 只比
+    /// "源码 vs Release dll"，但检查代码里 <c>typeof(Program)</c> 这类**编译期引用**
+    /// 用的是 spike 输出了目录里的副本。两者可能不同步——此时检查在测旧代码，
+    /// 而所有断言看起来都是绿的（或该红的没红）。
+    /// <para>
+    /// 实测踩到：给参数白名单加了 <c>--stats</c> 但没进 help，<c>doctor</c> 套的
+    /// 检查应当报错却没报——因为 spike 里的 <c>Dougong.Cli.dll</c> 比 Release 旧两分钟。
+    /// </para>
+    /// </remarks>
+    private static string? ComparisonUsesFreshCli()
+    {
+        var root = FindRepoRoot();
+
+        // 本程序集（检查代码自己）所在目录。
+        var ownDir = Path.GetDirectoryName(typeof(TerminalChecks).Assembly.Location);
+        if (ownDir is null) return "取不到检查程序集路径";
+
+        var inSpike = Path.Combine(ownDir, "Dougong.Cli.dll");
+        var release = Path.Combine(root, "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+
+        if (!File.Exists(inSpike)) return "检查目录里没有 Dougong.Cli.dll（引用没带过来）";
+        if (!File.Exists(release)) return "找不到 Release 产物（先构建）";
+
+        var spikeTime = File.GetLastWriteTimeUtc(inSpike);
+        var releaseTime = File.GetLastWriteTimeUtc(release);
+
+        // **比较用"早于"而不是"晚于等于"**：两者同秒、甚至 Release 略新
+        // 都属正常（构建与复制之间有毫秒级差距，而文件时间精度可能只到秒）。
+        // 只有 spike 副本明显更旧才说明它没跟上——第一版把方向写反，
+        // 在正常构建上就误报了一次。
+        var tolerance = TimeSpan.FromSeconds(2);
+        return releaseTime - spikeTime <= tolerance
+            ? null
+            : $"检查用的 Dougong.Cli.dll 比 Release 旧"
+                + $"（{spikeTime:HH:mm:ss} vs {releaseTime:HH:mm:ss}）——"
+                + "编译期引用的是旧代码，任何负控结论都不作数";
+    }
+
     private static string? BinaryNotStale()
     {
         var root = FindRepoRoot();

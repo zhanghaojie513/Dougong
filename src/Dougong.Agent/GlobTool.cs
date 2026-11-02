@@ -159,11 +159,20 @@ public sealed class GlobTool(IFileSystem files) : IAgentTool
     /// 这份名单是**启发式而不是规则**：用户可能有正当理由搜 <c>node_modules</c>。
     /// 所以它只影响"默认不进去"，而不禁止——需要时可以给出明确的 path 参数。
     /// </remarks>
-    internal static bool IsNoiseDirectory(string name) => name switch
+    internal static bool IsNoiseDirectory(string name) =>
+        FixedNoise.Contains(name)
+        // **SDK 自己的落盘目录**：spill 文件是截断工具结果的副本，
+        // 数量随工具调用增长。让 glob/grep 默认扫到它们会让"项目里有哪些文件"
+        // 的答案被自己的运行时产物污染——而用户会以为那些是项目文件。
+        //
+        // **从 SpillStore 派生而不是写字面量**：两处各写一遍时改一处漏一处
+        // 不会报错，症状是 spill 文件出现在项目文件清单里。
+        || string.Equals(name, SpillStore.RootDirectoryName, StringComparison.Ordinal);
+
+    private static readonly HashSet<string> FixedNoise = new(StringComparer.Ordinal)
     {
-        "node_modules" or "bin" or "obj" or ".git" or ".vs" or ".idea"
-            or "target" or "dist" or "build" or "__pycache__" or ".venv" => true,
-        _ => false,
+        "node_modules", "bin", "obj", ".git", ".vs", ".idea",
+        "target", "dist", "build", "__pycache__", ".venv",
     };
 
     /// <summary>

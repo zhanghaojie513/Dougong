@@ -175,7 +175,7 @@ public sealed class MyTool : IAgentTool
 
 ## 五、事件流：怎么把进展显示出来
 
-`RunAsync` 是 `IAsyncEnumerable<AgentEvent>`，十一种事件：
+`RunAsync` 是 `IAsyncEnumerable<AgentEvent>`，十二种事件：
 
 | 事件 | 什么时候 | 宿主通常做什么 |
 |---|---|---|
@@ -185,6 +185,7 @@ public sealed class MyTool : IAgentTool
 | `ToolCallRequested` | 要调用工具 | 显示"正在调用 X" |
 | `ToolCallCompleted` | 工具结束 | 显示结果或失败原因 |
 | `ToolResultTruncated` | 结果过长被裁 | **提示用户"模型看到的是裁剪版"** |
+| `RetryScheduled` | 请求失败、即将重试 | **显示"正在重试（第 N 次，等 X 秒）"——否则界面看起来是卡死的** |
 | `UsageReported` | 本轮调用结束且有用量 | **真实用量**，可对账、可算成本 |
 | `ContextUsageReported` | 每轮调用前 | **估算**的上下文构成，显示占用率 |
 | `ContextCompacted` | 历史被压缩 | 提示"上下文已压缩" |

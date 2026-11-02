@@ -30,6 +30,9 @@ public enum ActivityPhase
     /// <inheritdoc cref="AgentPhase.Compacting"/>
     Compacting = AgentPhase.Compacting,
 
+    /// <inheritdoc cref="AgentPhase.Retrying"/>
+    Retrying = AgentPhase.Retrying,
+
     /// <inheritdoc cref="AgentPhase.Streaming"/>
     Streaming = AgentPhase.Streaming,
 
@@ -88,6 +91,10 @@ public sealed class ActivityState
 
     /// <summary>上下文压缩。</summary>
     public void OnCompacting(DateTimeOffset now) => _tracker.OnCompacting(now);
+
+    /// <summary>请求失败、正在退避等待重试。</summary>
+    public void OnRetrying(DateTimeOffset now, int attempt, int maxAttempts) =>
+        _tracker.OnRetrying(now);
 
     /// <summary>一轮结束。</summary>
     public void OnRunFinished(DateTimeOffset now, bool failed) =>

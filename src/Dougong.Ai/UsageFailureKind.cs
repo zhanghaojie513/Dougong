@@ -83,9 +83,6 @@ public enum UsageFailureKind
     /// </remarks>
     ContextOverflow = 6,
 
-    /// <summary>
-    /// 上下文超出模型窗口（provider 判定 input 太长）。
-    /// </summary>
     /// <summary>端点或模型不存在（HTTP 404）。</summary>
     /// <remarks>
     /// 绝大多数情况是地址写错（少了 <c>/v1</c>、协议与路径不匹配）或模型名打错，

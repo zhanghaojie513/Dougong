@@ -20,7 +20,7 @@
   <a href="https://github.com/zhanghaojie513/Dougong"><img src="https://img.shields.io/badge/repository-Dougong-2f6f5e?style=flat-square" alt="Repository"></a>
   <a href="https://github.com/zhanghaojie513/Dougong/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/zhanghaojie513/Dougong/build.yml?style=flat-square&label=build" alt="Build"></a>
   <a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-10.0-512bd4?style=flat-square" alt=".NET 10"></a>
-  <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.1.15--alpha.1-orange?style=flat-square" alt="Version 0.1.15-alpha.1"></a>
+  <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.1.16--alpha.1-orange?style=flat-square" alt="Version 0.1.16-alpha.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f883d?style=flat-square" alt="MIT License"></a>
 </p>
 
@@ -43,7 +43,7 @@
 
 ## 当前状态
 
-目标框架 `net10.0`，版本 `0.1.15-alpha.1`，发布到 nuget.org 后可用。
+目标框架 `net10.0`，版本 `0.1.16-alpha.1`，发布到 nuget.org 后可用。
 四条设计承诺（可组合、完整生命周期、故障可解释、真实可用）均已达成，
 见 [设计承诺](docs/goal.md)。
 
@@ -148,7 +148,7 @@ Dougong 关注的是 Agent 的**承托层**，而不是某一个模型或某一�
 **命令走工具**（不需要 clone 仓库）：
 
 ```bash
-dotnet tool install --global Dougong.Cli --version 0.1.15-alpha.1
+dotnet tool install --global Dougong.Cli --version 0.1.16-alpha.1
 dougong --doctor      # 先确认环境，它会逐项检查并给出下一步
 dougong               # 开始对话（需要配置模型）
 ```
@@ -168,7 +168,7 @@ dougong --version     # 确认升到了哪个版本
 > `dotnet tool update` 默认只在**稳定版**里挑；稳定版列表为空，于是说找不到。
 > 详见 [从零开始 §0.2](docs/getting-started.md)。
 
-> `0.1.15-alpha.1` 的命令功能是完整的（`--doctor`、`--report`、`--help`、REPL、
+> `0.1.16-alpha.1` 的命令功能是完整的（`--doctor`、`--report`、`--help`、REPL、
 > `--acp` 都实测过，行为由 46 个自检套件钉住），但**终端呈现与提示文案仍在打磨**，
 > 后续版本会变。
 
@@ -224,6 +224,14 @@ dotnet pack Dougong.slnx -c Release --output ./artifacts/packages
 
 要发布到 nuget.org 用 `bash scripts/publish-nuget.sh`（先 `--dry-run` 看会推什么）。
 它按依赖顺序推、失败即停、不读不打印 API key（只从 `NUGET_API_KEY` 环境变量取）。
+
+推完用 `bash scripts/verify-release.sh` 验证。它**从 nuget.org 下载实际包**，
+核对三件事：索引是否生效、公开类型是否齐全（反射，不是搜字符串）、
+`DougongHome` 的空值语义是否仍正确。加 `--wait` 会等索引生效（通常 10–15 分钟）。
+
+> 为什么要这一步：`dotnet pack` 成功只说明"我构建出来的东西是对的"，
+> 用户装到的是 nuget.org 上那个包——两者是不同的判断对象。
+> 本项目吃过一次教训：包是从未提交的工作区打出来的，仓库与包对不上。
 
 > **兼容性**：项目处于 `0.x`，**不做向后兼容承诺**，但每条公开 API 变更都会被
 > ApiCompat 自动检出并记入 [CHANGELOG](CHANGELOG.md)。规则见

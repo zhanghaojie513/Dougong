@@ -9,13 +9,14 @@
 > dsh 有什么就抄什么——`goal.md` 的反目标仍然有效，只是那份反目标从没被
 > 逐项套到 dsh 的能力面上过。
 >
-> 核对日期 2026-10-31，dsh 共 **236 个包**（含 `cordis*` 等基础设施）。
-> 本文件逐项列出了其中 **90 个具体包 + 21 组通配条目**（后者是成族的能力，
-> 如 `dsh-session-format*`），覆盖与 harness 能力直接相关的部分。
+> 核对日期 **2026-11-02**（dsh `0.2.2-alpha.2`，commit `ce7073d`）。
+> 本轮重新逐包扫了 dsh 的完整对象树，**补上 13 条此前漏掉的能力**
+> （LSP 三件套、交付物三件、工作目录、消息反馈、工具执行器两种、SSH 五件套）。
 >
-> 未逐项列出的主要是：UI 包（约 40 个，属产品形态）、Cordis 基础设施、
-> Typert/Remote 协议栈。它们不构成 harness 能力，见 §十三 与"明确不做"。
-
+> 本文件逐项列出了与 harness 能力直接相关的包；UI 包（约 70 个）、
+> `api/*`、`typert/*`、`test-support/*` 不列——它们不是 harness 能力，
+> 见 §十三 与"明确不做"。
+>
 ---
 
 ## 一、对照方法
@@ -118,7 +119,7 @@
 | `dsh-session` | 事件溯源会话存储 | `JsonlAgentStore` | **部分** |
 | `dsh-session-persistence` | 持久化 seam | `IAgentStore` | **已有** |
 | `dsh-session-persistence-jsonl` | JSONL 后端 | `JsonlAgentStore` | **已有** |
-| `dsh-session-format*` | 格式版本与迁移链（v0→v1→v2） | **无** | **缺**：没有版本概念，格式变了旧会话就打不开 |
+| `dsh-session-format*` | 格式版本与迁移链（v0→v1→v2） | `SessionFormat`（版本行 + 拒绝） | **部分**：有版本号且不兼容会明确报错，**无迁移链**；理由见 `compat-policy.md` §7.1 |
 | `dsh-session-checkpoint-policy` | 模型请求与工具副作用前的语义检查点 | **部分**：有提交屏障，无显式检查点策略 | **缺** |
 | `dsh-session-projection*` | 日志派生的会话状态投影 | **无** | **缺**：宿主各自从日志重算 |
 | `dsh-session-query` / `-sqlite` | 会话查询（FTS5 全文搜索） | `SessionBranch.List`（列文件） | **缺**：不能搜内容 |
@@ -127,11 +128,24 @@
 | `dsh-session-reference` | 跨会话快照引用 | **无** | **缺** |
 | `dsh-session-log-export` | 会话日志导出 | **无** | **缺** |
 | `dsh-session-telemetry*` | 会话遥测 | `DougongTelemetry`（Meter） | **部分** |
+| `dsh-session/working-directory` | 切换单个会话的工作目录（不影响已起进程） | **无** | **缺**：工作目录在启动时固定；变更后不参与重放 |
+| `dsh-deliverables/workspace-changes` | 每轮改了哪些文件（逐文件行数 + 首尾对比） | **无** | **缺**：桌面端自己用文件指纹算，给不出行级 diff |
+| `dsh-deliverables/tool-present` | 显式声明交付物 | **无** | **缺**：模型只能靠正文描述"我改了哪些文件" |
+| `dsh-feedback/message-feedback` | 消息级正负反馈（分类 + 备注，进日志不进模型） | **无** | **缺** |
 | `dsh-chunked-list` | 追加式分块列表 | **无** | 不必有（JSONL 够用） |
 
-**这一块是缺口最大的区域**。`dsh-session-format` 那条尤其要紧：
-我们没有任何版本概念，格式一变旧会话就打不开，而 `compat-policy.md` 里
-"配置迁移与回滚"被列为暂不实现——这两个决定现在对不上了。
+**这一块是缺口最大的区域。**
+
+`dsh-session-format` 那条 2026-11-02 已部分补上：会话首行标记
+`#dougong-session-format:1`，读到更高版本抛 `SessionFormatException`
+而不是静默读错。**迁移链仍不做**——那要为每个历史版本维护冻结解码器，
+与 0.x 不承诺兼容的判断一致。
+
+值得记下这一项**为什么从"不做"变成"做一半"**：不是需求变了，是发现了
+一个静默错误。此前扫描逻辑遇到解析失败就 `break`，把原因归为"尾部半条记录"；
+而格式不兼容看起来完全一样——旧程序会认为文件在第一条就断了，
+然后当空会话继续写，用户的历史看起来凭空消失。
+**加版本号是为了让这种情况报错，不是为了兼容。**
 
 ---
 
@@ -140,10 +154,12 @@
 | dsh | 能力 | 我们 | 差距 |
 |---|---|---|---|
 | `dsh-tools` | 工具注册与执行管线 | `ToolDispatcher` | **已有** |
-| `dsh-tool-fs` | 读 / 写 / 编辑 | `ReadFileTool` / `WriteFileTool`（**已进 SDK**，走 `IFileSystem`） | **部分**：读写有了，**缺 edit（按内容替换）** |
-| `dsh-tool-fs-search` | glob / grep（打包 ripgrep） | **无** | **缺**：模型不能搜代码 |
-| `dsh-tool-str-replace-editor` | view / create / 字面替换 / 行插入 | **无** | **缺** |
-| `dsh-tool-bash` / `-persistent` | shell，含后台任务与沙箱升级 | `ShellTool` | **部分**：无沙箱（`cd /` 可绕过）、无持久 shell、无后台 |
+| `dsh-tool-executor-native` | 原生调用执行器（模型直接调每个工具；并行安全的重叠、独占的成屏障） | `ToolDispatcher` + `ToolExecutionPlan` | **已有**：并发计划、读写资源键、串行屏障都是自研 |
+| `dsh-tool-executor-ptc` | PTC 执行器（模型写 JS 脚本调工具） | **无** | 不必有（我们的工具就是 C# 对象） |
+| `dsh-tool-fs` | 读 / 写 | `ReadFileTool` / `WriteFileTool`（**已进 SDK**，走 `IFileSystem`） | **已有**：原子写 + 版本守卫 |
+| `dsh-tool-fs-search` | glob / grep（打包 ripgrep） | `GlobTool` / `GrepTool`（走 seam，**不打包 ripgrep**） | **已有**：限深、跳噪声目录、截断如实报告 |
+| `dsh-tool-str-replace-editor` | view / create / 字面替换 / 行插入 | `EditFileTool`（**要求唯一匹配**） | **已有**：多次出现即拒绝；行插入不做（用 `write_file` 新建） |
+| `dsh-tool-bash` / `-persistent` | shell，含后台任务与沙箱升级 | `ShellTool` + `ShellCommandPolicy` | **部分**：有命令策略层（**不是沙箱**，见 §七）；无持久 shell、无后台 |
 | `dsh-tool-pwsh` / `-persistent` | PowerShell | **无** | **缺**（Windows 上更重要） |
 | `dsh-tool-todo` | `todo_write` | `TodoWriteTool` | **已有** |
 | `dsh-tool-ask-user` | `ask_user_question` | `AcpElicitationTool`（仅 ACP） | **缺**：REPL 里没有等价物 |
@@ -157,10 +173,39 @@
 | `dsh-tool-cordis` | 插件运行时探查 | **无** | 不必有 |
 | `dsh-tool-ralph` | Ralph 循环 | **无** | 不必有 |
 | `dsh-tool-call-timeout-policy` | 逐工具超时 | `ToolExecutionPlan.Timeout` + `ToolDispatcher.DefaultToolTimeout` | 已有：逐工具上限优先；`TimedOut` 与"用户取消"分开 |
+| `dsh-tool-lsp` | 语言服务器代码导航（定义/引用/实现/悬停） | **无** | **缺**：我们能搜文本，但不能"跳到定义" |
 | `dsh-repeat-tool-reminder` | 重复调用提醒 | **无** | **缺** |
 
-**工具面缺口最大，也是桌面端最直接感受到的**：只有 read/write/shell/todo 四个，
-没有搜索、没有编辑、没有 web。做一个编码 agent 连 grep 都没有。
+**工具面现在有 7 个**：read / write / edit / glob / grep / shell / todo。
+编码 agent 的最小闭环已经成立（能找、能读、能改、能跑）。
+
+**还缺的是"扩展能力"**：web 搜索/抓取、LSP 代码导航、子 agent、后台任务、
+技能加载。这些不挡基本使用，见 §十四 的 P1/P2。
+
+### `dsh-lsp` 之前整节漏掉了（2026-11-02 补记）
+
+dsh 有三个包：`lsp`（seam）、`lsp-stdio`（传输）、`tool-lsp`（模型可见工具）。
+它给 agent 的是**语言服务器的四种只读导航**：定义、引用、实现、悬停文档。
+
+**为什么值得单列**：它是 `grep` 的语义版本。`grep "Foo"` 找到所有文本匹配，
+而"跳到 Foo 的定义"只有编译器知道——重载、泛型、接口实现都会让文本搜索给错答案。
+
+**dsh 刻意做的裁剪**（它的 README 明说）：只做只读导航，**不做**通用 JSON-RPC、
+重命名、格式化、诊断、符号列表。这个裁剪很对——那些操作需要写侧语义与错误恢复，
+而导航只要读。
+
+**我们的差距**：完全没有。`GlobTool` / `GrepTool` 是文本搜索，不接语言服务器。
+
+**一条容易搞错的推论**：本项目是"用 .NET 写的、**语言无关的** harness"
+（`goal.md`），不是"C# 专用的 agent"。所以要服务的代码语言与实现语言无关——
+用户可能在改 TypeScript、Python、Rust。
+
+因此**真正的导航能力只能是 LSP，不能是 Roslyn**：LSP 是跨语言协议，
+Roslyn 只解析 C#。把 Roslyn 写进 SDK 恰好是把 harness 绑定到单一语言，
+与 `goal.md` 的定位相反。
+
+**不做 LSP 的理由**不是"用不上"，是"还没有真实的定位错误报告"加上
+"依赖用户装 language server"。见 `porting-differences.md` D-10。
 
 ### 工具归属错位（2026-10-31 已解决，留作记录）
 
@@ -177,8 +222,8 @@
 - CLI 改用 SDK 的工具，删掉自己那份
 - `filesystem` 套件断言三个类型都住在 `Dougong.Agent`——**防止将来又搬回去**
 
-**现在剩下的**：按内容替换的 `edit`（P0 第 2 项）。它要建在同一个 seam 上，
-用 `FileWriteExpectation.MustMatchVersion` 做守卫。
+**2026-10-31 已全部完成**：`EditFileTool` 也建在同一 seam 上，
+用 `FileWriteExpectation.MustMatchVersion` 做守卫，并要求 `old_string` 唯一出现。
 
 ---
 
@@ -207,10 +252,19 @@
 | `dsh-subprocess` | 进程组、有界输出、升级杀 | `ShellTool`（简单版） | **部分** |
 | `dsh-win32-process` | Win32 Job Object | **无** | **缺** |
 | `dsh-terminal` / `-bash` | 持久 PTY | **无** | **缺**（桌面端要的 PTY） |
-| `dsh-shell` / `shell-env` | bash 执行 seam、受管环境变量 | `ShellTool` | **部分** |
+| `dsh-shell` / `shell-env` | bash 执行 seam、受管环境变量 | `IShellExecutor` + `LocalShellExecutor` + `ShellEnvironment.Minimal()` | **已有**：seam 就位，环境变量走白名单 |
+| `dsh-ssh` / `-helper-runtime` | 远端会话（命令在远端跑） | **无** | **缺**：只在本地执行 |
+| `dsh-subprocess-ssh` / `sandbox-ssh` / `fs-ssh` | 远端的进程/沙箱/文件 seam | **无** | **缺**：`IShellExecutor` / `IFileSystem` 的形态允许，但没有实现 |
 
-**沙箱是最大的安全缺口**：`ShellTool` 目前只在工作区路径上做限制，
-模型可以通过 `cd /` 或绝对路径绕过。`dsh` 有完整的 bwrap/ACL 实现。
+**沙箱这块 2026-10-31 已定案：只做策略层，不做 OS 级隔离。**
+
+`ShellCommandPolicy` 拦常见误操作（危险命令、凭据读取、`cd` 越界），
+但**不是沙箱**——有意绕过（`find /`、`powershell -c`、脚本内 cd）仍然可行。
+完整理由见 §十六 阶段 3 与 `porting-differences.md` D-8。
+
+**结论是"不补"，不是"欠着"**：没有内核隔离时，把判据从"匹配文本"改成
+"解析路径"只是把军备竞赛推进一步；而只补一半比不补更危险，
+因为用户会以为文件受保护。
 
 ---
 
@@ -398,33 +452,46 @@ HostProtocolContract.RegisterDerivedType<ClientCommand>(
 
 ### P1 — 明显影响体验
 
-| # | 缺什么 | 对应 dsh |
-|---|---|---|
-| 7 | 排队中的 `ask_user`（REPL 侧） | `dsh-user-questions` |
-| 8 | 系统提示分节注册（`AGENTS.md` 加载） | `dsh-system-prompt` / `dsh-agent-instructions` |
-| 9 | 时间上下文 | `dsh-time-context` |
-| 10 | 大结果落盘可取回（spill） | `dsh-spill*` |
-| 11 | 请求重试策略 | `dsh-llm-retry` |
-| 12 | 会话标题生成 | `dsh-session-title*` |
-| 13 | 会话内容搜索 | `dsh-session-query-sqlite` |
-| 14 | Web 搜索/抓取 | `dsh-web*` |
+| # | 缺什么 | 对应 dsh | 状态 |
+|---|---|---|---|
+| ~~7~~ | ~~排队中的 `ask_user`（REPL 侧）~~ | `dsh-user-questions` | **✅ 2026-11-02**：`AskUser` + `ConsoleElicitationTool` |
+| ~~8~~ | ~~系统提示分节注册（`AGENTS.md` 加载）~~ | `dsh-system-prompt` / `dsh-agent-instructions` | **✅ 2026-11-02**：`WorkspaceInstructionsSection` |
+| ~~9~~ | ~~时间上下文~~ | `dsh-time-context` | **✅ 2026-11-02**：`TimeContext` |
+| ~~10~~ | ~~大结果落盘可取回（spill）~~ | `dsh-spill*` | **✅ 2026-11-02**：`SpillStore` |
+| ~~11~~ | ~~请求重试策略~~ | `dsh-llm-retry` | **✅ 2026-11-02**：`RetryPolicy` / `RetryClassifier` |
+| ~~12~~ | ~~会话标题生成~~ | `dsh-session-title*` | **✅ 2026-11-02**：`SessionTitle` |
+| ~~13~~ | ~~会话内容搜索~~ | `dsh-session-query-sqlite` | **✅ 2026-11-02**：`SessionSearch` + `--search` |
+| ~~14~~ | ~~Web 抓取~~（搜索仍未做） | `dsh-web*` | **✅ 2026-11-02**：`WebFetchTool`（只抓取，不搜索） |
+| 15 | **LSP 代码导航**（定义/引用/实现/悬停） | `dsh-lsp` / `-stdio` / `tool-lsp` | |
+| 16 | 交付物声明 | `dsh-deliverables/*` | **✅ 2026-11-02（部分）**：`WorkspaceChanges` + `--changes` 给了"每轮改了哪些文件"；`present` 工具未做 |
+
+**P1 已完成九项（2026-11-02）**，只剩 LSP 导航（见下方定位说明）。
+已完成项的关键取舍记在 `porting-differences.md` §四 D-11 至 D-18。
+
+**关于 LSP 的定位**：它是 §五 里"扩展能力"而非"基本闭环"——但它不是"不做"。
+本项目的定位是**语言无关的 harness**，所以真正的导航能力只能是 LSP（跨语言协议），
+不能是 Roslyn（只解析 C#）。不做的理由是"还没有真实的定位错误报告"与
+"依赖用户装 language server"，**不是"用不上"**。见 `porting-differences.md` D-10。
 
 ### P2 — 有更好，但可以等
 
 | # | 缺什么 | 对应 dsh |
 |---|---|---|
-| 15 | 子 agent 委派 | `dsh-subagent*` |
-| 16 | 会话内目标（goal） | `dsh-goal*` |
-| 17 | 计划模式（带审阅退出） | `dsh-plan-mode` |
-| 18 | 后台任务 | `dsh-jobs*` |
-| 19 | 持久 shell / PTY | `dsh-terminal*` |
-| 20 | 技能提供者 | `dsh-skill*` |
-| 21 | 拦截钩子 | `dsh-hook-protocol` |
-| 22 | 会话投影 / 轮次大纲 | `dsh-session-projection*` |
-| 23 | 出站代理 | `dsh-http-proxy` |
-| 24 | 重复工具调用提醒 | `dsh-repeat-tool-reminder` |
-| 25 | 权限预设 | `dsh-permission-presets` |
-| 26 | 文件引用 `@file` | `dsh-file-reference*` |
+| 17 | 子 agent 委派 | `dsh-subagent*` |
+| 18 | 会话内目标（goal） | `dsh-goal*` |
+| 19 | 计划模式（带审阅退出） | `dsh-plan-mode` |
+| 20 | 后台任务 | `dsh-jobs*` |
+| 21 | 持久 shell / PTY | `dsh-terminal*` |
+| 22 | 技能提供者 | `dsh-skill*` |
+| 23 | 拦截钩子 | `dsh-hook-protocol` |
+| 24 | 会话投影 / 轮次大纲 | `dsh-session-projection*` |
+| 25 | 出站代理 | `dsh-http-proxy` |
+| 26 | 重复工具调用提醒 | `dsh-repeat-tool-reminder` |
+| 27 | 权限预设 | `dsh-permission-presets` |
+| 28 | 文件引用 `@file` | `dsh-file-reference*` |
+| 29 | 会话内切换工作目录 | `dsh-session/working-directory` |
+| 30 | 消息级反馈（正负 + 分类，进日志不进模型） | `dsh-feedback/message-feedback` |
+| 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` |
 
 ### 明确不做
 
@@ -449,14 +516,21 @@ HostProtocolContract.RegisterDerivedType<ClientCommand>(
 
 **好消息是：补这些不需要动内核。** 每个都是独立的工具类或服务实现。
 
-**② `dsh-session-format` 那条与既有决策冲突，需要重新决定。**
+**② `dsh-session-format` 的冲突已按"只加拒绝能力"解决（2026-11-02）。**
 
-`compat-policy.md` §"M1 交付清单"里写着「配置迁移与回滚：暂不实现」，
-理由是"0.x 阶段没有外部用户"。但我们自己的会话文件已经有格式了，
-一旦改动，用户手上的会话就打不开——这个风险 dsh 用版本化格式解决了。
+原来的含糊之处是：`compat-policy.md` 说 0.x 不承诺会话兼容，而代码里
+**连版本号都没有**——于是格式变了，旧程序会在解析失败时静默当成空会话。
 
-这条要么补版本机制，要么在文档里明确"0.x 不做会话兼容"并接受旧会话作废。
-**现在是含糊的，那是隐患。**
+现在加了版本行与明确的拒绝，**迁移链仍不做**。这是三者的分界：
+
+| | 做不做 | 为什么 |
+|---|---|---|
+| 版本号（首行标记） | ✅ 做 | 几十行，阻止"静默读成空会话" |
+| 不兼容时明确报错 | ✅ 做 | 让用户知道"数据还在、只是读不了" |
+| 历史版本解码器（迁移链） | ❌ 不做 | 每版一份冻结解码器，而本项目没有外部解码者 |
+
+**拒绝能力和兼容能力是两件事**：前者防止静默错误，后者才需要持续成本。
+dsh 两者都做，是因为它有真实的多版本数据要保。
 
 ---
 
@@ -637,16 +711,32 @@ from accessing other paths**」；上游 pi README 同理。**我们已高于 pi
 
 ### 阶段 5：会话格式与观测面（按需）
 
-**这一阶段现在不必做。** 因为兼容立场已明确（`compat-policy.md` §7.1）：
-0.x 不承诺会话兼容，格式变更后旧会话作废。
+**2026-11-02 已做了一半：版本号用于拒绝，不做迁移链。**
 
-所以阶段 5 只在下面任一成立时才启动：
+会话首行现在是 `#dougong-session-format:1`。打开时校验：
+更高版本抛 `SessionFormatException`（消息写明"这不是文件损坏"），
+无版本行的旧文件按当前版本处理。
 
-- 出现真实用户报告旧数据打不开
+**为什么这不是"返回去做已经决定不做的事"**：`compat-policy.md` §7.1 的决定是
+"不承诺跨版本兼容"，那条不变。这里补的是**拒绝能力**——它与兼容能力是两件事：
+
+| | 成本 | 作用 |
+|---|---|---|
+| 版本号 + 拒绝 | 几十行 | 阻止"格式不兼容被静默读成空会话" |
+| 迁移链 | 每版一份冻结解码器 | 真正让旧数据可读 |
+
+**仍然按需的部分**：迁移链。只在下面任一成立时启动：
+
+- 出现真实用户报告旧数据打不开，且他愿意保留旧数据
 - 会话格式发生第二次不兼容变更
 - 有第三方工具开始读我们的会话文件
 
 到那时照 dsh 做：冻结每个历史版本的解码器 + 迁移链。
+
+**顺带的结构改进**：读取逻辑此前手写在六处（两写四读），每处都要记得跳过
+格式行。加一个格式行时要改六处，漏一处的症状都是"数据看起来没了"——
+实测漏过一次（分支写入）。现在收敛到 `SessionRecordReader` 单一入口，
+再往 `Read` 里注入一个错误会让 8 条检查同时失败，覆盖面比手工改六处大得多。
 
 ---
 

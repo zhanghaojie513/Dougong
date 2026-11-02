@@ -76,6 +76,49 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// </remarks>
     public SystemPromptBuilder? PromptBuilder { get; init; }
 
+    /// <summary>
+    /// 时间上下文；null 表示不注入。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么要可选</b>：它每轮往对话里加一条 user 消息，会占预算。
+    /// 自动化场景（批量脚本、测试）不需要它，而那些场景恰恰跑得最多。
+    /// 默认由装配层决定开启，而不是 SDK 强加。
+    /// </remarks>
+    public TimeContext? Time { get; init; }
+
+    /// <summary>
+    /// 模型请求失败后的重试策略；null 表示不重试。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么默认不重试</b>：重试改变的是"一次失败要等多久才告诉用户"，
+    /// 而自动化场景（脚本、检查、批处理）要的是确定性——它们宁可快速失败，
+    /// 也不愿在一个已经坏掉的端点上多等半分钟。
+    /// <para>
+    /// 装配层（CLI）显式打开它：交互场景里一次瞬时 429 不该结束整轮。
+    /// </para>
+    /// <para>
+    /// <b>只在"整步可重跑"的边界生效</b>：流一旦向宿主产出过任何增量
+    /// （文本、推理），就不再重试——那些增量已经 yield 出去了，
+    /// 重发会让用户看到重复内容，而 SDK 没有撤回事件的能力。
+    /// </para>
+    /// </remarks>
+    public RetryPolicy? Retry { get; init; }
+
+    /// <summary>
+    /// 大结果落盘取回；null 表示被截断的原文不保存（只报省略了多少）。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么要它</b>：超过 <see cref="ToolResultLimits.MaxContextChars"/> 的结果
+    /// 会被截断，中间段对模型永久不可见——而"这个文件第 3000 行是什么"的答案
+    /// 往往正好在那里。落盘后模型用已有的 <c>read_file</c> 就能取回。
+    /// <para>
+    /// <b>默认 null</b>：它会在工作区里写文件，属于宿主该显式选择的行为，
+    /// 不是 SDK 该替用户决定的。CLI 装配时会打开它。
+    /// </para>
+    /// </remarks>
+    public SpillStore? Spill { get; init; }
+
+
 
     /// <summary>用裸 dispatcher 构造：内部包成固定访问点（不参与替换）。</summary>
     public LoopAgentRuntime(
@@ -269,13 +312,31 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             // L1 偏好注入：**每轮取一次快照**，整轮使用它。
             // 运行中撤销不影响当前轮——已发送给模型的内容无法撤回。
             // 顺序是「系统提示 → 偏好 → 历史」：见 BuildRequestMessages。
+            //
+            // **重试时也复用这一份**，不重新构建。两个理由：
+            // <list type="number">
+            // <item>时间读数若在重试间更新，模型会看到"同一句话问了三次、时间在跳"，
+            // 而它无法分辨那是重试还是用户真的又问了一遍。</item>
+            // <item>重试的语义是"重发同一次询问"。请求内容变了就不叫重试了，
+            // 那会让"失败后重发"与"重新提问"混成同一件事。</item>
+            // </list>
+            // 代价是：退避等了 10 秒之后，读数仍停在第一次尝试的时刻。
+            // 这是可接受的——那 10 秒对"用户是刚回复还是隔了一小时"的判断没有影响。
             var requestHistory = BuildRequestMessages(
                 systemPrompt,
-                await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false));
+                AppendTimeContext(
+                    await WithMemoryAsync(history, cancellationToken).ConfigureAwait(false)));
 
-            await using var enumerator = _client
-                .GetStreamingResponseAsync(requestHistory, chatOptions, cancellationToken)
-                .GetAsyncEnumerator(cancellationToken);
+            // **重试边界**：一次 "尝试" 覆盖"建流 + 读完整条流"。
+            // 可重试的失败两种形态都会出现，而且**前者比后者常见**：
+            // HttpClientChatClient 是 async 迭代器，状态码检查发生在第一次
+            // MoveNext 里——所以 429/503 是在"读流的第一帧"抛的，不是建流时。
+            // 因此只重试建流失败是不够的。
+            //
+            // 上一版把 GetAsyncEnumerator 放在 try 之外：首次请求若在那里抛，
+            // 异常会直接冲出整个迭代器，宿主看到的是裸异常而不是
+            // RunFinished(Failed)——连诊断都没有。这是顺带修掉的真实缺陷。
+            var retryCount = 0;
 
             // 溢出恢复后要**跳过本轮的剩余处理**、直接进下一轮。
             // 用标志而不是 continue：continue 只跳内层 while，
@@ -285,171 +346,290 @@ public sealed class LoopAgentRuntime : IAgentRuntime
 
             while (true)
             {
-                bool moved;
-                string? streamFailure = null;
-                ContextOverflowException? overflowFailure = null;
-                var cancelled = false;
-                try { moved = await enumerator.MoveNextAsync(); }
+                Exception? startupError = null;
+                ContextOverflowException? startupOverflow = null;
+                IAsyncEnumerator<ChatResponseUpdate>? stream = null;
+
+                try
+                {
+                    stream = _client
+                        .GetStreamingResponseAsync(requestHistory, chatOptions, cancellationToken)
+                        .GetAsyncEnumerator(cancellationToken);
+                }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    moved = false;
-                    cancelled = true;
+                    // **catch 里不能 yield**（C# 硬约束）：只记状态，出了 catch 再处理。
+                    startupError = new OperationCanceledException();
                 }
                 catch (ContextOverflowException overflow)
                 {
-                    // 溢出单独处理：它是最有希望自动恢复的一类失败。
-                    // 不走 streamFailure——那条路会以 Failed 结束整轮。
-                    moved = false;
-                    overflowFailure = overflow;
+                    startupOverflow = overflow;
                 }
                 catch (Exception ex)
                 {
-                    moved = false;
-                    streamFailure = $"模型流中断：{ex.Message}" + (ex.InnerException is { } i ? $" | inner: {i.GetType().Name}: {i.Message}" : "");
+                    startupError = ex;
                 }
 
-                // 取消与失败必须先处理：此时 Current 不可访问。
-                if (cancelled)
+                if (startupOverflow is not null)
                 {
-                    yield return await FinishAsync(AgentRunOutcome.Cancelled, "模型调用被取消。", cancellationToken).ConfigureAwait(false);
-                    yield break;
-                }
-
-                // 溢出恢复：强制压一次 → 重发同一请求。
-                if (overflowFailure is not null)
-                {
-                    var recovered = await TryOverflowRecoveryAsync(
-                        overflowFailure, baseline, cancellationToken, overflowRecoveryUsed)
-                        .ConfigureAwait(false);
-
-                    if (recovered.Event is not null) yield return recovered.Event;
-
-                    if (recovered.Replaced is { } shrunk)
-                    {
-                        // 压缩有进展：重建历史后**重新进入同一个 round**。
-                        // 不消耗轮次预算：这次模型调用根本没成功。
-                        //
-                        // **必须 break 出内层 while，不能 continue。**
-                        // continue 会重新进 while(true) 取同一个已耗尽的枚举器，
-                        // 下一次 MoveNext 返回 false（不是抛），于是循环正常结束、
-                        // 整轮报 Completed——看起来像"只调一次就成功"。
-                        // 这个坑实测踩到过，日志里表现为"重试只发生了一次"。
-                        overflowRecoveryUsed = true;
-                        baseline = shrunk;
-                        var rebuilt = BuildHistory(baseline, request.UserInput);
-                        rebuilt.AddRange(history.Skip(tailStart));
-                        history = rebuilt;
-                        tailStart = baseline.Count + 1;
-                        round--;
-                        restartRound = true;
-                        break;
-                    }
-
-                    // 压不动（没东西可压 / 压缩失败 / 已经试过）→ 报**原始 provider 错误**。
-                    //
-                    // 不报"压缩失败"：真实原因是上下文超限，压缩只是我们尝试的手段。
-                    // 隐瞒原始错误会让用户从"改配置/清理会话"退化成"猜发生了什么"。
+                    // 溢出不是"等一会儿就好"，它有自己的恢复路径（压缩）。
+                    // 这里不重试：同样的输入会撞同样的墙。
                     yield return await FinishAsync(
                         AgentRunOutcome.Failed,
-                        recovered.FailureMessage,
+                        $"上下文超出模型窗口：{startupOverflow.Message}",
                         cancellationToken).ConfigureAwait(false);
                     yield break;
                 }
 
-                if (streamFailure is not null)
+                if (startupError is OperationCanceledException)
                 {
-                    yield return await FinishAsync(AgentRunOutcome.Failed, streamFailure, cancellationToken).ConfigureAwait(false);
+                    yield return await FinishAsync(
+                        AgentRunOutcome.Cancelled, "模型调用被取消。", cancellationToken).ConfigureAwait(false);
                     yield break;
                 }
 
-                if (!moved) break;
-
-                if (enumerator.Current.AdditionalProperties is { } updateProps
-                    && updateProps.TryGetValue(AgentPropertyKeys.Reasoning, out var reasoningValue)
-                    && reasoningValue?.ToString() is { Length: > 0 } reasoningText)
+                if (startupError is not null)
                 {
-                    reasoning.Append(reasoningText);
+                    // 还没产出任何东西，重试是安全的。
+                    var decided = await TryRetryAsync(
+                        startupError, producedAnything: false, retryCount, cancellationToken)
+                        .ConfigureAwait(false);
 
-                    // 同时作为事件产出：否则推理内容只进历史、宿主拿不到实时流，
-                    // UI 只能在会话恢复时补显示（这是此前如实记录的能力缺口）。
-                    //
-                    // **每段是增量而非累计**：Dougong.Ai 的格式层挂上 reasoning 后
-                    // 立刻清空缓冲区（见 WithReasoning），所以这里直接转发即可，
-                    // 不需要与 reasoning.ToString() 做差。
-                    yield return new AgentEvent.ReasoningDelta(reasoningText);
+                    if (decided.Event is not null) yield return decided.Event;
+
+                    if (decided.Retry)
+                    {
+                        retryCount = decided.Attempt;
+                        continue;
+                    }
+
+                    yield return await FinishAsync(
+                        AgentRunOutcome.Failed, DescribeStreamFailure(startupError), cancellationToken)
+                        .ConfigureAwait(false);
+                    yield break;
                 }
 
-                foreach (var content in enumerator.Current.Contents)
+                // 本次尝试是否已向宿主产出过增量。**一旦为 true 就不能重试**：
+                // 那些增量已经 yield 出去，重发会让用户看到重复内容。
+                var producedInAttempt = false;
+
+                // 流中途失败且决定重发：读完释放后回到外层重试。
+                var restartStream = false;
+
+                try
                 {
-                    switch (content)
+                    while (true)
                     {
-                        // provider 回报的用量。流式中它可能出现在任意一帧，
-                        // 也可能一帧都没有（不少端点只在最后一帧给）。
-                        // 这里只收集，发事件延后到流结束——那时才确定本轮真的成功。
-                        case UsageContent usageContent:
-                            lastUsage = usageContent.Details;
-                            break;
+                        bool moved;
+                        string? streamFailure = null;
+                        ContextOverflowException? overflowFailure = null;
+                        Exception? streamError = null;
+                        var cancelled = false;
+                        try { moved = await stream!.MoveNextAsync(); }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            moved = false;
+                            cancelled = true;
+                        }
+                        catch (ContextOverflowException overflow)
+                        {
+                            // 溢出单独处理：它是最有希望自动恢复的一类失败。
+                            // 不走 streamFailure——那条路会以 Failed 结束整轮。
+                            moved = false;
+                            overflowFailure = overflow;
+                        }
+                        catch (Exception ex)
+                        {
+                            moved = false;
+                            streamError = ex;
+                            streamFailure = DescribeStreamFailure(ex);
+                        }
 
-                        case TextContent textContent when !string.IsNullOrEmpty(textContent.Text):
-                            text.Append(textContent.Text);
-                            yield return new AgentEvent.TextDelta(textContent.Text);
-                            break;
+                        // 取消与失败必须先处理：此时 Current 不可访问。
+                        if (cancelled)
+                        {
+                            yield return await FinishAsync(AgentRunOutcome.Cancelled, "模型调用被取消。", cancellationToken).ConfigureAwait(false);
+                            yield break;
+                        }
 
-                        case FunctionCallContent functionCall:
-                            // 参数分片的真相：provider（GLM/Anthropic）逐段给出
-                            // input_json_delta.partial_json，是字节片段而非解析后的字典。
-                            // M.E.AI 的 Arguments 是已解析字典，取不到原始片段，
-                            // 因此这里保留"最近一次完整字典快照"的序列化原文，
-                            // 并在派发前重新解析——语义等价于拼接后解析。
-                            var id = functionCall.CallId;
-                            if (string.IsNullOrEmpty(id))
+                        // 溢出恢复：强制压一次 → 重发同一请求。
+                        if (overflowFailure is not null)
+                        {
+                            var recovered = await TryOverflowRecoveryAsync(
+                                overflowFailure, baseline, cancellationToken, overflowRecoveryUsed)
+                                .ConfigureAwait(false);
+
+                            if (recovered.Event is not null) yield return recovered.Event;
+
+                            if (recovered.Replaced is { } shrunk)
                             {
-                                calls.Add(new PendingCall(string.Empty, functionCall.Name,
-                                    [], IsMalformed: true, Fragments: null));
+                                // 压缩有进展：重建历史后**重新进入同一个 round**。
+                                // 不消耗轮次预算：这次模型调用根本没成功。
+                                //
+                                // **必须 break 出内层 while，不能 continue。**
+                                // continue 会重新进 while(true) 取同一个已耗尽的枚举器，
+                                // 下一次 MoveNext 返回 false（不是抛），于是循环正常结束、
+                                // 整轮报 Completed——看起来像"只调一次就成功"。
+                                // 这个坑实测踩到过，日志里表现为"重试只发生了一次"。
+                                overflowRecoveryUsed = true;
+                                baseline = shrunk;
+                                var rebuilt = BuildHistory(baseline, request.UserInput);
+                                rebuilt.AddRange(history.Skip(tailStart));
+                                history = rebuilt;
+                                tailStart = baseline.Count + 1;
+                                round--;
+                                restartRound = true;
                                 break;
                             }
 
-                            fragmentCount[id] = fragmentCount.GetValueOrDefault(id) + 1;
-                            var fragment = functionCall.Arguments is null
-                                ? null
-                                : JsonSerializer.Serialize(functionCall.Arguments);
-                            var existing = calls.FindIndex(c => c.Id == id);
-                            if (existing < 0)
-                            {
-                                calls.Add(new PendingCall(id, functionCall.Name,
-                                    functionCall.Arguments is null
-                                        ? []
-                                        : new Dictionary<string, object?>(functionCall.Arguments),
-                                    IsMalformed: false,
-                                    Fragments: fragment ?? "{}"));
-                            }
-                            else
-                            {
-                                var merged = new Dictionary<string, object?>(calls[existing].Arguments);
-                                if (functionCall.Arguments is not null)
-                                    foreach (var pair in functionCall.Arguments)
-                                        if (merged.TryGetValue(pair.Key, out var previous)
-                                            && !Equals(previous, pair.Value))
-                                        {
-                                            // 同一键被赋予不同值：冲突而不是分片。
-                                            calls[existing] = calls[existing] with { IsMalformed = true };
-                                        }
-                                        else
-                                        {
-                                            merged[pair.Key] = pair.Value;
-                                        }
+                            // 压不动（没东西可压 / 压缩失败 / 已经试过）→ 报**原始 provider 错误**。
+                            //
+                            // 不报"压缩失败"：真实原因是上下文超限，压缩只是我们尝试的手段。
+                            // 隐瞒原始错误会让用户从"改配置/清理会话"退化成"猜发生了什么"。
+                            yield return await FinishAsync(
+                                AgentRunOutcome.Failed,
+                                recovered.FailureMessage,
+                                cancellationToken).ConfigureAwait(false);
+                            yield break;
+                        }
 
-                                calls[existing] = calls[existing] with
-                                {
-                                    Arguments = merged,
-                                    Fragments = fragment ?? calls[existing].Fragments,
-                                };
+                        if (streamFailure is not null)
+                        {
+                            // 流中途失败：只有**没交付过任何增量**才可重发。
+                            var decided = await TryRetryAsync(
+                                streamError!, producedInAttempt, retryCount, cancellationToken)
+                                .ConfigureAwait(false);
+
+                            if (decided.Event is not null) yield return decided.Event;
+
+                            if (decided.Retry)
+                            {
+                                retryCount = decided.Attempt;
+                                restartStream = true;
+                                break;
                             }
 
-                            break;
+                            yield return await FinishAsync(
+                                AgentRunOutcome.Failed, streamFailure, cancellationToken).ConfigureAwait(false);
+                            yield break;
+                        }
+
+                        if (!moved) break;
+
+                        if (stream!.Current.AdditionalProperties is { } updateProps
+                            && updateProps.TryGetValue(AgentPropertyKeys.Reasoning, out var reasoningValue)
+                            && reasoningValue?.ToString() is { Length: > 0 } reasoningText)
+                        {
+                            reasoning.Append(reasoningText);
+
+                            // 同时作为事件产出：否则推理内容只进历史、宿主拿不到实时流，
+                            // UI 只能在会话恢复时补显示（这是此前如实记录的能力缺口）。
+                            //
+                            // **每段是增量而非累计**：Dougong.Ai 的格式层挂上 reasoning 后
+                            // 立刻清空缓冲区（见 WithReasoning），所以这里直接转发即可，
+                            // 不需要与 reasoning.ToString() 做差。
+                            //
+                            // 一旦交付就锁死重试：没有撤回事件。
+                            producedInAttempt = true;
+                            yield return new AgentEvent.ReasoningDelta(reasoningText);
+                        }
+
+                        foreach (var content in stream!.Current.Contents)
+                        {
+                            switch (content)
+                            {
+                                // provider 回报的用量。流式中它可能出现在任意一帧，
+                                // 也可能一帧都没有（不少端点只在最后一帧给）。
+                                // 这里只收集，发事件延后到流结束——那时才确定本轮真的成功。
+                                case UsageContent usageContent:
+                                    lastUsage = usageContent.Details;
+                                    break;
+
+                                case TextContent textContent when !string.IsNullOrEmpty(textContent.Text):
+                                    text.Append(textContent.Text);
+                                    // 同上：文本已交付，重发会造成重复。
+                                    producedInAttempt = true;
+                                    yield return new AgentEvent.TextDelta(textContent.Text);
+                                    break;
+
+                                case FunctionCallContent functionCall:
+                                    // 参数分片的真相：provider（GLM/Anthropic）逐段给出
+                                    // input_json_delta.partial_json，是字节片段而非解析后的字典。
+                                    // M.E.AI 的 Arguments 是已解析字典，取不到原始片段，
+                                    // 因此这里保留"最近一次完整字典快照"的序列化原文，
+                                    // 并在派发前重新解析——语义等价于拼接后解析。
+                                    var id = functionCall.CallId;
+                                    if (string.IsNullOrEmpty(id))
+                                    {
+                                        calls.Add(new PendingCall(string.Empty, functionCall.Name,
+                                            [], IsMalformed: true, Fragments: null));
+                                        break;
+                                    }
+
+                                    fragmentCount[id] = fragmentCount.GetValueOrDefault(id) + 1;
+                                    var fragment = functionCall.Arguments is null
+                                        ? null
+                                        : JsonSerializer.Serialize(functionCall.Arguments);
+                                    var existing = calls.FindIndex(c => c.Id == id);
+                                    if (existing < 0)
+                                    {
+                                        calls.Add(new PendingCall(id, functionCall.Name,
+                                            functionCall.Arguments is null
+                                                ? []
+                                                : new Dictionary<string, object?>(functionCall.Arguments),
+                                            IsMalformed: false,
+                                            Fragments: fragment ?? "{}"));
+                                    }
+                                    else
+                                    {
+                                        var merged = new Dictionary<string, object?>(calls[existing].Arguments);
+                                        if (functionCall.Arguments is not null)
+                                            foreach (var pair in functionCall.Arguments)
+                                                if (merged.TryGetValue(pair.Key, out var previous)
+                                                    && !Equals(previous, pair.Value))
+                                                {
+                                                    // 同一键被赋予不同值：冲突而不是分片。
+                                                    calls[existing] = calls[existing] with { IsMalformed = true };
+                                                }
+                                                else
+                                                {
+                                                    merged[pair.Key] = pair.Value;
+                                                }
+
+                                        calls[existing] = calls[existing] with
+                                        {
+                                            Arguments = merged,
+                                            Fragments = fragment ?? calls[existing].Fragments,
+                                        };
+                                    }
+
+                                    break;
+                            }
+                        }
                     }
                 }
+                finally
+                {
+                    // 显式释放：重试要先关掉这条流再建下一条。
+                    // 释放失败不改变结论（本轮成败已由上面的分支决定）。
+                    try { await stream!.DisposeAsync().ConfigureAwait(false); }
+                    catch { /* 连接池会自行回收 */ }
+                }
+
+                // 流中途失败且已决定重发：回到外层重建枚举器。
+                // **请求内容不变**——重试的是同一次询问，不是新的问题。
+                if (restartStream) continue;
+
+                // 溢出恢复或正常完成：都跳出重试循环。
+                // 溢出的情况由 restartRound 在循环外决定是否重跑本 round。
+                break;
             }
+
+            // 溢出恢复：本轮没产生任何模型输出，直接进下一轮（同一 round）。
+            // 必须在这里检查，不能让控制流落到下面的"纯文本完成"分支——
+            // 那会把一次重试变成一次正常结束。实测踩到过。
+            if (restartRound) continue;
+
 
             // ── 用量与锚点 ────────────────────────────────────────
             // 放在这里（流已正常结束、溢出重试已排除）的理由：
@@ -475,11 +655,6 @@ public sealed class LoopAgentRuntime : IAgentRuntime
                 if (usage.InputTokenCount is { } inputTokens and > 0)
                     usageAnchor = UsageAnchor.Capture((int)inputTokens, requestBaseline);
             }
-
-            // 溢出恢复：本轮没产生任何模型输出，直接进下一轮（同一 round）。
-            // 必须在这里检查，不能让控制流落到下面的"纯文本完成"分支——
-            // 那会把一次重试变成一次正常结束。实测踩到过。
-            if (restartRound) continue;
 
             if (calls.Count == 0)
             {
@@ -663,8 +838,9 @@ public sealed class LoopAgentRuntime : IAgentRuntime
 
             // 回填必须符合协议：assistant 消息携带 tool_calls，每条 tool 结果带 tool_call_id。
             // 早期实现把结果压成一条普通 Tool 文本，缺 tool_call_id 会被 provider 拒绝（422）。
-            foreach (var truncation in AppendToolExchange(
-                history, calls, toolResults, text.ToString(), reasoning.ToString()))
+            foreach (var truncation in await AppendToolExchangeAsync(
+                history, calls, toolResults, text.ToString(), reasoning.ToString(),
+                cancellationToken).ConfigureAwait(false))
             {
                 // 截断不是错误，但必须让宿主知道模型看到的是裁过的内容。
                 yield return truncation;
@@ -759,12 +935,13 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// 再为每个调用追加带 tool_call_id 的 tool 消息。
     /// </summary>
     /// <returns>发生截断的工具结果列表；无截断时为空。</returns>
-    private static List<AgentEvent.ToolResultTruncated> AppendToolExchange(
+    private async ValueTask<List<AgentEvent.ToolResultTruncated>> AppendToolExchangeAsync(
         List<ChatMessage> history,
         IReadOnlyList<PendingCall> calls,
         IReadOnlyList<(string Id, string ToolId, ToolDispatchResult Result)> results,
         string text,
-        string reasoning)
+        string reasoning,
+        CancellationToken cancellationToken)
     {
         var truncations = new List<AgentEvent.ToolResultTruncated>();
         var toolCalls = new List<AIContent>();
@@ -799,7 +976,18 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             // 只在这里裁剪：这是"即将进入模型上下文"的唯一位置。
             // 会话日志在上面的提交记录里已写入完整原文，恢复会话时也用完整原文，
             // 所以裁剪不影响数据完整性。
-            var content = ToolResultLimits.Clamp(raw, out var truncated);
+            //
+            // **先落盘再裁剪**：标记里要写进取回路径，所以必须知道路径才拼标记。
+            // 落盘失败时 spillPath 为 null，标记只报省略多少——那仍然是诚实的，
+            // 只是少了取回能力。
+            string? spillPath = null;
+            if (Spill is not null && raw.Length > ToolResultLimits.MaxContextChars)
+            {
+                spillPath = await Spill.WriteAsync(toolId, raw, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            var content = ToolResultLimits.Clamp(raw, out var truncated, spillPath);
 
             if (truncated)
             {
@@ -961,6 +1149,29 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     }
 
     /// <summary>
+    /// 若有时间上下文且满足最小间隔，在历史末尾追加一条时间读数。
+    /// </summary>
+    /// <remarks>
+    /// <b>放在末尾而不是开头</b>：它是"当前这一刻"的读数，紧跟在本轮用户输入之后
+    /// 才符合时间顺序。放开头会让模型以为它是这轮开始前的状态。
+    /// <para>
+    /// <b>不满足间隔时原样返回</b>，不产出"距上次 unavailable"这类占位——
+    /// 那只会占预算而没有信息。
+    /// </para>
+    /// </remarks>
+    private List<ChatMessage> AppendTimeContext(List<ChatMessage> history)
+    {
+        if (Time?.TryRender() is not { } reading) return history;
+
+        var withTime = new List<ChatMessage>(history.Count + 1);
+        withTime.AddRange(history);
+        // user 角色而不是 system：它是一条**读数**，不是行为纪律。
+        // 混进 system 会让模型把它当长期规则，而它每轮都变。
+        withTime.Add(new ChatMessage(ChatRole.User, reading));
+        return withTime;
+    }
+
+    /// <summary>
     /// 把系统提示词与对话历史合成真正要发出的消息列表。
     /// </summary>
     /// <remarks>
@@ -973,6 +1184,75 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     /// 统计与真实请求对不上，所有行为纪律也就无处落地。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 判断一次失败要不要重试；要的话先等退避时长再返回。
+    /// </summary>
+    /// <remarks>
+    /// <b>判断与等待放在同一个方法</b>：等待是重试的可见代价。拆开的话调用处
+    /// 可能判定了要重试却忘了等，然后立刻重发——那对 429 是最坏的做法，
+    /// 正好撞在限流窗口上。
+    /// <para>
+    /// <b><paramref name="producedAnything"/> 为 true 时一律不重试</b>：
+    /// 流已经向宿主交付过增量，重发会造成重复内容。放在这里是为了让
+    /// "不可重发"成为不需要记住的默认。
+    /// </para>
+    /// <para>
+    /// <b>先返回事件再等</b>：退避最长可能 10 秒，宿主需要立刻知道
+    /// "在等什么、等多久"，否则界面看起来是卡死的，用户会去按 Ctrl+C——
+    /// 而那正好取消了本来要成功的重试。
+    /// </para>
+    /// </remarks>
+    private async ValueTask<(bool Retry, int Attempt, AgentEvent? Event)> TryRetryAsync(
+        Exception error, bool producedAnything, int retryCount, CancellationToken cancellationToken)
+    {
+        var policy = Retry;
+        if (policy is null || policy.MaxRetries <= 0 || producedAnything)
+            return (false, retryCount, null);
+
+        if (retryCount >= policy.MaxRetries) return (false, retryCount, null);
+
+        var kind = RetryClassifier.Classify(error, cancellationToken.IsCancellationRequested);
+        if (kind is RetryableFailure.None || !policy.RetryableFailures.Contains(kind))
+            return (false, retryCount, null);
+
+        var attempt = retryCount + 1;
+        var delay = policy.DelayFor(
+            attempt, Random.Shared.NextDouble(), RetryClassifier.FindProviderDelay(error));
+
+        var scheduled = new AgentEvent.RetryScheduled(
+            Attempt: attempt,
+            MaxAttempts: policy.MaxRetries,
+            DelayMilliseconds: (int)delay.TotalMilliseconds,
+            Reason: kind.ToString(),
+            Diagnostic: DescribeStreamFailure(error));
+
+        // 等待可取消：用户按 Ctrl+C 时不该继续睡到点。
+        try
+        {
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, attempt, scheduled);
+        }
+
+        return (true, attempt, scheduled);
+    }
+
+    /// <summary>
+    /// 把流失败渲染成给人看的一句话。
+    /// </summary>
+    /// <remarks>
+    /// <b>保留内部异常的类型与消息</b>：provider 的原始说明通常在
+    /// <c>InnerException</c> 里。只报最外层会让"429 限流"与"连接被拒"
+    /// 长得一模一样。
+    /// </remarks>
+    private static string DescribeStreamFailure(Exception error) =>
+        $"模型流中断：{error.Message}"
+        + (error.InnerException is { } inner
+            ? $" | inner: {inner.GetType().Name}: {inner.Message}"
+            : string.Empty);
+
     private static List<ChatMessage> BuildRequestMessages(
         string? systemPrompt, List<ChatMessage> history)
     {

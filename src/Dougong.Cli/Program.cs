@@ -105,6 +105,28 @@ public static class Program
             return 0;
         }
 
+        // **会话浏览与搜索也必须在 provider 检查之前**：它们不调用模型。
+        //
+        // 这是一个真实缺陷的修复：此前 `--list` 在 provider 检查之后，
+        // 于是密钥过期时用户查不了自己的会话列表——而那正是最需要查的时候
+        // （"我上次是在哪个会话里解决这个问题的"，然后去修 key）。
+        // 同理，搜索历史不该要求一个能用的模型。
+        var sessionBrowseDir = Dougong.Ai.DougongHome.SessionsDirectory;
+
+        if (args.Contains("--list"))
+        {
+            await PrintSessionListAsync(sessionBrowseDir);
+            return 0;
+        }
+
+        if (FindArg(args, "--search") is { } searchQuery)
+            return await SearchSessionsAsync(sessionBrowseDir, searchQuery);
+
+        // 改动清单也不调用模型：只读会话日志。
+        if (FindArg(args, "--changes") is { } changesArg)
+            return await PrintChangesAsync(sessionBrowseDir, changesArg);
+
+
         // 未知参数必须在读 provider 配置**之前**报出来。
         //
         // 修的是一个真实的静默失败：此前所有参数都用 `args.Contains(...)` 判断，
@@ -120,7 +142,7 @@ public static class Program
             Console.Error.WriteLine($"未知参数：{unknown}");
             Console.Error.WriteLine();
             Console.Error.WriteLine("可用参数：--help --version --doctor --report --acp --list");
-            Console.Error.WriteLine("          --resume <会话>  --branch <会话>");
+            Console.Error.WriteLine("          --resume <会话>  --branch <会话>  --search <关键词>  --changes <会话>");
             Console.Error.WriteLine();
             Console.Error.WriteLine("若想看完整说明：dougong --help");
             return 2;
@@ -178,12 +200,8 @@ public static class Program
         // 想换位置就设 DOUGONG_HOME（整根搬走）。
         var sessionDir = Dougong.Ai.DougongHome.SessionsDirectory;
 
-        // --list / --resume / --branch 都是"先决定用哪个会话，再开 REPL"。
-        if (args.Contains("--list"))
-        {
-            PrintSessionList(sessionDir);
-            return 0;
-        }
+        // --resume / --branch 是"先决定用哪个会话，再开 REPL"。
+        // （--list 与 --search 在 provider 检查之前就返回了，见上。）
 
         var sessionId = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
         var sessionPath = Path.Combine(sessionDir, $"{sessionId}.jsonl");
@@ -364,6 +382,9 @@ public static class Program
                         // dispatcher 在插件激活期内构造：MCP 工具注册属于它的构造，
                         // 不能被推到激活之后（届时服务快照已提交）。
                         var built = composition.CreateDispatcher(resolvedApprover, resolvedStore);
+                        // 提问工具：REPL 里由终端回答，与 ACP 共用语义层（AskUser）。
+                        // 它不进审批（没有副作用），且取工作区独占。
+                        built.Register(new ConsoleElicitationTool());
                         var (registries, clients) = await composition
                             .ConnectMcpAsync(built, Console.Out, ct)
                             .ConfigureAwait(false);
@@ -382,6 +403,7 @@ public static class Program
             {
                 Output.Line("kernel=disabled（DOUGONG_KERNEL=0，直连路径）");
                 var dispatcher = composition.CreateDispatcher(store);
+                dispatcher.Register(new ConsoleElicitationTool());
                 var (registries, clients) = await composition
                     .ConnectMcpAsync(dispatcher, Console.Out)
                     .ConfigureAwait(false);
@@ -542,6 +564,17 @@ public static class Program
                                 ? $"  ⇄ 已压缩 {compacted.RemovedMessages} 条历史"
                                   + $"（估算 {compacted.EstimatedTokensBefore} → {compacted.EstimatedTokensAfter} tokens）"
                                 : $"  ⇄ 未压缩：{compacted.Diagnostic}");
+                            break;
+
+                        // **必须在界面上说出来**：退避最长 10 秒，期间模型没有任何输出。
+                        // 不显示的话用户看到的是"程序卡住了"，然后去按 Ctrl+C——
+                        // 而那正好取消了本来要成功的重试。
+                        case AgentEvent.RetryScheduled retry:
+                            Output.Line();
+                            Output.Line(
+                                $"  ↻ 请求失败（{retry.Reason}），"
+                                + $"{retry.DelayMilliseconds / 1000.0:0.#} 秒后重试"
+                                + $"（{retry.Attempt}/{retry.MaxAttempts}）");
                             break;
 
                         case AgentEvent.RunFinished finished:
@@ -849,11 +882,20 @@ public static class Program
         Output.Line("  dougong --version            显示版本");
         Output.Line("  dougong --help               显示本帮助");
         Output.Line("  dougong --acp                以 ACP Agent 模式运行（stdout 归协议）");
-        Output.Line("  dougong --list               列出会话");
+        Output.Line("  dougong --list               列出会话（带标题）");
+        Output.Line("  dougong --search <关键词>    在会话历史里搜索");
+        Output.Line("  dougong --changes <会话>     列出每轮改了哪些文件");
         Output.Line("  dougong --resume <会话>      恢复会话");
         Output.Line("  dougong --branch <会话>      从某条记录分叉");
         Output.Line();
+        Output.Line("这几个不调用模型：密钥过期时也能用来找回会话。");
+        Output.Line();
         Output.Line("第一次用：先跑 dougong --doctor 确认环境。");
+        Output.Line();
+        Output.Line("默认关闭的能力：");
+        Output.Line("  DOUGONG_WEB_FETCH=1          允许模型抓取网页（默认关：会主动向外发请求）");
+        Output.Line("  DOUGONG_TIME_CONTEXT=0       关闭时间上下文（默认开）");
+        Output.Line("  DOUGONG_SPILL=0              关闭大结果落盘（默认开）");
         Output.Line();
         Output.Line($"provider 配置（推荐写 {ProviderConfigFile.DefaultPath}）：");
         Output.Line("  default_provider = \"deepseek\"");
@@ -960,8 +1002,13 @@ public static class Program
         Output.Line("  成本      : 未计算（依赖 provider 价目表，本层不猜单价）");
     }
 
-    /// <summary>读取会话列表。只显示文件与序号范围，不解析完整历史。</summary>
-    private static void PrintSessionList(string sessionDir)
+    /// <summary>读取会话列表。显示文件、序号范围与推导出的标题。</summary>
+    /// <remarks>
+    /// <b>标题是从首条用户输入算出来的，不是存下来的</b>——理由见
+    /// <see cref="SessionTitle"/> 的类型注释（往日志里加记录类型会让旧程序
+    /// 读不了新会话）。代价是每个会话多读一次首行，但只读到第一条用户输入就停。
+    /// </remarks>
+    private static async Task PrintSessionListAsync(string sessionDir)
     {
         var sessions = SessionBranch.List(sessionDir);
         if (sessions.Count == 0)
@@ -970,15 +1017,141 @@ public static class Program
             return;
         }
 
-        Output.Line($"{"会话",-28} {"记录",6} {"序号范围",14}  {"最后写入",-20} 备注");
-        foreach (var session in sessions)
+        // 先取全部标题再输出：这是异步读取，混在打印循环里会边读边写，
+        // 让列表在慢磁盘上看起来是分批冒出来的。
+        var titles = new string[sessions.Count];
+        for (var i = 0; i < sessions.Count; i++)
+            titles[i] = await SessionTitle.ReadAsync(sessions[i].Path).ConfigureAwait(false);
+
+        Output.Line($"{"会话",-22} {"标题",-21} {"记录",5} {"序号范围",11}  {"最后写入",-19} 备注");
+        for (var i = 0; i < sessions.Count; i++)
         {
+            var session = sessions[i];
             var note = session.HasSequenceGap ? "序号缺口（不可续跑）" : string.Empty;
+
+            // **标题按显示宽度补齐，不按字符数。** 一个汉字占两格，
+            // 用 `,-21` 那种字符补齐会让中文标题的行比英文行宽出近一倍，
+            // 后面的列全被推歪。DisplayWidth 已按 East Asian Width 算过。
             Output.Line(
-                $"{session.SessionId,-28} {session.RecordCount,6} " +
-                $"{session.FirstSequence + ".." + session.LastSequence,14}  " +
+                $"{session.SessionId,-22} {PadDisplay(titles[i], 21)} {session.RecordCount,5} " +
+                $"{session.FirstSequence + ".." + session.LastSequence,11}  " +
                 $"{session.LastWriteUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}  {note}");
         }
+    }
+
+    /// <summary>
+    /// 列出某个会话每轮改了哪些文件。
+    /// </summary>
+    /// <remarks>
+    /// <b>必须说清盲区</b>：这个清单来自会话日志里的写工具参数，
+    /// 所以 <b>shell 改的文件看不到</b>，用户在编辑器里手动改的也看不到。
+    /// 不说明的话，用户会把它当成完整的变更清单——
+    /// 而漏掉一个文件比多报一个危险得多。
+    /// </remarks>
+    private static async Task<int> PrintChangesAsync(string sessionDir, string argument)
+    {
+        var path = ResolveSessionPath(sessionDir, argument);
+        if (path is null)
+        {
+            Output.Line($"找不到会话：{argument}");
+            return 3;
+        }
+
+        var turns = await WorkspaceChanges.ReadAsync(path).ConfigureAwait(false);
+        if (turns.Count == 0)
+        {
+            Output.Line($"这个会话没有可解析的轮次：{Path.GetFileNameWithoutExtension(path)}");
+            return 1;
+        }
+
+        var any = false;
+        foreach (var turn in turns)
+        {
+            var paths = turn.DistinctPaths;
+            if (paths.Count == 0) continue;
+
+            any = true;
+            Output.Line();
+            Output.Line($"  第 {turn.Turn} 轮：{Truncate(turn.Prompt, 40)}");
+            foreach (var changed in paths) Output.Line($"    · {changed}");
+        }
+
+        if (!any)
+        {
+            Output.Line("这个会话没有写入过文件。");
+            return 0;
+        }
+
+        Output.Line();
+        Output.Line("（清单来自写工具的参数；shell 命令与手动改动不在其中）");
+        return 0;
+    }
+
+    /// <summary>截断到给定字符数。</summary>
+    private static string Truncate(string text, int max) =>
+        text.Length <= max ? text : text[..max] + "…";
+
+    /// <summary>按终端显示宽度右补空格。</summary>
+    /// <remarks>
+    /// 标题推导时已保证字符数不超上限，这里只补不截——
+    /// 截断会把"…"切掉，而它正是"还有下文"的唯一提示。
+    /// </remarks>
+    private static string PadDisplay(string text, int width)
+    {
+        var visible = Terminal.DisplayWidth.Of(text);
+        return visible >= width ? text : text + new string(' ', width - visible);
+    }
+
+    /// <summary>
+    /// 在会话历史里搜索关键词，列出命中位置。
+    /// </summary>
+    /// <remarks>
+    /// <b>输出要给"怎么跳过去"</b>：光报会话名没有用，用户得知道下一句敲什么。
+    /// 每条命中都带会话标识与序号，可以直接拼成 <c>--resume</c> 命令。
+    /// <para>
+    /// <b>退出码区分"没找到"与"出错"</b>：没有命中返回 1，正常有命中返回 0。
+    /// 这样脚本里 <c>if dougong --search x</c> 能直接用。
+    /// </para>
+    /// </remarks>
+    private static async Task<int> SearchSessionsAsync(string sessionDir, string query)
+    {
+        var result = await SessionSearch.SearchAsync(sessionDir, query)
+            .ConfigureAwait(false);
+
+        if (result.HitCount == 0)
+        {
+            Output.Line($"没有命中：{query}（扫过 {result.SessionsScanned} 个会话）");
+            return 1;
+        }
+
+        Output.Line($"命中 {result.HitCount} 条（扫过 {result.SessionsScanned} 个会话）");
+        Output.Line();
+
+        string? lastSession = null;
+        foreach (var hit in result.Hits)
+        {
+            // 同一会话的命中聚在一起，只在换会话时打一次标题——
+            // 每条都重复长会话名会把片段挤到看不见。
+            if (hit.SessionId != lastSession)
+            {
+                if (lastSession is not null) Output.Line();
+                Output.Line($"  {hit.SessionId}");
+                lastSession = hit.SessionId;
+            }
+
+            Output.Line($"    #{hit.Sequence,-4} {hit.Speaker}  {hit.Snippet}");
+        }
+
+        if (result.Truncated)
+        {
+            Output.Line();
+            Output.Line($"（已达上限 {SessionSearch.DefaultLimit} 条，用更具体的关键词缩小范围）");
+        }
+
+        Output.Line();
+        Output.Line($"跳到某条：dougong --resume <会话>");
+
+        return 0;
     }
 
     /// <summary>把命令行参数解析成会话文件路径；接受完整路径或会话标识。</summary>
@@ -1042,16 +1215,26 @@ public static class Program
     /// 不带前缀的裸值是某个开关的取值，交给上面的 <see cref="FindArg"/> 处理。
     /// </para>
     /// </remarks>
+    /// <summary>无值开关的完整集合。**参数解析与帮助检查共用这一份。**</summary>
+    /// <remarks>
+    /// <b>为什么提成字段而不是留在方法里</b>：`--help` 的覆盖检查需要知道
+    /// "全部参数有哪些"，而它若自己再列一份，加参数时漏改一处不会报错——
+    /// 症状是"参数能用了但帮助里没有"。本项目已经吃过一次同类亏
+    /// （spill 目录名两处各写一遍）。派生一份就没有漂移的可能。
+    /// </remarks>
+    internal static readonly string[] SwitchArguments =
+    [
+        "--acp", "--version", "-v", "--help", "-h", "--doctor", "--report", "--list",
+    ];
+
+    /// <summary>带值开关：后面那个参数是它的值，不是独立参数。</summary>
+    internal static readonly string[] ValuedArguments =
+        ["--resume", "--branch", "--search", "--changes"];
+
     private static string? FindUnknownArgument(string[] args)
     {
-        // 无值开关。
-        string[] switches =
-        [
-            "--acp", "--version", "-v", "--help", "-h", "--doctor", "--report", "--list",
-        ];
-
-        // 带值开关：后面那个参数是它的值，不是独立参数。
-        string[] valued = ["--resume", "--branch"];
+        var switches = SwitchArguments;
+        var valued = ValuedArguments;
 
         for (var i = 0; i < args.Length; i++)
         {

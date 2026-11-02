@@ -19,6 +19,72 @@
 
 ---
 
+## [0.1.16-alpha.1] — 2026-11-02
+
+**P1 九项能力落地：工作区指令、时间上下文、重试、spill、会话搜索与标题、
+REPL 提问、Web 抓取、改动清单。**
+
+### Added
+
+- **`WorkspaceInstructionsSection`**：读 `AGENTS.md` / `CLAUDE.md` 进系统提示。
+  两条链（`~/.dougong` 与工作区）、内容去重、超预算截断不切坏 UTF-8。
+- **`TimeContext`**：往对话注入当前时间、时区偏移与上条消息间隔。
+  user 角色、默认最小间隔 10 分钟。**默认开启**，`DOUGONG_TIME_CONTEXT=0` 关闭。
+- **`RetryPolicy` / `RetryClassifier`**：模型请求失败后重试。
+  只重试瞬时类（408 / 429 / 5xx / 超时 / 网络）；**已向宿主交付过增量后不重试**；
+  指数退避 + 抖动；`Retry-After` 优先但有上限。
+- **`AgentEvent.RetryScheduled`**：退避前发出，带次数与原因。
+- **`AgentPhase.Retrying`**：退避期间的状态阶段（与 `Thinking` 分开——
+  前者是"刚刚失败了"，后者是"正常的等待"）。
+- **`SpillStore`**：被截断的工具结果原文落盘到工作区 `.dougong/spill`，
+  标记里给出相对路径，模型用已有的 `read_file` 取回。
+- **`SessionSearch`**：扫会话 JSONL 按文本搜索。只搜用户输入与模型回复，
+  **工具参数与结果不参与**（否则命中会变成噪音）。
+- **`SessionTitle`**：从首条用户输入推导会话标题。**不写入会话日志**
+  （加记录类型会让旧程序读不了新会话）。
+- **`AskUser`**：提问的语义层（问题形状校验、schema 构造、四态结果）。
+  ACP 与 REPL 共用；`Dougong.Acp` 里的旧类型保留为 `[Obsolete]` 别名。
+- **`ConsoleElicitationTool`**：REPL 侧的 `ask_user`——逐题顺序问答。
+- **`WebFetchTool`**：抓取 http/https 链接并转纯文本。不执行 JavaScript。
+  **默认关闭**，`DOUGONG_WEB_FETCH=1` 打开。
+- **`WorkspaceChanges`**：从会话日志推导每轮改了哪些文件。
+
+### Added（CLI）
+
+- `dougong --search <关键词>`：在会话历史里搜索，命中带会话标识与序号。
+- `dougong --changes <会话>`：列出每轮改了哪些文件。
+- `dougong --list` 现在带标题列。
+- **`--list` / `--search` / `--changes` 不再要求 provider 配置**：
+  密钥过期时也能用来找回会话。此前 `--list` 在 provider 检查之后，用不了。
+
+### Changed
+
+- **`--help` 补全默认关闭能力的说明**（`DOUGONG_WEB_FETCH` / `DOUGONG_TIME_CONTEXT` /
+  `DOUGONG_SPILL`）。
+- **`GlobTool` 的噪声目录包含 `.dougong`**：spill 文件不再出现在搜索结果里。
+- **`ToolResultLimits.Clamp` 新增 `spillPath` 重载**：标记里给出原文取回路径。
+- **`UsageFailureKind` 文档更正**：它不是"不用于重试决策"，重试分类另有
+  `RetryableFailure`（两件事分开）。
+
+### Fixed
+
+- **首次模型请求的异常不再冲出迭代器**：`GetAsyncEnumerator` 原先在 try 之外，
+  而 `HttpClientChatClient` 是 async 迭代器，状态码检查发生在第一次 `MoveNext`
+  里——所以 429/503 抛在"读流第一帧"，那时旧写法会让宿主看到裸异常而不是
+  `RunFinished(Failed)`。
+- **`Retry-After` 链路接通**：策略层会用它、分类器能读它，但连接器从没往里写。
+  现在连接器把响应头写进 `Exception.Data`。
+- **`--doctor` 指令文件检查**：两个目录相同时不再把同一文件列两次。
+- **会话标题区分"读不到"与"无标题"**：前者意味着"这里有会话但打不开"，
+  值得去查权限。
+
+### 已知限制
+
+- **Web 搜索未做**：只有抓取。搜索需要第三方 provider 与 key。
+- **改动清单看不到 shell 与手动改动**：来自日志的写工具参数，命令是自由文本。
+- **无 `present` 工具**：模型不能主动声明交付物。
+- **LSP 导航未做**：见 `docs/porting-differences.md` D-10。
+
 ## [0.1.15-alpha.1] — 2026-11-01
 
 **统一用户数据根目录；用户偏好进配置；安全开关冻结；doctor 不再误报。**

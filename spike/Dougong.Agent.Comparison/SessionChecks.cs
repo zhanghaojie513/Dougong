@@ -29,6 +29,14 @@ public static class SessionChecks
         failures += await CheckAsync("legacy-string-payload-still-reads", LegacyPayloadAsync);
         failures += await CheckAsync("branch-avoids-dangling-tool-call", BranchAvoidsDanglingAsync);
 
+        // 格式版本：写进去、旧文件能读、高版本明确拒绝。
+        // 第三条是重点——没有它，格式不兼容会被静默读成空会话。
+        failures += await CheckAsync("session-writes-format-version", WritesFormatVersionAsync);
+        failures += await CheckAsync("session-reads-old-files-without-version", ReadsOldFileAsync);
+        failures += await CheckAsync("session-rejects-newer-format", RejectsNewerFormatAsync);
+        failures += await CheckAsync("session-rejects-malformed-version", RejectsMalformedVersionAsync);
+        failures += await CheckAsync("branch-writes-format-version", BranchWritesVersionAsync);
+
         Console.WriteLine(failures == 0
             ? "SESSION: ALL PASS"
             : $"SESSION: {failures} FAILURE(S)");
@@ -272,6 +280,16 @@ public static class SessionChecks
             for (var i = 0; i < lines.Length; i++)
             {
                 if (string.IsNullOrWhiteSpace(lines[i])) continue;
+
+                // 版本行不是记录：原样保留，不参与改写。
+                // 不跳过的话 JsonDocument.Parse 会抛，而那条错误看起来像
+                // "会话文件坏了"，实际只是测试没考虑到格式行。
+                if (lines[i].StartsWith(SessionFormat.Prefix, StringComparison.Ordinal))
+                {
+                    edited.AppendLine(lines[i]);
+                    continue;
+                }
+
                 using var document = JsonDocument.Parse(lines[i]);
                 var kind = document.RootElement.GetProperty("Kind").GetString();
                 var sequence = i == 1 ? 5 : document.RootElement.GetProperty("Sequence").GetInt64();
@@ -422,6 +440,192 @@ public static class SessionChecks
         {
             Console.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");
             return 1;
+        }
+    }
+
+    // ── 格式版本 ─────────────────────────────────────────────────
+
+    /// <summary>新会话文件第一行必须是版本行。</summary>
+    /// <remarks>
+    /// <b>没有它，格式不兼容无法判定</b>：旧程序读到新格式会逐行解析失败，
+    /// 而扫描逻辑把解析失败当成"尾部半条记录"，于是原地停下、
+    /// 把它当空会话继续写——用户的历史看起来凭空消失，且没有任何提示。
+    /// </remarks>
+    private static async Task<string?> WritesFormatVersionAsync()
+    {
+        using var tree = new TempSessionTree();
+        var path = Path.Combine(tree.Root, "s.jsonl");
+
+        await using (var store = await JsonlAgentStore.OpenAsync(path, "s1"))
+        {
+            var payload = ToElement("""{"x":1}""");
+            await store.CommitAsync(new StoreRecord(0, StoreRecordKind.UserInput, payload));
+        }
+
+        var first = File.ReadAllLines(path).FirstOrDefault() ?? string.Empty;
+        return first.StartsWith(SessionFormat.Prefix, StringComparison.Ordinal)
+            ? null
+            : $"首行不是版本行：'{first}'";
+    }
+
+    /// <summary>没有版本行的旧文件必须能正常打开（按当前版本处理）。</summary>
+    /// <remarks>
+    /// <b>这条守的是不能破坏已有数据</b>：机器上已有的会话都没有版本行。
+    /// 加了版本校验却让旧文件打不开，等于把"防未来的故障"变成"现在就坏"。
+    /// </remarks>
+    private static async Task<string?> ReadsOldFileAsync()
+    {
+        using var tree = new TempSessionTree();
+        var path = Path.Combine(tree.Root, "old.jsonl");
+
+        // 手写一份旧格式：没有版本行，直接是记录。
+        await File.WriteAllTextAsync(path,
+            """
+            {"Sequence":1,"Kind":"UserInput","Payload":{"a":1}}
+            {"Sequence":2,"Kind":"ModelResponse","Payload":{"text":"hi"}}
+            """);
+
+        try
+        {
+            await using var store = await JsonlAgentStore.OpenAsync(path, "old");
+            // 能看到已有两条记录：再提交一条应得到序号 3。
+            var payload = ToElement("{}");
+            await store.CommitAsync(new StoreRecord(0, StoreRecordKind.RunFinished, payload));
+        }
+        catch (Exception ex)
+        {
+            return $"旧文件打不开了（这会破坏机器上已有的全部会话）：{ex.GetType().Name}: {ex.Message}";
+        }
+
+        var lines = await File.ReadAllLinesAsync(path);
+        var last = lines.LastOrDefault(l => l.Contains("\"Sequence\":3", StringComparison.Ordinal));
+        return last is not null
+            ? null
+            : $"序号没接上已记录的最大值，最后一行：{lines.LastOrDefault()}";
+    }
+
+    /// <summary>
+    /// 更高格式版本必须明确拒绝，不能尝试解析。
+    /// </summary>
+    /// <remarks>
+    /// <b>硬解析比拒绝更危险</b>：它可能产出"看起来正常但内容错乱"的会话，
+    /// 而那种错误只会在用户发现历史不对时才暴露，届时很难区分
+    /// 是数据坏了还是读错了。拒绝至少让人知道**数据还在、只是读不了**。
+    /// </remarks>
+    private static async Task<string?> RejectsNewerFormatAsync()
+    {
+        using var tree = new TempSessionTree();
+        var path = Path.Combine(tree.Root, "future.jsonl");
+
+        await File.WriteAllTextAsync(path,
+            $"{SessionFormat.Prefix}{SessionFormat.Current + 1}\n"
+            + """{"Sequence":1,"Kind":"UserInput","Payload":{}}""" + "\n");
+
+        try
+        {
+            await using var store = await JsonlAgentStore.OpenAsync(path, "future");
+            return "更高版本被放行了——会静默读出错误内容";
+        }
+        catch (SessionFormatException ex)
+        {
+            // 消息里必须说清"不是损坏"，否则用户会以为数据没了。
+            return ex.Message.Contains("不是文件损坏", StringComparison.Ordinal)
+                ? null
+                : $"拒绝了但没说清性质：{ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// 版本行内容无效（非正整数）必须拒绝，不能当成合法版本。
+    /// </summary>
+    /// <remarks>
+    /// <b>此前只判 <c>fileVersion &gt; Current</c></b>，于是 <c>0</c> 与负数被放行。
+    /// 那是"读不懂却当成合法"——比不检查更糟：后续解析会按一个
+    /// 根本不存在的格式规则走，而错误只在数据出问题时才暴露。
+    /// <para>
+    /// 三种形态都要拒：<c>abc</c>（不是数字）、<c>0</c>（版本从 1 开始）、
+    /// <c>-5</c>（负数）。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> RejectsMalformedVersionAsync()
+    {
+        using var tree = new TempSessionTree();
+
+        foreach (var raw in new[] { "abc", "0", "-5" })
+        {
+            var path = Path.Combine(tree.Root, $"bad-{Guid.NewGuid():N}.jsonl");
+            await File.WriteAllTextAsync(path, $"{SessionFormat.Prefix}{raw}\n");
+
+            try
+            {
+                await using var store = await JsonlAgentStore.OpenAsync(path, "bad");
+                return $"版本行 '{raw}' 被当成合法版本放行了";
+            }
+            catch (SessionFormatException ex)
+            {
+                // 消息必须说清这不是损坏，否则用户以为数据没了。
+                if (!ex.Message.Contains("不是文件损坏", StringComparison.Ordinal))
+                    return $"拒绝了但没说清性质：{ex.Message}";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 分叉出的新会话必须自带版本行。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条钉的是一个真实漏改</b>：分支逻辑收集了源文件的版本行（<c>formatLine</c>），
+    /// 但从未写进目标文件——变量赋值了却没用，编译器不会报。
+    /// <para>
+    /// 后果不像"丢一个字段"那么轻：分支文件变成"无版本行"，
+    /// 而读取端把那种文件按**当前**版本处理。格式升级后，这些分支会被
+    /// 按一个它们并不符合的格式解析，**而且不会报错**——正是本类要防的那种静默错误。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> BranchWritesVersionAsync()
+    {
+        using var tree = new TempSessionTree();
+        var source = Path.Combine(tree.Root, "src.jsonl");
+
+        await using (var store = await JsonlAgentStore.OpenAsync(source, "src"))
+        {
+            await store.CommitAsync(Record(StoreRecordKind.UserInput, "hello"));
+        }
+
+        var target = Path.Combine(tree.Root, "branch.jsonl");
+        await SessionBranch.CreateAsync(source, target, "br", atSequence: 1);
+
+        var first = (await File.ReadAllLinesAsync(target)).FirstOrDefault() ?? string.Empty;
+        return first.StartsWith(SessionFormat.Prefix, StringComparison.Ordinal)
+            ? null
+            : $"分支文件没有版本行，首行是：'{first}'";
+    }
+
+    /// <summary>把 JSON 文本变成独立拥有的元素。</summary>
+    private static System.Text.Json.JsonElement ToElement(string json)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    /// <summary>一次性会话目录。</summary>
+    private sealed class TempSessionTree : IDisposable
+    {
+        public TempSessionTree()
+        {
+            Root = Path.Combine(
+                Path.GetTempPath(), "dougong-sess-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Root);
+        }
+
+        public string Root { get; }
+
+        public void Dispose()
+        {
+            try { Directory.Delete(Root, recursive: true); }
+            catch { /* 清理失败不影响结论 */ }
         }
     }
 }

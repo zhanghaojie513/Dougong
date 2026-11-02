@@ -61,7 +61,27 @@ public static class ToolResultLimits
     /// 与实现不符，会误导维护者以为 JSON 仍可解析。已按实际行为更正。
     /// </para>
     /// </remarks>
-    public static string Clamp(string content, out bool truncated)
+    public static string Clamp(string content, out bool truncated) =>
+        Clamp(content, out truncated, spillPath: null);
+
+    /// <summary>
+    /// 按上限裁剪，并在标记里给出原文的取回路径。
+    /// </summary>
+    /// <param name="content">完整结果文本。</param>
+    /// <param name="truncated">是否发生了截断。</param>
+    /// <param name="spillPath">
+    /// 原文已落盘的**相对路径**；null 表示没有落盘（此时只报省略了多少）。
+    /// </param>
+    /// <remarks>
+    /// <b>有取回路径时必须写出来</b>：只说"已截断"会让模型以为信息永久失去了，
+    /// 于是它可能改用别的办法重新取一遍（重跑命令、换工具），
+    /// 而那些尝试往往比读一个文件贵得多，还可能拿不到同样的结果。
+    /// <para>
+    /// 路径必须是相对工作区的：模型用 <c>read_file</c> 读它时按工作区解析，
+    /// 绝对路径则会带出用户名，且跨机器复制会话后失效。
+    /// </para>
+    /// </remarks>
+    public static string Clamp(string content, out bool truncated, string? spillPath)
     {
         ArgumentNullException.ThrowIfNull(content);
 
@@ -83,9 +103,18 @@ public static class ToolResultLimits
         var marker = new StringBuilder()
             .Append("\n\n[结果过长已截断：省略中间 ").Append(omitted)
             .Append(" 字符，原文共 ").Append(content.Length)
-            .Append(" 字符。以下内容不是完整数据，请勿按完整结果推断。]\n\n")
-            .ToString();
+            .Append(" 字符。以下内容不是完整数据，请勿按完整结果推断。");
 
-        return head + marker + tail;
+        // **给出取回方式而不是只说"丢了"**：模型知道能读回原文时，
+        // 就不会去重跑命令或换工具重新获取——那些尝试更贵，结果也未必一样。
+        if (!string.IsNullOrWhiteSpace(spillPath))
+        {
+            marker.Append("完整原文已保存到 ").Append(spillPath)
+                  .Append("，需要中间部分时用 read_file 读它。");
+        }
+
+        marker.Append("]\n\n");
+
+        return head + marker.ToString() + tail;
     }
 }

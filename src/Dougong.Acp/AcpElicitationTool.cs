@@ -27,11 +27,15 @@ namespace Dougong.Acp;
 /// </remarks>
 public sealed class AcpElicitationTool : IAgentTool
 {
-    /// <summary>单个问题最多几个选项。</summary>
-    public const int MaxOptions = 4;
+    /// <summary>单个问题最多几个选项。数值由 <see cref="AskUser"/> 定义。</summary>
+    /// <remarks>
+    /// 保留这个常量是为了不破坏已引用它的下游代码（ApiCompat CP0002）。
+    /// 新代码请直接用 <see cref="AskUser.MaxOptions"/>。
+    /// </remarks>
+    public const int MaxOptions = AskUser.MaxOptions;
 
-    /// <summary>一次最多问几个问题。</summary>
-    public const int MaxQuestions = 4;
+    /// <summary>一次最多问几个问题。数值由 <see cref="AskUser"/> 定义。</summary>
+    public const int MaxQuestions = AskUser.MaxQuestions;
 
     private readonly AcpAgentHost _host;
     private readonly string _sessionId;
@@ -122,9 +126,10 @@ public sealed class AcpElicitationTool : IAgentTool
     {
         ArgumentNullException.ThrowIfNull(invocation);
 
-        // 形状校验在本地完成：不合法的问题根本不该打扰用户。
-        var validation = Validate(invocation.Arguments, out var asked);
-        if (validation is not null) return Result(new AskResult(AskOutcome.InvalidRequest, validation, []));
+        // 形状校验复用 Agent 层：**不合法的问题根本不该打扰用户**，
+        // 而"什么算合法"不能因宿主不同而不同。
+        var validation = AskUser.Validate(invocation.Arguments, out var asked);
+        if (validation is not null) return Result(AskUser.Invalid(validation));
 
         var parameters = new JsonObject
         {
@@ -132,7 +137,8 @@ public sealed class AcpElicitationTool : IAgentTool
             ["toolCallId"] = invocation.InvocationId,
             ["mode"] = "form",
             ["message"] = asked[0].Question,
-            ["requestedSchema"] = BuildSchema(asked),
+            ["requestedSchema"] = JsonSerializer.SerializeToNode(
+                AskUser.BuildSchema(asked)),
         };
 
         JsonNode? response;
@@ -145,25 +151,25 @@ public sealed class AcpElicitationTool : IAgentTool
         {
             // 取消不是"用户拒绝"：这轮被打断，用户从未看到问题。
             // 混为一谈会让模型以为自己被拒绝了。
-            return Result(new AskResult(
-                AskOutcome.Cancelled, "本轮被取消，用户未看到问题。", []));
+            return Result(new Dougong.Agent.AskResult(
+                Dougong.Agent.AskOutcome.Cancelled, "本轮被取消，用户未看到问题。", []));
         }
         catch (Exception ex)
         {
             // 传输失败必须与"用户拒绝"分开——这是 Cursor 踩过的坑。
-            return Result(new AskResult(
-                AskOutcome.Unavailable, $"提问不可用：{ex.GetType().Name}: {ex.Message}", []));
+            return Result(new Dougong.Agent.AskResult(
+                Dougong.Agent.AskOutcome.Unavailable, $"提问不可用：{ex.GetType().Name}: {ex.Message}", []));
         }
 
         if (response is null)
-            return Result(new AskResult(AskOutcome.Unavailable, "客户端没有返回答复。", []));
+            return Result(new Dougong.Agent.AskResult(Dougong.Agent.AskOutcome.Unavailable, "客户端没有返回答复。", []));
 
         // 错误响应（客户端不支持 elicitation）也归为不可用，不是用户拒绝。
         if (response["error"] is { } error)
         {
             var message = error["message"]?.GetValue<string>() ?? error.ToJsonString();
-            return Result(new AskResult(
-                AskOutcome.Unavailable, $"客户端拒绝 elicitation 请求：{message}", []));
+            return Result(new Dougong.Agent.AskResult(
+                Dougong.Agent.AskOutcome.Unavailable, $"客户端拒绝 elicitation 请求：{message}", []));
         }
 
         return Result(Interpret(response, asked));
@@ -177,7 +183,7 @@ public sealed class AcpElicitationTool : IAgentTool
     /// <c>accept</c> 用户提交了答案；<c>decline</c> 用户明确拒绝；
     /// <c>cancel</c> 用户关闭了对话框。三者对模型的含义完全不同。
     /// </remarks>
-    private static AskResult Interpret(JsonNode response, IReadOnlyList<AskedQuestion> asked)
+    private static Dougong.Agent.AskResult Interpret(JsonNode response, IReadOnlyList<AskedQuestion> asked)
     {
         var action = response["action"]?.GetValue<string>();
 
@@ -185,7 +191,7 @@ public sealed class AcpElicitationTool : IAgentTool
         {
             case "accept":
             {
-                var answers = new List<Dougong.Acp.AskAnswer>();
+                var answers = new List<Dougong.Agent.AskAnswer>();
                 if (response["content"] is JsonObject content)
                 {
                     foreach (var question in asked)
@@ -193,26 +199,26 @@ public sealed class AcpElicitationTool : IAgentTool
                         // content 的键用 header：多个问题时它是区分答案的唯一稳定标识。
                         var value = content[question.Header];
                         if (value is null) continue;
-                        answers.Add(new Dougong.Acp.AskAnswer(
+                        answers.Add(new Dougong.Agent.AskAnswer(
                             question.Header, DescribeValue(value)));
                     }
                 }
 
-                return new AskResult(
-                    answers.Count > 0 ? AskOutcome.Answered : AskOutcome.Declined,
+                return new Dougong.Agent.AskResult(
+                    answers.Count > 0 ? Dougong.Agent.AskOutcome.Answered : Dougong.Agent.AskOutcome.Declined,
                     answers.Count > 0 ? null : "用户提交了空答复。",
                     answers);
             }
 
             case "decline":
-                return new AskResult(AskOutcome.Declined, "用户明确拒绝了回答。", []);
+                return new Dougong.Agent.AskResult(Dougong.Agent.AskOutcome.Declined, "用户明确拒绝了回答。", []);
 
             case "cancel":
-                return new AskResult(AskOutcome.Cancelled, "用户关闭了提问对话框。", []);
+                return new Dougong.Agent.AskResult(Dougong.Agent.AskOutcome.Cancelled, "用户关闭了提问对话框。", []);
 
             default:
-                return new AskResult(
-                    AskOutcome.Unavailable, $"未知的 elicitation 答复 action '{action}'。", []);
+                return new Dougong.Agent.AskResult(
+                    Dougong.Agent.AskOutcome.Unavailable, $"未知的 elicitation 答复 action '{action}'。", []);
         }
     }
 
@@ -224,128 +230,12 @@ public sealed class AcpElicitationTool : IAgentTool
         _ => value.ToJsonString(),
     };
 
-    /// <summary>构造 form schema：扁平对象，属性名用 header。</summary>
-    private static JsonObject BuildSchema(IReadOnlyList<AskedQuestion> asked)
-    {
-        var properties = new JsonObject();
-        var required = new JsonArray();
-
-        foreach (var question in asked)
-        {
-            var labels = new JsonObject();
-            foreach (var option in question.Options)
-            {
-                labels[option.Label] = option.Description;
-            }
-
-            // 单一 schema 同时表达"可选项"与"允许多选"：
-            // 单选是 enum，多选是 items.enum 的数组。
-            properties[question.Header] = question.MultiSelect
-                ? new JsonObject
-                {
-                    ["type"] = "array",
-                    ["title"] = question.Question,
-                    ["items"] = new JsonObject
-                    {
-                        ["type"] = "string",
-                        ["enum"] = new JsonArray([.. question.Options.Select(o => (JsonNode)o.Label)]),
-                    },
-                    ["minItems"] = 1,
-                }
-                : new JsonObject
-                {
-                    ["type"] = "string",
-                    ["title"] = question.Question,
-                    ["enum"] = new JsonArray([.. question.Options.Select(o => (JsonNode)o.Label)]),
-                };
-
-            // 选项说明放在 schema 的 description 里，客户端可展示为选项副标题。
-            properties[question.Header]!["description"] = string.Join("；",
-                question.Options.Select(o => $"{o.Label}：{o.Description}"));
-
-            required.Add(question.Header);
-        }
-
-        return new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = properties,
-            ["required"] = required,
-        };
-    }
-
-    /// <summary>
-    /// 本地校验问题形状。不通过就返回错误结果，不打扰用户。
-    /// </summary>
-    private static string? Validate(
-        JsonElement arguments, out List<AskedQuestion> asked)
-    {
-        asked = [];
-
-        if (!arguments.TryGetProperty("questions", out var questions)
-            || questions.ValueKind is not JsonValueKind.Array)
-            return "缺少 questions 参数。";
-
-        if (questions.GetArrayLength() is 0 or > MaxQuestions)
-            return $"questions 必须是 1-{MaxQuestions} 个。";
-
-        var questionsSeen = new HashSet<string>(StringComparer.Ordinal);
-        var index = 0;
-
-        foreach (var item in questions.EnumerateArray())
-        {
-            var question = item.TryGetProperty("question", out var q) ? q.GetString() : null;
-            var header = item.TryGetProperty("header", out var h) ? h.GetString() : null;
-
-            if (string.IsNullOrWhiteSpace(question))
-                return $"第 {index + 1} 个问题缺少 question。";
-            if (string.IsNullOrWhiteSpace(header))
-                return $"第 {index + 1} 个问题缺少 header。";
-            if (!questionsSeen.Add(question!))
-                return $"问题重复：'{question}'。";
-
-            if (!item.TryGetProperty("options", out var options)
-                || options.ValueKind is not JsonValueKind.Array)
-                return $"问题 '{header}' 缺少 options。";
-
-            var optionCount = options.GetArrayLength();
-            if (optionCount is < 2 or > MaxOptions)
-            {
-                // 与同类实现一致：不要让模型编一个凑数的第二选项。
-                return $"问题 '{header}' 需要 2-{MaxOptions} 个选项，实际 {optionCount} 个。"
-                    + "如果只有一条合理路径，直接说明你的做法并继续，不要编造凑数选项。";
-            }
-
-            var labels = new List<string>();
-            var parsed = new List<AskOption>();
-            foreach (var option in options.EnumerateArray())
-            {
-                var label = option.TryGetProperty("label", out var l) ? l.GetString() : null;
-                var description = option.TryGetProperty("description", out var d)
-                    ? d.GetString() : null;
-
-                if (string.IsNullOrWhiteSpace(label))
-                    return $"问题 '{header}' 的选项缺少 label。";
-                if (string.IsNullOrWhiteSpace(description))
-                    return $"问题 '{header}' 的选项 '{label}' 缺少 description。";
-                if (labels.Contains(label!, StringComparer.Ordinal))
-                    return $"问题 '{header}' 的选项标签重复：'{label}'。";
-
-                labels.Add(label!);
-                parsed.Add(new AskOption(label!, description!));
-            }
-
-            var multiSelect = item.TryGetProperty("multiSelect", out var m)
-                && m.ValueKind is JsonValueKind.True;
-
-            asked.Add(new AskedQuestion(question!, header!, parsed, multiSelect));
-            index++;
-        }
-
-        return null;
-    }
-
-    private static AgentToolResult Result(AskResult result)
+    /// <summary>把提问结果包成工具结果，供模型阅读。</summary>
+    /// <remarks>
+    /// <b>保留 Outcome 原文</b>：模型需要能区分"用户拒绝"与"提问不可用"。
+    /// 只给它一句自然语言说明会让它按措辞猜，而措辞是我们写的、不是它熟悉的枚举。
+    /// </remarks>
+    private static AgentToolResult Result(Dougong.Agent.AskResult result)
     {
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(new
         {
@@ -356,47 +246,4 @@ public sealed class AcpElicitationTool : IAgentTool
 
         return new AgentToolResult(document.RootElement.Clone());
     }
-
-    private sealed record AskedQuestion(
-        string Question, string Header, IReadOnlyList<AskOption> Options, bool MultiSelect);
-
-    private sealed record AskOption(string Label, string Description);
-
 }
-
-/// <summary>
-/// 提问的结果类别。
-/// </summary>
-/// <remarks>
-/// 四种情形必须分开：把"传输失败"或"本轮取消"当成"用户拒绝"会误导模型
-/// （它可能因此改变方案，实际用户根本没看到问题）。
-/// </remarks>
-public enum AskOutcome
-{
-    /// <summary>用户提交了答案。</summary>
-    Answered,
-
-    /// <summary>用户明确拒绝回答。</summary>
-    Declined,
-
-    /// <summary>用户关闭了对话框，或本轮被取消。</summary>
-    Cancelled,
-
-    /// <summary>提问不可用（无客户端、传输失败、客户端不支持）。</summary>
-    Unavailable,
-
-    /// <summary>问题形状不合法，未打扰用户。</summary>
-    InvalidRequest,
-}
-
-/// <summary>一次提问的结果。</summary>
-public sealed record AskResult(
-    AskOutcome Outcome, string? Diagnostic, IReadOnlyList<AskAnswer> Answers)
-{
-    /// <summary>答案的键值视图，供宿主直接展示。</summary>
-    public IReadOnlyDictionary<string, string> AsDictionary() =>
-        Answers.ToDictionary(a => a.Question, a => a.Answer, StringComparer.Ordinal);
-}
-
-/// <summary>一条答复：哪个问题、答案是什么。</summary>
-public sealed record AskAnswer(string Question, string Answer);

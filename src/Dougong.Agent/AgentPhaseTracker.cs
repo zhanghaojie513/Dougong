@@ -114,6 +114,9 @@ public sealed class AgentPhaseTracker
     /// <summary>上下文压缩。</summary>
     public void OnCompacting(DateTimeOffset now) => Enter(AgentPhase.Compacting, now);
 
+    /// <summary>请求失败、正在退避等待重试。</summary>
+    public void OnRetrying(DateTimeOffset now) => Enter(AgentPhase.Retrying, now);
+
     /// <summary>一轮结束。</summary>
     public void OnRunFinished(DateTimeOffset now, bool failed)
     {
