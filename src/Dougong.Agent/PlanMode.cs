@@ -71,6 +71,11 @@ public static class PlanModePolicy
 
         // 只读的作业/会话查询。
         "job_list", "job_output",
+
+        // **提问是零副作用的，且计划阶段最需要它**。
+        // 不放行会让模型只能猜需求，而计划的质量取决于它知道多少。
+        // 与 exit_plan_mode 一样，它不产生任何外部影响。
+        "ask_user",
     };
 
     /// <summary>计划模式下这个工具是否允许执行。</summary>
@@ -188,6 +193,20 @@ public sealed class ExitPlanModeTool(IAskUserHost host, PlanMode mode) : IAgentT
         ToolInvocation invocation, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(invocation);
+
+        // **非计划模式下直接拒绝，不打扰用户**。
+        //
+        // dsh 靠"计划模式才提供这个工具"避免这种情况；我们的工具集在装配期
+        // 固定，所以必须在工具内判。不做这一条会怎样（已实测）：
+        // 用户在普通对话里突然看到一张"计划审阅"卡片，批准后模型收到
+        // `PlanApproved` 并以为自己在按计划执行——而它从没进入过计划模式，
+        // 也没有计划。这是最坏的一类误导：状态与提示不符。
+        if (!_mode.IsActive)
+        {
+            return Result("PlanNotInPlanMode",
+                "当前不在计划模式，exit_plan_mode 不适用。"
+                + "直接执行，或让用户先开启计划模式（/plan）。");
+        }
 
         var plan = ToolArguments.RequiredString(invocation.Arguments, "plan");
 

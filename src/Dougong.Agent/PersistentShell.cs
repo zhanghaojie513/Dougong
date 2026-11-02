@@ -212,11 +212,22 @@ public sealed class PersistentShell : IDisposable
 
                 lock (_sync) _pending.Clear();
 
-                return timedOut
-                    ? ShellRunResult.Failed(
-                        $"命令超时（{_commandTimeout.TotalSeconds:0} 秒）。"
-                        + "shell 状态可能已不可信，建议重启会话。")
-                    : ShellRunResult.Failed("命令被取消。");
+                if (!timedOut)
+                    return ShellRunResult.Failed("命令被取消。");
+
+                // **超时后重启 shell**，而不是让它永久不可用。
+                //
+                // 原因：命令可能还在跑，残留在管道里的输出会污染后续每一条命令。
+                // 实测踩到：一次超时之后，后面所有命令都返回同一条超时消息——
+                // 会话看起来"坏了"，而用户唯一能做的重启整个程序。
+                //
+                // 重启的代价是丢掉 cd/export 状态，但那比"永久不可用"好得多；
+                // 而且模型会从诊断里知道状态丢了。
+                Restart();
+
+                return ShellRunResult.Failed(
+                    $"命令超时（{_commandTimeout.TotalSeconds:0} 秒），shell 已重启。"
+                    + "工作目录与环境变量的改动已丢失。", timedOut: true);
             }
 
             if (_process is { HasExited: true })
@@ -229,6 +240,28 @@ public sealed class PersistentShell : IDisposable
             // 20ms 对交互延迟无感，对 CPU 是可忽略的。
             try { await Task.Delay(20, linked.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) { /* 下一轮处理 */ }
+        }
+    }
+
+    /// <summary>
+    /// 杀掉当前 shell 并让下一次调用重新启动。
+    /// </summary>
+    /// <remarks>
+    /// <b>同步方法</b>：它在超时路径里被调用，而那已经在一个 async 方法内，
+    /// 包一层 await 只会让"重启"这个动作看起来比实际复杂。杀进程是同步的。
+    /// </remarks>
+    private void Restart()
+    {
+        lock (_sync)
+        {
+            try { _stdin?.Dispose(); } catch { /* 已断 */ }
+            try { if (_process is { HasExited: false }) _process.Kill(entireProcessTree: true); }
+            catch { /* 已退出 */ }
+            try { _process?.Dispose(); } catch { /* 已释放 */ }
+
+            _process = null;
+            _stdin = null;
+            _pending.Clear();
         }
     }
 
@@ -343,7 +376,13 @@ public sealed class PersistentShell : IDisposable
                     var lineEnd = text.IndexOf((char)10, after);
                     _pending.Clear();
                     if (lineEnd >= 0 && lineEnd + 1 < text.Length)
-                        _pending.Append(text[(lineEnd + 1)..]);
+                    {
+                        // **跳过紧随其后的换行**：cmd 的 echo 输出是 CRLF，
+                        // 而屏障行本身也可能是最后一行。不跳过的话，下一条命令
+                        // 的输出会以一个前导换行开头——实测每条命令都如此。
+                        var rest = text[(lineEnd + 1)..].TrimStart((char)13, (char)10);
+                        if (rest.Length > 0) _pending.Append(rest);
+                    }
 
                     return true;
                 }
@@ -430,6 +469,12 @@ public sealed record ShellRunResult(
     bool TimedOut)
 {
     /// <summary>构造一个失败结果。</summary>
-    public static ShellRunResult Failed(string diagnostic) =>
-        new(-1, diagnostic, string.Empty, TimedOut: false);
+    /// <param name="diagnostic">给模型看的说明。</param>
+    /// <param name="timedOut">是否因超时失败。</param>
+    /// <remarks>
+    /// <b><paramref name="timedOut"/> 必须如实传</b>：模型据此决定"等一下再试"
+    /// 还是"换个做法"。第一版恒为 false，于是超时看起来像普通失败。
+    /// </remarks>
+    public static ShellRunResult Failed(string diagnostic, bool timedOut = false) =>
+        new(-1, diagnostic, string.Empty, timedOut);
 }

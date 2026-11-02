@@ -109,9 +109,9 @@
 | 改动清单按轮聚合且不假称完整 | `workspace-changes`：`changes-splits-by-user-turn`、`changes-excludes-read-tools`、`changes-dedupes-within-turn`、`changes-includes-write-and-edit`、`changes-omits-shell-commands`、`changes-keeps-final-turn`、`changes-tolerates-corrupt-tail`、`changes-survives-legacy-payload` | 去掉工具白名单（按有没有 path 判断）→ `changes-excludes-read-tools` 报"读操作被算成了改动"，`changes-omits-shell-commands` 也红；改成每见工具调用就切轮 → 6 项同时失败；不收尾最后一轮 → `changes-keeps-final-turn` 报"最后一轮丢了（0 轮）" |
 | 每个 CLI 参数都能在帮助里找到 | `doctor`：`every-cli-flag-appears-in-help` | 从 `--help` 删掉 `--changes` → 报"没有出现在 --help 里"；白名单加 `--stats` 但不写进 help → 同样报错（检查直接引用参数解析用的清单，不另列一份） |
 | 检查测的是当前代码而非陈旧副本 | `terminal`：`comparison-uses-release-cli-assembly` | 把检查目录里的 `Dougong.Cli.dll` 时间戳改成 2020 年 → 报"比 Release 旧……任何负控结论都不作数"；恢复后转绿 |
-| 后台作业游标与环形缓冲守恒 | `jobs`：`job-start-returns-without-waiting`、`job-output-respects-cursor`、`job-output-reports-discarded-bytes`、`job-caps-concurrency-per-owner`、`job-limit-is-per-owner-not-global`、`job-unknown-id-is-not-silent`、`job-registry-dispose-kills-children`、`job-tool-declares-execute-permission`、`job-stop-kills-grandchildren-on-posix` | `OmittedBytes` 恒 0 → `job-output-reports-discarded-bytes` 报"总输出 7200 字节却报 omitted=0"；并发上限改全局 → `job-limit-is-per-owner-not-global` 失败 |
-| 持久 shell 的状态与输出干净度 | `persistent-shell`：`shell-keeps-cwd-across-commands`、`shell-exit-code-is-this-command`、`shell-failure-does-not-break-session`、`shell-output-has-no-prompt-noise`、`shell-reports-current-directory`、`shell-times-out-instead-of-hanging`、`shell-dispose-terminates-process`、`shell-reuses-one-process` | 每条命令重建进程 → 3 项同时失败（cd 失效、目录报错、变量丢失） |
-| 计划审阅挡住执行且批准后可继续 | `plan-mode`：`plan-approval-continues-same-turn`、`plan-approval-exits-plan-mode`、`plan-rejection-keeps-plan-mode`、`plan-cancel-is-distinct-from-reject`、`plan-requires-markdown-title`、`plan-rejects-oversized-document`、`plan-mode-blocks-write-tools`、`plan-mode-allows-read-tools`、`plan-mode-off-executes-normally`、`plan-section-only-when-active`、`plan-intent-carries-approve-label` | 批准后不 `Disable` → `plan-approval-exits-plan-mode` 报"后续写操作会被误拦"；取消报成 `PlanRejected` → `plan-cancel-is-distinct-from-reject` 失败 |
+| 后台作业游标与环形缓冲守恒 | `jobs`：`job-start-returns-without-waiting`、`job-output-respects-cursor`、`job-output-reports-discarded-bytes`、`job-caps-concurrency-per-owner`、`job-limit-is-per-owner-not-global`、`job-unknown-id-is-not-silent`、`job-registry-dispose-kills-children`、`job-tool-declares-execute-permission`、`job-stop-kills-grandchildren-on-posix`、`job-finished-output-survives-until-read` | `OmittedBytes` 恒 0 → `job-output-reports-discarded-bytes` 报"总输出 7200 字节却报 omitted=0"；并发上限改全局 → `job-limit-is-per-owner-not-global` 失败 |
+| 持久 shell 的状态与输出干净度 | `persistent-shell`：`shell-keeps-cwd-across-commands`、`shell-exit-code-is-this-command`、`shell-failure-does-not-break-session`、`shell-output-has-no-prompt-noise`、`shell-reports-current-directory`、`shell-times-out-instead-of-hanging`、`shell-dispose-terminates-process`、`shell-reuses-one-process`、`shell-recovers-after-timeout`、`shell-output-has-no-leading-blank` | 每条命令重建进程 → 3 项同时失败（cd 失效、目录报错、变量丢失） |
+| 计划审阅挡住执行且批准后可继续 | `plan-mode`：`plan-approval-continues-same-turn`、`plan-approval-exits-plan-mode`、`plan-rejection-keeps-plan-mode`、`plan-cancel-is-distinct-from-reject`、`plan-requires-markdown-title`、`plan-rejects-oversized-document`、`plan-mode-blocks-write-tools`、`plan-mode-allows-read-tools`、`plan-mode-off-executes-normally`、`plan-section-only-when-active`、`plan-intent-carries-approve-label`、`exit-plan-mode-rejected-outside-plan-mode`、`plan-mode-whitelist-matches-real-tools` | 批准后不 `Disable` → `plan-approval-exits-plan-mode` 报"后续写操作会被误拦"；取消报成 `PlanRejected` → `plan-cancel-is-distinct-from-reject` 失败 |
 | 每个会被显示的阶段都有文案 | `terminal`：`every-phase-has-visible-label`、`binary-is-not-stale` | 新增 `Retrying` 时若只加枚举不加文案 → `every-phase-has-visible-label` 报"阶段 Retrying 会被显示却没有文案"；改源码不重建 Release → `binary-is-not-stale` 报"跑的是旧构建" |
 | 压缩比例默认值与可配置性 | `compaction`、`wiring`、`doctor` | 把 `DefaultTriggerRatio` 改成 0.99 → `compaction` 套的触发点检查失败；给 `--doctor` 传入 `retain >= trigger` → `doctor` 套的非法规格检查失败 |
 
@@ -394,6 +394,24 @@ home 决定"所有状态放哪一整个根"，`memory_dir` 决定"记忆是否�
 | **计划模式下拦非只读工具** | 白名单（`PlanModePolicy.AllowedTools`）而不是黑名单：黑名单让新增工具默认放行，那是最危险的方向。 |
 | **验证** | `plan-mode` 套 11 项；2 组负控见 §三。 |
 | **源码位置** | `src/Dougong.Agent/PlanMode.cs`、`src/Dougong.Cli/ConsoleElicitationTool.cs`（`ConsoleAskUserHost`） |
+
+### D-22 P2 复核修掉的三个真缺陷
+
+复核 P2 三项实现时用探针找到的问题，记录在此避免重犯。
+
+| 项 | 缺陷 | 现在由哪条检查钉住 |
+|---|---|---|
+| 计划模式 | **非计划模式下调用 `exit_plan_mode` 仍弹审阅卡片**，批准后返回 `PlanApproved`——模型以为自己在按计划执行，而它从没进入过计划模式 | `exit-plan-mode-rejected-outside-plan-mode` |
+| 计划模式白名单 | **`ask_user` 漏了**。它零副作用，而计划阶段最需要澄清；不放行会让模型只能猜需求 | `plan-mode-whitelist-matches-real-tools` |
+| 后台作业 | **已结束但未读的作业被清掉**。`PruneFinished` 用"游标 >= 总写出"判断"读完"，而没有输出的作业两者都是 0，于是刚结束就被删——`Read` 返回 NotFound，用户永远看不到它 | `job-finished-output-survives-until-read` |
+| 持久 shell | **超时后永久不可用**。残留输出污染后续每条命令，全都返回同一条超时消息，用户唯一能做的重启整个程序 | `shell-recovers-after-timeout` |
+| 持久 shell | 超时标志恒为 `false`，模型无法区分"超时"与"普通失败" | 同上（断言 `TimedOut`） |
+| 持久 shell | 输出以空行开头：启动屏障的 CRLF 被只按 LF 截断 | `shell-output-has-no-leading-blank` |
+
+**两条经验**：
+
+1. **"状态标志"的写入点要数清**。作业那条缺陷的根因是 `EverRead` 由 `Snapshot` 设置，而 `Start` 的返回也调 `Snapshot`——**作业刚启动就被标成"读过"**。修法是把标记改成 `Snapshot` 的参数，只让真正的读取传 `true`。
+2. **失败路径要验"之后还能用"**。持久 shell 超时那条在原检查里只验了"超时能返回"，没验"超时后还能执行"——而后者才是用户真正会遇到的场景。
 
 ## 五、这份台账的边界
 

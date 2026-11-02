@@ -40,6 +40,8 @@ public static class PlanModeChecks
         failures += await CheckAsync("plan-mode-off-executes-normally", OffExecutesAsync);
         failures += await CheckAsync("plan-section-only-when-active", SectionGatingAsync);
         failures += await CheckAsync("plan-intent-carries-approve-label", IntentCarriesLabelAsync);
+        failures += await CheckAsync("exit-plan-mode-rejected-outside-plan-mode", OutsidePlanModeAsync);
+        failures += await CheckAsync("plan-mode-whitelist-matches-real-tools", WhitelistCoversToolsAsync);
 
         Console.WriteLine(failures == 0
             ? "PLAN-MODE: ALL PASS"
@@ -244,6 +246,80 @@ public static class PlanModeChecks
         return asked.Intent.ApproveLabel == "Approve"
             ? null
             : $"intent 没有标出批准选项：{asked.Intent.ApproveLabel}";
+    }
+
+    /// <summary>
+    /// 不在计划模式时调 <c>exit_plan_mode</c> 要被拒，且不打扰用户。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是复核发现的缺陷</b>：第一版不看模式状态，于是普通对话里调它会
+    /// 弹出审阅卡片，批准后返回 <c>PlanApproved</c>——模型因此以为自己在
+    /// 按计划执行，而它从没进入过计划模式。
+    /// <para>
+    /// dsh 靠"计划模式才提供这个工具"避免这种情况；我们的工具集在装配期
+    /// 固定，所以必须在工具内判。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> OutsidePlanModeAsync()
+    {
+        var host = new RecordingHost("Approve");
+        var mode = new PlanMode();   // 未启用
+
+        var tool = new ExitPlanModeTool(host, mode);
+        var result = await tool.ExecuteAsync(
+            new ToolInvocation("c1", PlanModePolicy.ExitPlanModeToolId, Args(GoodPlan)),
+            CancellationToken.None);
+
+        var raw = result.Content.GetRawText();
+
+        if (raw.Contains("PlanApproved", StringComparison.Ordinal))
+            return $"非计划模式却返回 PlanApproved：{raw}";
+
+        if (host.LastQuestion is not null)
+            return "非计划模式却弹出了审阅卡片（打扰了用户）";
+
+        // 诊断要指路，否则模型只会重试。
+        return raw.Contains("PlanNotInPlanMode", StringComparison.Ordinal)
+            && raw.Contains("plan", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : $"诊断没说清该怎么做：{raw}";
+    }
+
+    /// <summary>
+    /// 白名单要覆盖"零副作用的工具"，且不能漏掉已有的只读工具。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条钉的是白名单的维护性</b>：白名单默认拒绝，所以新增一个
+    /// 只读工具却忘了登记时，症状是"计划模式下用不了它"——可发现但容易被
+    /// 当成 bug 查很久。
+    /// <para>
+    /// 反过来，<b>零副作用却不在白名单里的工具是真实的缺口</b>：
+    /// 复核时就发现 <c>ask_user</c> 漏了，而计划阶段恰恰最需要澄清。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> WhitelistCoversToolsAsync()
+    {
+        // 零副作用、计划阶段必须可用的。
+        string[] mustAllow = ["ask_user", "read_file", "glob", "grep"];
+
+        var missing = mustAllow
+            .Where(t => !PlanModePolicy.IsAllowed(t))
+            .ToArray();
+
+        if (missing.Length > 0)
+            return Task.FromResult<string?>(
+                $"计划模式下这些零副作用工具没被放行：{string.Join(", ", missing)}");
+
+        // 会产生外部影响的必须被拦。
+        string[] mustBlock = ["write_file", "edit_file", "shell", "shell_session", "job_start", "job_stop"];
+
+        var leaked = mustBlock
+            .Where(PlanModePolicy.IsAllowed)
+            .ToArray();
+
+        return Task.FromResult<string?>(leaked.Length == 0
+            ? null
+            : $"计划模式下这些有副作用的工具被放行了：{string.Join(", ", leaked)}");
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────

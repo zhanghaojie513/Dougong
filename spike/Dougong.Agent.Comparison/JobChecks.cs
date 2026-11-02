@@ -32,6 +32,7 @@ public static class JobChecks
         failures += await CheckAsync("job-unknown-id-is-not-silent", UnknownIdAsync);
         failures += await CheckAsync("job-registry-dispose-kills-children", DisposeKillsAsync);
         failures += await CheckAsync("job-tool-declares-execute-permission", PermissionAsync);
+        failures += await CheckAsync("job-finished-output-survives-until-read", SurvivesUntilReadAsync);
 
         Console.WriteLine(failures == 0
             ? "JOBS: ALL PASS"
@@ -335,6 +336,48 @@ public static class JobChecks
             ? null
             : $"没有把命令报给审批：{string.Join(",", permission.Commands)}");
     }
+
+    /// <summary>
+    /// 作业结束后、被读之前，输出不能被清掉。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是复核发现的缺陷</b>：<c>PruneFinished</c> 原本用
+    /// "游标 >= 总写出"判断"已读完"，但**没有输出的作业两者都是 0**，
+    /// 于是刚结束就被删——<c>Read</c> 返回 NotFound，用户永远看不到那个作业。
+    /// <para>
+    /// 更深一层：<c>EverRead</c> 一开始由 <c>Snapshot</c> 设置，而 <c>Start</c>
+    /// 的返回也调 <c>Snapshot</c>——作业刚启动就被标成"读过"。
+    /// 现在只有真正的读取（<c>Read</c>）才标记。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> SurvivesUntilReadAsync()
+    {
+        using var env = new Env(maxConcurrentPerOwner: 3);
+
+        // 一个立刻结束、没有输出的作业。
+        var quick = env.Registry.Start("s1", Os("ver >nul", "true"));
+        await Task.Delay(900);
+
+        // **用 List 判断，不用 Read**：Read 会标记"已读过"，
+        // 那样后面的 Start 就有权清掉它——而这条检查正是要验"没读过就不清"。
+        var listed = env.Registry.List("s1").FirstOrDefault(j => j.Id == quick.Id);
+        if (listed?.State is not JobState.Finished)
+            return $"作业没有按预期结束（state={listed?.State}）";
+
+        // 再起两个，触发 PruneFinished。
+        env.Registry.Start("s1", SleepCommand(20_000));
+        env.Registry.Start("s1", SleepCommand(20_000));
+
+        // 那个已结束但没读过的作业必须还在。
+        var after = env.Registry.Read(quick.Id, 0);
+
+        return after.State is JobState.Finished
+            ? null
+            : $"已结束但未读的作业被清掉了（state={after.State}）：{after.Diagnostic}";
+    }
+
+    private static string Os(string windows, string posix) =>
+        OperatingSystem.IsWindows() ? windows : posix;
 
     // ── 支撑 ─────────────────────────────────────────────────────
 

@@ -131,7 +131,9 @@ public sealed class JobRegistry : IDisposable
             return JobSnapshot.Rejected($"无法启动：{ex.GetType().Name}: {ex.Message}");
         }
 
-        return job.Snapshot(cursor: 0);
+        // **不标记读过**：启动返回的快照是"确认已启动"，
+        // 不是"用户看过输出"。标记了会让 PruneFinished 立刻删掉它。
+        return job.Snapshot(cursor: 0, markRead: false);
     }
 
     /// <summary>
@@ -186,7 +188,7 @@ public sealed class JobRegistry : IDisposable
         return [.. _jobs.Values
             .Where(j => owner is null || j.Owner == owner)
             .OrderByDescending(j => j.StartedAt)
-            .Select(j => j.Snapshot(cursor: j.Consumed) with { Output = string.Empty, OmittedBytes = 0 })];
+            .Select(j => j.Snapshot(cursor: j.Consumed, markRead: false) with { Output = string.Empty, OmittedBytes = 0 })];
     }
 
     /// <summary>清理已结束且被读过的作业。</summary>
@@ -200,7 +202,7 @@ public sealed class JobRegistry : IDisposable
         {
             if (job.Owner != owner) continue;
             if (job.IsActive) continue;
-            if (job.Consumed < job.TotalWritten) continue;
+            if (!job.EverRead) continue;   // 没读过的留着：输出可能是唯一证据
 
             if (_jobs.TryRemove(id, out var removed)) removed.Dispose();
         }
@@ -250,6 +252,16 @@ public sealed class JobRegistry : IDisposable
 
         /// <summary>模型已经读过多少字节（游标位置）。</summary>
         public long Consumed { get; set; }
+
+        /// <summary>
+        /// 是否被读过至少一次。
+        /// </summary>
+        /// <remarks>
+        /// <b>不能用"游标 >= 总写出"判断</b>：没有输出的作业两者都是 0，
+        /// 会满足那个条件而被误删——而它可能正是用户想确认"跑完了没报错"的那个。
+        /// 实测踩到：作业结束后 <c>Read</c> 返回 NotFound，输出永久丢失。
+        /// </remarks>
+        public bool EverRead { get; private set; }
 
         /// <summary>累计写入过多少字节（含已被环形缓冲丢弃的）。</summary>
         public long TotalWritten
@@ -353,10 +365,12 @@ public sealed class JobRegistry : IDisposable
             }
         }
 
-        public JobSnapshot Snapshot(long cursor)
+        public JobSnapshot Snapshot(long cursor, bool markRead = true)
         {
             lock (_sync)
             {
+                if (markRead) EverRead = true;
+
                 var state = State();
                 var omitted = _discarded;
 

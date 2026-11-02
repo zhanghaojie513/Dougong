@@ -26,6 +26,8 @@ public static class PersistentShellChecks
         failures += await CheckAsync("shell-output-has-no-prompt-noise", NoPromptAsync);
         failures += await CheckAsync("shell-reports-current-directory", ReportsCwdAsync);
         failures += await CheckAsync("shell-times-out-instead-of-hanging", TimeoutAsync);
+        failures += await CheckAsync("shell-recovers-after-timeout", RecoversAfterTimeoutAsync);
+        failures += await CheckAsync("shell-output-has-no-leading-blank", NoLeadingBlankAsync);
         failures += await CheckAsync("shell-dispose-terminates-process", DisposeAsync);
         failures += await CheckAsync("shell-reuses-one-process", OneProcessAsync);
 
@@ -190,6 +192,55 @@ public static class PersistentShellChecks
         return result.ExitCode == -1 && result.Stdout.Contains("超时", StringComparison.Ordinal)
             ? null
             : $"超时没有如实报告：exit={result.ExitCode} out={result.Stdout}";
+    }
+
+    /// <summary>
+    /// 超时后 shell 要能继续用。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是复核发现的缺陷</b>：第一版超时后不清残留，于是**后续每条命令
+    /// 都返回同一条超时消息**——会话看起来"坏了"，用户唯一能做的重启整个程序。
+    /// <para>
+    /// 修法是超时即重启 shell，代价是丢掉 <c>cd</c>/<c>export</c> 状态；
+    /// 但那比"永久不可用"好得多，且诊断里会说明状态已丢。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> RecoversAfterTimeoutAsync()
+    {
+        using var env = new Env();
+        using var shell = new PersistentShell(env.Root, commandTimeout: TimeSpan.FromSeconds(1));
+
+        var timedOut = await shell.RunAsync(Os("ping -n 30 127.0.0.1 >nul", "sleep 30"));
+        if (!timedOut.TimedOut) return "超时没有标记 TimedOut —— 模型无法区分超时与普通失败";
+
+        // 超时后必须还能执行命令。
+        var after = await shell.RunAsync("echo recovered");
+        if (after.ExitCode != 0)
+            return $"超时后 shell 不可用：exit={after.ExitCode} out={after.Stdout}";
+
+        return after.Stdout.Contains("recovered", StringComparison.Ordinal)
+            ? null
+            : $"超时后输出不对：{after.Stdout}";
+    }
+
+    /// <summary>命令输出不该以空行开头。</summary>
+    /// <remarks>
+    /// <b>启动屏障的残留</b>：<c>echo &lt;barrier&gt;</c> 输出 CRLF，
+    /// 若截断时只看 LF，下一条命令的输出会多一个前导换行。
+    /// 那看起来无害，但模型会把它当成"命令没有输出"的一种形态。
+    /// </remarks>
+    private static async Task<string?> NoLeadingBlankAsync()
+    {
+        using var env = new Env();
+        using var shell = new PersistentShell(env.Root);
+
+        var result = await shell.RunAsync("echo first-line");
+
+        // 第一行不能是空白。
+        var firstLine = result.Stdout.Split((char)10).FirstOrDefault() ?? string.Empty;
+        return firstLine.Trim().Length == 0
+            ? $"输出以空行开头（长度 {result.Stdout.Length}）"
+            : null;
     }
 
     /// <summary>释放要结束进程。</summary>
