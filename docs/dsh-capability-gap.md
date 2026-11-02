@@ -306,7 +306,7 @@ Roslyn 只解析 C#。把 Roslyn 写进 SDK 恰好是把 harness 绑定到单一
 | `dsh-jobs` / `-local` | 后台任务注册表 | **无** | **缺** |
 | `dsh-schedule` | 持久提醒 | **无** | **缺** |
 | `dsh-workflow` / `-ptc` | 工作流引擎 | **无** | **缺**（`goal.md` 把可视化编排列为反目标，但脚本式不是） |
-| `dsh-hook-protocol` / `-hooks-*` | 拦截钩子（兼容 Claude Code / Codex） | **无** | **缺** |
+| `dsh-hook-protocol` / `-hooks-*` | 拦截钩子（兼容 Claude Code / Codex） | `IToolInterceptor` + `ToolInterception` | **部分**：有类型化拦截点，**无 CC/Codex hooks.json 桥接**；理由见 D-27 |
 | `dsh-timeout` | 超时/截止原语 | 分散在各处 | **部分** |
 
 ---
@@ -491,7 +491,7 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~20~~ | ~~后台任务~~ | `dsh-jobs*` | **✅ 2026-11-02**：`JobRegistry` + 四个工具 |
 | 21 | 持久 shell / PTY | `dsh-terminal*` | **🟡 shell 已完成**（`PersistentShell`）；**PTY 未做** |
 | ~~22~~ | ~~技能提供者~~ | `dsh-skill*` | **✅ 2026-11-03**：`SkillDiscovery` + `SkillTool` |
-| 23 | 拦截钩子 | `dsh-hook-protocol` | |
+| ~~23~~ | ~~拦截钩子~~ | `dsh-hook-protocol` | **✅ 2026-11-03**：`IToolInterceptor`（类型化拦截点） |
 | 24 | 会话投影 / 轮次大纲 | `dsh-session-projection*` | |
 | 25 | 出站代理 | `dsh-http-proxy` | |
 | 26 | 重复工具调用提醒 | `dsh-repeat-tool-reminder` | |
@@ -501,8 +501,8 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~30~~ | ~~消息级反馈（正负 + 分类，进日志不进模型）~~ | `dsh-feedback/message-feedback` | **✅ 2026-11-02**：`MessageFeedback` + `JsonlMessageFeedbackStore`（伴生文件，不碰会话日志） |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 6 项 + 1 项部分（2026-11-03）**。六项的关键取舍与复核修掉的
-缺陷记在 `porting-differences.md` D-19 至 D-22、D-24 至 D-26。
+**P2 已完成 7 项 + 1 项部分（2026-11-03）**。七项的关键取舍与复核修掉的
+缺陷记在 `porting-differences.md` D-19 至 D-22、D-24 至 D-27。
 
 ### 明确不做
 

@@ -34,7 +34,23 @@ public sealed record ToolApprovalRequest(
     ToolPermission Permission,
     ToolExecutionPlan Execution,
     string Workspace,
-    ApprovalBinding Binding);
+    ApprovalBinding Binding)
+{
+    /// <summary>
+    /// 拦截器要求人工确认时的理由；null 表示不是拦截器要求的。
+    /// </summary>
+    /// <remarks>
+    /// <b>用 init 属性而不是构造参数</b>：后者改变公开签名，ApiCompat 报 CP0002，
+    /// 而本次改动没有"先标 Obsolete"的余地。与 <c>ToolDescriptor.MayHaveIrreversibleEffects</c>
+    /// 同一处理方式。
+    /// <para>
+    /// <b>为什么不塞进 <see cref="ToolPermission"/></b>：那是工具自述的"这次会碰什么"，
+    /// 而这条是外部规则对它的判断。两者来源不同，混在一起会让审批界面
+    /// 分不清"工具说它要写这个文件"与"规则说这个文件不许写"。
+    /// </para>
+    /// </remarks>
+    public string? InterceptionReason { get; init; }
+}
 
 /// <summary>
 /// 审批绑定：把"批准的是什么"固定下来。

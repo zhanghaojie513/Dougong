@@ -21,7 +21,7 @@
 
 ## [未发布]
 
-**P2：后台作业、计划模式、文件引用、消息级反馈、会话内换目录、技能。**
+**P2：后台作业、计划模式、文件引用、消息级反馈、会话内换目录、技能、拦截钩子。**
 
 ### Added
 
@@ -37,6 +37,13 @@
   经 `AskUser` 通道带 `intent.kind=plan-review` 送出。
 - **`FileReferenceIndex`**：`@file` 补全。只返回工作区内的相对路径、不读文件内容
   （dsh 契约原话）；按深度/长度/字典序稳定排序；不越出工作区、跳过噪声目录。
+- **`IToolInterceptor` + `ToolInterception`**：工具执行前的类型化拦截点。
+  三态决策（`Approve` / `Ask` / `Deny`），多个拦截器最严者胜并在第一个 `Deny` 处短路；
+  在审批之前执行，被拒的调用不产生审批项；`Ask` 无审批器时按拒绝处理。
+- **`ToolCallOutcome.RejectedByInterceptor`**：与"审批未通过"分开的终态。
+  追加在枚举末尾（插在中间会让其后成员的数值 +1，而它们被序列化进日志）。
+- **`ToolApprovalRequest.InterceptionReason`**：拦截器要求确认时的理由，
+  经审批请求送达审批器。
 - **`SkillDiscovery` + `skill` 工具**：按需加载本地技能说明。两种形态
   （`<name>/SKILL.md` 与 `<name>.md`），四个根按 rank 合并（项目级压用户级），
   只把名字与描述注入对话、正文由模型按需加载。`disable-model-invocation: true`
@@ -72,6 +79,10 @@
   我们不这么做，因为**加新记录类型会让旧程序在 `Enum.Parse<StoreRecordKind>`
   抛异常、整个会话打不开**。代价是反馈不随会话文件一起分发，需要单独带走
   `<session>.jsonl.feedback`。见 `porting-differences.md` D-24。
+- **拦截钩子不兼容 Claude Code / Codex 的 `hooks.json`**：只做类型化拦截点这一本体，
+  不做外部配置桥接。也**不做入参重写**（`updatedInput`）。见 D-27。
+- **只做了 `tools/pre-execute` 一个点**：`agent/pre-step`、`tools/post-execute`、
+  `agent/turn-stopping` 要先有对应的接缝才能拦。见 D-27。
 - **技能没有分层注册表**：四个固定根、同名按 rank 先到先得，被遮住的会列出来。
   支持运行时注册与热失效要等 agent preset 与插件入口出现。见 D-26。
 - **换目录不影响已启动的进程**：持久 shell、后台作业、之前起的命令都保持它们

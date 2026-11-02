@@ -88,6 +88,19 @@ public enum ToolCallOutcome
     /// </para>
     /// </remarks>
     TimedOut,
+
+    /// <summary>
+    /// 被拦截器拒绝，未执行。
+    /// </summary>
+    /// <remarks>
+    /// <b>与 <see cref="RejectedNotApproved"/> 分开</b>：那个是"人没批准"，
+    /// 这个是"规则不允许"。合并会让用户以为"我批准了为什么还不执行"，
+    /// 而实际是规则拦着——两者的处置完全不同（前者去问人，后者改规则或改命令）。
+    /// <para>
+    /// <b>追加在末尾</b>，理由见 <see cref="TimedOut"/> 的说明。
+    /// </para>
+    /// </remarks>
+    RejectedByInterceptor,
 }
 
 /// <summary>

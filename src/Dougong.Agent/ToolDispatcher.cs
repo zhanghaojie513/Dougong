@@ -25,6 +25,22 @@ public sealed class ToolDispatcher : IToolDispatcher
     private readonly WorkspacePathGuard? _pathGuard;
 
     /// <summary>
+    /// 工具执行前的拦截器，按注册顺序依次询问。
+    /// </summary>
+    /// <remarks>
+    /// <b>用可写属性而不是构造参数</b>：加构造参数会改变公开签名，
+    /// ApiCompat 报 CP0002，而这次改动没有"先标 Obsolete 再删"的余地。
+    /// 属性形式的代价是"可以被换掉"——但那本来就是宿主的需求
+    /// （换一套规则不该重建 dispatcher，重建会把注册表与在飞的调用一起丢掉）。
+    /// <para>
+    /// <b>空列表是合法的</b>：表示没有任何拦截规则，不是错误。
+    /// 但调用方要能区分"没人看"与"看过了、允许"——所以
+    /// <see cref="ToolInterception.EvaluateAsync"/> 在空列表时返回 null。
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<IToolInterceptor> Interceptors { get; set; } = [];
+
+    /// <summary>
     /// 建立 dispatcher。审批器、资源闸门与工作区都可省略：
     /// 省略即表示"无审批要求"，仅用于测试与对比；生产宿主必须显式提供审批器。
     /// </summary>
@@ -223,6 +239,47 @@ public sealed class ToolDispatcher : IToolDispatcher
             FileVersions = files.ToBindingValue(),
         };
 
+        string? interceptionReason = null;
+
+        // 拦截：**在审批之前**。被拒的调用不产生审批项——
+        // 让用户为一件注定被拒的事点两次头是纯粹的浪费，而且会训练他们
+        // "闭眼批准"，那比不做审批更糟。
+        if (Interceptors.Count > 0)
+        {
+            var interception = await ToolInterception.EvaluateAsync(
+                Interceptors,
+                new ToolInterceptionContext(
+                    _sessionId, _turnId, invocation.InvocationId,
+                    invocation.ToolId, invocation.Arguments, permission, _workspace),
+                cancellationToken).ConfigureAwait(false);
+
+            if (interception is { Decision: InterceptionDecision.Deny })
+            {
+                return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
+                    ToolCallOutcome.RejectedByInterceptor,
+                    Diagnostic: interception.Reason ?? "被拦截规则拒绝。",
+                    Permission: permission);
+            }
+
+            // Ask 只把决定交给审批通道：有审批器时它会真的问人，
+            // 没审批器时下面的分支会按"未批准"拒绝（fail-closed）。
+            if (interception is { Decision: InterceptionDecision.Ask }
+                && _approverAccessor is not { IsConfigured: true })
+            {
+                return new ToolDispatchResult(invocation.InvocationId, invocation.ToolId,
+                    ToolCallOutcome.RejectedNotApproved,
+                    Diagnostic: (interception.Reason ?? "拦截规则要求人工确认。")
+                        + "（未配置审批器，按拒绝处理）",
+                    Permission: permission);
+            }
+
+            // Ask 且配了审批器：落到下面的审批分支，理由经
+            // ToolApprovalRequest.InterceptionReason 带进去。
+            // **不在这里直接放行**：那样"要求确认"就变成了"直接执行"。
+            if (interception is { Decision: InterceptionDecision.Ask } askResult)
+                interceptionReason = askResult.Reason;
+        }
+
         // 审批段的耗时。没配审批器时保持 null——"没等审批"与"审批瞬间通过"
         // 是两件事，用 0 冒充会让统计里混进一批假的"审批很快"。
         TimeSpan? approvalElapsed = null;
@@ -239,7 +296,10 @@ public sealed class ToolDispatcher : IToolDispatcher
                 new ToolApprovalRequest(
                     _sessionId, _turnId, invocation.InvocationId,
                     registration.Descriptor, invocation.Arguments, permission,
-                    execution, _workspace, binding),
+                    execution, _workspace, binding)
+                {
+                    InterceptionReason = interceptionReason,
+                },
                 cancellationToken).ConfigureAwait(false);
             approvalElapsed = Stopwatch.GetElapsedTime(approvalStarted);
 
