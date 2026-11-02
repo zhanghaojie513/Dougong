@@ -112,6 +112,7 @@
 | 后台作业游标与环形缓冲守恒 | `jobs`：`job-start-returns-without-waiting`、`job-output-respects-cursor`、`job-output-reports-discarded-bytes`、`job-caps-concurrency-per-owner`、`job-limit-is-per-owner-not-global`、`job-unknown-id-is-not-silent`、`job-registry-dispose-kills-children`、`job-tool-declares-execute-permission`、`job-stop-kills-grandchildren-on-posix`、`job-finished-output-survives-until-read` | `OmittedBytes` 恒 0 → `job-output-reports-discarded-bytes` 报"总输出 7200 字节却报 omitted=0"；并发上限改全局 → `job-limit-is-per-owner-not-global` 失败 |
 | 持久 shell 的状态与输出干净度 | `persistent-shell`：`shell-keeps-cwd-across-commands`、`shell-exit-code-is-this-command`、`shell-failure-does-not-break-session`、`shell-output-has-no-prompt-noise`、`shell-reports-current-directory`、`shell-times-out-instead-of-hanging`、`shell-dispose-terminates-process`、`shell-reuses-one-process`、`shell-recovers-after-timeout`、`shell-output-has-no-leading-blank` | 每条命令重建进程 → 3 项同时失败（cd 失效、目录报错、变量丢失） |
 | 计划审阅挡住执行且批准后可继续 | `plan-mode`：`plan-approval-continues-same-turn`、`plan-approval-exits-plan-mode`、`plan-rejection-keeps-plan-mode`、`plan-cancel-is-distinct-from-reject`、`plan-requires-markdown-title`、`plan-rejects-oversized-document`、`plan-mode-blocks-write-tools`、`plan-mode-allows-read-tools`、`plan-mode-off-executes-normally`、`plan-section-only-when-active`、`plan-intent-carries-approve-label`、`exit-plan-mode-rejected-outside-plan-mode`、`plan-mode-whitelist-matches-real-tools` | 批准后不 `Disable` → `plan-approval-exits-plan-mode` 报"后续写操作会被误拦"；取消报成 `PlanRejected` → `plan-cancel-is-distinct-from-reject` 失败 |
+| 消息反馈不进会话日志、按版本守卫 | `feedback`：`feedback-put-then-list-roundtrips`、`feedback-put-requires-observed-version`、`feedback-conflict-returns-authoritative-item`、`feedback-noop-keeps-version-and-appends-nothing`、`feedback-delete-is-idempotent-and-tombstoned`、`feedback-delete-respects-version`、`feedback-rejects-blank-and-oversized-note`、`feedback-file-is-append-only-never-rewritten`、`feedback-never-touches-session-log`、`feedback-sidecar-is-not-a-session-file`、`feedback-tail-corruption-does-not-hide-earlier-items`、`feedback-middle-corruption-is-an-error`、`feedback-target-must-be-model-response` | 去掉 `ifVersion` 比较 → 2 项失败（陈旧版本被当成成功覆盖）；删除改成重写文件抹行 → `feedback-delete-is-idempotent-and-tombstoned` 报"删除没留下记录"；后缀改成 `.jsonl` → `feedback-sidecar-is-not-a-session-file` 报"反馈文件被列成了会话"（`1_session.jsonl.jsonl`）；去掉 no-op 短路 → 报"无变化的写入不该换版本"；备注上限按字符算 → `feedback-rejects-blank-and-oversized-note` 报"超长备注被接受"；中间坏行改成静默跳过 → `feedback-middle-corruption-is-an-error` 失败 |
 | 文件补全只给路径且排序确定 | `file-references`：`refs-returns-relative-slash-paths`、`refs-match-is-substring-and-case-insensitive`、`refs-order-is-stable`、`refs-prefers-shallow-paths`、`refs-skips-noise-directories`、`refs-reports-total-and-truncation`、`refs-does-not-read-file-contents`、`refs-empty-query-lists-all` | 去掉 `Sort` → `refs-order-is-stable` 报"zz.cs 在 aa.cs 之前"；不排除噪声目录 → `refs-skips-noise-directories` 报"候选里出现噪声目录"；总数报成返回数 → `refs-reports-total-and-truncation` 报"总数应为 6，实际 2" |
 | 每个会被显示的阶段都有文案 | `terminal`：`every-phase-has-visible-label`、`binary-is-not-stale` | 新增 `Retrying` 时若只加枚举不加文案 → `every-phase-has-visible-label` 报"阶段 Retrying 会被显示却没有文案"；改源码不重建 Release → `binary-is-not-stale` 报"跑的是旧构建" |
 | 压缩比例默认值与可配置性 | `compaction`、`wiring`、`doctor` | 把 `DefaultTriggerRatio` 改成 0.99 → `compaction` 套的触发点检查失败；给 `--doctor` 传入 `retain >= trigger` → `doctor` 套的非法规格检查失败 |
@@ -427,6 +428,22 @@ home 决定"所有状态放哪一整个根"，`memory_dir` 决定"记忆是否�
 | **检查曾空转过一次** | 第一版 `refs-order-is-stable` 只验"两次查询结果相同"，而**这台机器上文件系统的枚举顺序恰好有序**——去掉 `Sort` 它照样通过。改成注入"按倒序返回目录项"的装饰器 + 直接断言排序规则后，负控才真的会红。这是"检查本身也要被验证"的又一例。 |
 | **验证** | `file-references` 套 8 项；3 组负控见 §三。 |
 | **源码位置** | `src/Dougong.Agent/FileReferenceIndex.cs` |
+
+### D-24 消息反馈存在会话旁的伴生文件，不写进权威日志
+
+| | |
+|---|---|
+| **哪不一样** | dsh 把消息评价写进权威 Session 日志（`feedback/message-put` / `feedback/message-delete`），由投影派生当前值。我们写进会话文件旁的 `<session>.feedback`，会话日志一个字节不动。 |
+| **为什么不跟：加记录类型会让旧程序读不了整个会话** | `JsonlAgentStore.ReadCommittedAsync` 用 `Enum.Parse<StoreRecordKind>(parsed.Kind)` 还原记录。遇到新名字时它**抛 `ArgumentException`**，不是跳过那一条——**整个会话打不开**。而与 D-15（标题不写进日志）相比，这里的后果更严重：标题只是显示不出来，这里是历史全部读不了。 |
+| **dsh 为什么可以** | 它有成套的事件词汇、投影层、按 Session 划分的变更队列和 `persistence-catalog` 的版本清单来支撑"日志里多一种事件"。我们没有投影层（#24 仍未做），而为一个评价功能先补一整套投影不划算。归档笔记里 dsh 自己也曾评估过 sidecar 方案，只在拿到那套支撑后才改为写日志——顺序不能反。 |
+| **存哪** | `<session>.jsonl` → `<session>.jsonl.feedback`（单文件，与会话文件同目录、同名）。**后缀刻意不是 `.jsonl`**：会话目录按 `*.jsonl` 枚举（`SessionBranch.List`、`DiagnosticBundle`），后缀相同会让评价文件被列成一个会话，打开时报"格式版本无效"。这条有检查钉住（`feedback-sidecar-is-not-a-session-file`）。 |
+| **指谁：按日志序号，不按宿主条目 id** | 目标用 `StoreRecord.Sequence`——全仓库唯一跨进程稳定的标识。宿主的 `ConversationItem.Id` 不能用：桌面端它是 `item-<guid>`，每次进程启动重新生成，冷启动后对不上任何历史消息。这也让本能力与具体宿主解耦：SDK 只说"第几条记录"，谁渲染、用什么 id 是宿主自己的事。 |
+| **并发语义照 dsh** | `ifVersion` 严格比较，no-op 也算冲突（否则陈旧的"我以为我是第一次改"会静默成功）；冲突回传权威条目，调用方不必再读一次；删除幂等、留墓碑；备注按 UTF-8 字节上限（默认 8192），空白串拒绝而不是当成"没有"。 |
+| **同样 append-only** | 与主日志同一理由：修改要留痕。删除是墓碑，早期评分留在文件里——"用户改过主意"这件事因此可见，而原地覆盖会让它彻底消失。尾部坏行只截断并标记 `Truncated`；**中间坏行抛异常**（append-only 文件的坏行只可能在末尾，中间出现说明文件被外部改过）。 |
+| **单写者，跨进程不保证** | 与 `JsonlAgentStore` 同口径：同一会话由调用方保证只有一个写入者。跨进程靠文件锁是不够的——两个进程都读到旧版本、都认为自己是第一次改，版本校验就失去意义。 |
+| **不做 UI、不做投影** | SDK 不定义按钮、弹窗或 toast，也不把评价推给模型（结构上保证：本能力的类型不被 `LoopAgentRuntime` 读取）。宿主自己读、自己渲染。 |
+| **验证** | `feedback` 套 13 项；6 组负控见 §三。其中 `feedback-never-touches-session-log` 专门守住"绝不写进日志"这条核心约束。 |
+| **源码位置** | `src/Dougong.Agent/MessageFeedback.cs`、`src/Dougong.Agent/JsonlMessageFeedbackStore.cs` |
 
 ## 五、这份台账的边界
 

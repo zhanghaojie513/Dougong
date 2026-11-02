@@ -91,6 +91,7 @@ public static class Program
         "persistent-shell",
         "plan-mode",
         "file-references",
+        "feedback",
         "workspace-lock",
     ];
 
@@ -292,6 +293,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "file-references")
             return await FileReferenceChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "feedback")
+            return await FeedbackChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

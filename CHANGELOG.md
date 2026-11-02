@@ -21,7 +21,7 @@
 
 ## [未发布]
 
-**P2 开始：后台作业。**
+**P2：后台作业、计划模式、文件引用、消息级反馈。**
 
 ### Added
 
@@ -32,6 +32,14 @@
   分动作而不是一个带 `mode` 参数的工具——模型靠名字选择，
   `job(mode=read)` 会让它频繁选错。
 - **`JobSnapshot`**：作业状态快照，带 `NextCursor` 与 `OmittedBytes`。
+- **`PlanMode` + `ExitPlanModeTool`**：计划模式照 dsh 实现——专用 `exit_plan_mode`
+  工具**阻塞**等审阅，批准后模型在同一轮继续；计划是完整 Markdown 文档（须有标题），
+  经 `AskUser` 通道带 `intent.kind=plan-review` 送出。
+- **`FileReferenceIndex`**：`@file` 补全。只返回工作区内的相对路径、不读文件内容
+  （dsh 契约原话）；按深度/长度/字典序稳定排序；不越出工作区、跳过噪声目录。
+- **`MessageFeedback` + `JsonlMessageFeedbackStore`**：消息级正负反馈，带七个分类与
+  可选备注。按日志序号（`RecordSequence`）定位被评价的消息，严格版本守卫、
+  删除留墓碑。**不进会话日志、不进模型上下文**——存会话文件旁的 `<session>.jsonl.feedback`。
 
 ### Changed
 
@@ -49,6 +57,12 @@
   但 Windows 上构造不出可靠的"父活子活"场景（`cmd /c` 不派生子进程，
   `start /b` 产生的是有意分离的进程）。检查因此在 Windows 跳过，
   只在 POSIX 用""心跳文件观察""真验。见 `porting-differences.md` D-19。
+- **消息反馈不写进会话日志**：dsh 把它作为日志事件（`feedback/message-put`）。
+  我们不这么做，因为**加新记录类型会让旧程序在 `Enum.Parse<StoreRecordKind>`
+  抛异常、整个会话打不开**。代价是反馈不随会话文件一起分发，需要单独带走
+  `<session>.jsonl.feedback`。见 `porting-differences.md` D-24。
+- **反馈的并发保证是单进程的**：同一会话由调用方保证只有一个写入者。
+  多进程同时写会让版本校验失去意义——两边都读到旧版本、都以为自己改的是最新值。
 
 ## [0.1.16-alpha.1] — 2026-11-02
 
