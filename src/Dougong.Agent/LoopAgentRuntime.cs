@@ -233,6 +233,12 @@ public sealed class LoopAgentRuntime : IAgentRuntime
         // 每轮清零：用户说"再跑一次"时，那是一次新的开始，不是上一个循环的延续。
         RepeatDetection?.Reset();
 
+        // **待注入的提醒也要清**。第一版只重置了检测链，提醒列表保留着：
+        // 若上一轮在"已加入提醒但还没发出去"时结束（工具轮上限、取消、
+        // 派发后的 yield break），那条提醒会漏到下一轮用户提问的第一条请求里。
+        // 症状是"我什么都没重复，它却说我在重复"。
+        _pendingReminders.Clear();
+
         // 屏障 1：用户输入必须在任何模型调用之前提交。
         // 提交失败即停止——不继续、不降级、不假装成功。
         if (await CommitOrNullAsync(StoreRecordKind.UserInput,

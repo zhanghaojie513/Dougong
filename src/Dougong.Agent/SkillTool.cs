@@ -96,9 +96,14 @@ public sealed class SkillTool : IAgentTool
             return ToolExecutionPlan.Serial;
 
         // 键用绝对路径：守按 Ordinal 比较，写法不统一就等于没有互斥。
+        // **键带 "file:" 前缀，与文件工具同一格式**。ToolResourceGate 按 Ordinal
+        // 比较字符串，框架不猜两种写法是否指同一个文件。
+        //
+        // 旧的写法是裸绝对路径：与文件工具的 "file:<abs>" 是两个不同的键，
+        // 于是"读技能文件"与"写同一个技能文件"不会互斥——那条修复就是这个。
         var reads = _discovery.Discover().Skills
             .Where(s => string.Equals(s.Name, name, StringComparison.Ordinal))
-            .Select(s => Path.GetFullPath(s.Path))
+            .Select(s => "file:" + Path.GetFullPath(s.Path))
             .ToArray();
 
         return new ToolExecutionPlan(ToolConcurrency.Serial) { Reads = reads };

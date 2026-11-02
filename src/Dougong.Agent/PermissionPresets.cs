@@ -28,7 +28,10 @@ public enum ApprovalPolicy
     /// <remarks>
     /// <b>默认档</b>：跳过 <see cref="ToolPermission.Access"/> 为 <c>None</c> 的纯内存工具
     /// （与 <see cref="PermissionPolicyApprover"/> 同一判据），其余照问。
-    /// 这是"读文件不用批准、写文件要批准"的那一档。
+    /// 注意它是**按"工具是否声明了访问"分的，不是按读写分的**：
+    /// `read_file` 声明 <see cref="ToolAccess.Read"/> 且带路径，
+    /// 所以它**照样会问**。这一档实际的效果是
+    /// "纯内存工具（提问、计划、看目录）不打扰，其余都问"。
     /// </remarks>
     AskOnRisk,
 
@@ -94,7 +97,9 @@ public sealed record PermissionPreset(
 /// <para>
 /// <b><c>custom</c> 是派生值不是可选目标</b>（照 dsh）：当当前策略不匹配任何
 /// 具名预设时（宿主直接改了策略，或组合方式变了），当前值显示为
-/// <see cref="CustomKey"/>，但它不出现在可选列表里。
+/// <see cref="CustomKey"/>。它<b>不出现在 <see cref="Available"/> 里</b>
+/// （那就不是"可切换的目标"），但会以 `Selectable: false` 出现在
+/// <see cref="Options"/> 里——界面需要它来显示"当前是自定义"。
 /// </para>
 /// </remarks>
 public sealed class PermissionPresets
@@ -138,7 +143,7 @@ public sealed class PermissionPresets
             "写操作与命令需要你确认；纯内存工具不打扰。不含沙箱隔离。",
             ApprovalPolicy.AskOnRisk),
         new("unattended", "无人值守",
-            "不询问任何审批。用于批量脚本与 CI——那里没人能回答。规则拦截仍然生效。",
+            "已知权限不询问审批；未知权限仍交给入口审批器。用于批量脚本与 CI。",
             ApprovalPolicy.Never),
     ];
 
@@ -289,7 +294,18 @@ public sealed class PresetApprover(IToolApprover inner, PermissionPresets preset
         return _presets.Current switch
         {
             // 从不问：直接放行。**仍然记数**——诊断需要知道"这条命令被谁放过了"。
-            ApprovalPolicy.Never => Skip("无人值守预设：不询问审批。"),
+            //
+            // **但未知权限不在此列**：工具说"我不知道自己会碰什么"
+            // （IsKnown=false，MCP 工具一律如此）时，本档**不自行放行**，
+            // 而是把决定交回入口的审批器：控制台会问、AutoApprove 会拒。
+            // "不问"是这一档的意图，"代替入口做决定"不是。
+            // 第一版把 Never 无条件放行，结果比 AutoApproveApprover 还宽松：
+            // 那个专门的自动批准器都仍然拒绝未知权限，而这个预设把 MCP 工具
+            // 一并放过去了。用户选"无人值守"是想少按几次确认，不是想取消这条底线。
+            ApprovalPolicy.Never when request.Permission.IsKnown =>
+                Skip("无人值守预设：不询问审批。"),
+
+            ApprovalPolicy.Never => _inner.RequestApprovalAsync(request, cancellationToken),
 
             // 只问有风险的：与 PermissionPolicyApprover 同一判据。
             ApprovalPolicy.AskOnRisk when IsInert(request.Permission) =>

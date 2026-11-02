@@ -19,6 +19,7 @@ public static class PermissionPresetChecks
         failures += await CheckAsync("preset-unattended-never-asks", UnattendedNeverAsksAsync);
         failures += await CheckAsync("preset-switch-changes-observable-behavior", SwitchChangesBehaviorAsync);
         failures += await CheckAsync("preset-does-not-override-inner-rejection", InnerRejectionSurvivesAsync);
+        failures += await CheckAsync("preset-unattended-still-refuses-unknown-permission", UnattendedUnknownAsync);
         failures += await CheckAsync("preset-ask-always-asks-even-for-inert", AskAlwaysAsksAsync);
         failures += await CheckAsync("preset-unknown-key-throws-loudly", UnknownKeyThrowsAsync);
         failures += await CheckAsync("preset-custom-key-is-derived-not-selectable", CustomKeyAsync);
@@ -109,6 +110,37 @@ public static class PermissionPresetChecks
 
         if (decision.Approved) return "内层拒绝被预设放行了";
         return inner.Requests == 1 ? null : "内层没有被调用";
+    }
+
+    /// <summary>
+    /// 无人值守档也要拒绝"未知权限"的工具。
+    /// </summary>
+    /// <remarks>
+    /// <b>第一版这条缺失，而缺陷正落在这里</b>：<c>Never</c> 分支无条件返回
+    /// <c>Allow</c>、从不调用内层。MCP 工具一律 <c>IsKnown = false</c>，
+    /// 于是选中无人值守后它们全部被放行——比专门的 <c>AutoApproveApprover</c>
+    /// 还宽松（那个仍然拒绝未知权限）。
+    ///
+    /// <para>
+    /// 用户选"无人值守"是想少按几次确认，不是想取消
+    /// "不知道自己会碰什么就别动手"这条底线。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> UnattendedUnknownAsync()
+    {
+        var inner = new DenyingApprover();
+        var presets = PermissionPresets.CreateDefault(ApprovalPolicy.Never);
+        var approver = new PresetApprover(inner, presets);
+
+        var decision = await approver.RequestApprovalAsync(
+            Request(ToolAccess.Read, known: false, paths: ["a.txt"]));
+
+        if (decision.Approved)
+            return "无人值守档把未知权限的工具也放行了——那比自动批准更宽松";
+
+        return inner.Requests == 1
+            ? null
+            : $"未知权限应当交给内层判断，实际内层被调用了 {inner.Requests} 次";
     }
 
     /// <summary>AskAlways 连纯内存工具也问。</summary>

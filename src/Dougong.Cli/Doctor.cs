@@ -488,7 +488,7 @@ public static class Doctor
 
         try
         {
-            using var client = ChatClientFactory.Create(config, key, OutboundHttp.Create());
+            using var client = ChatClientFactory.Create(config, key, OutboundHttp.Create(Log.Warning));
             var response = await client.GetResponseAsync(
                 "ping", new ChatOptions { MaxOutputTokens = 1 }, timeout.Token)
                 .ConfigureAwait(false);

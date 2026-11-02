@@ -261,6 +261,19 @@ public static class SkillChecks
         if (text.Contains(env.Root, StringComparison.OrdinalIgnoreCase))
             return "目录文本里出现了绝对路径";
 
+        // **同名冲突时也不能泄漏路径**。第一版这条检查只造了一个技能，
+        // 影子链恒为空，于是"修 ShadowedBy 渲染"时把 root.Path 写了进去
+        // 也照样绿——那正好破坏了同类里"不给绝对路径"的承诺。
+        env.WriteSkillAt(env.UserSkills, "escape-skill", "SKILL.md",
+            "---\ndescription: 用户版\n---\n正文");
+
+        var withShadow = SkillCatalogText.Render(env.Discover());
+        if (withShadow.Contains(env.Root, StringComparison.OrdinalIgnoreCase))
+            return "影子链里出现了绝对路径——会把用户名带进对话并随日志外发";
+
+        if (!withShadow.Contains("user-dsh", StringComparison.Ordinal))
+            return "影子链没有报出来源——用户仍无法知道「我那个为什么没生效」";
+
         return text.Contains("&lt;b&gt;", StringComparison.Ordinal)
             ? null
             : "转义结果不是预期形态";
@@ -279,8 +292,10 @@ public static class SkillChecks
         if (!text.Contains("new SkillTool(", StringComparison.Ordinal))
             return "装配里没有注册 skill 工具";
 
-        if (!text.Contains("Skills = _skills", StringComparison.Ordinal))
-            return "运行时没有拿到技能目录——模型不会知道有哪些技能";
+        // **按分支数验，不只查字符串**：只查"文件里有没有这一句"在
+        // 属性只加进一条返回路径时照样通过，而那正是本能力的真实缺陷形态。
+        if (CheckAssignedOnEveryBranch(text, "Skills") is { } branchFailure)
+            return branchFailure;
 
         // **技能按原始项目扫**：跟着有效目录换会让列表随 cd 变化，
         // 而模型已经加载过的正文不会变，那是不一致。
@@ -298,6 +313,44 @@ public static class SkillChecks
     {
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(new { name }));
         return new ToolInvocation("inv-1", SkillTool.ToolId, document.RootElement.Clone());
+    }
+
+
+    /// <summary>
+    /// 断言某个属性在 <c>CreateRuntime</c> 的<b>每一条</b>返回路径上都赋了值。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么要按分支数，而不是"文件里有没有这个字符串"</b>：
+    /// <c>CreateRuntime</c> 有两条返回（无压缩 / 有压缩），而第一版检查只做
+    /// <c>text.Contains("Skills = _skills")</c>。属性只加在其中一条分支时，
+    /// 字符串依然存在，检查照样通过——实际效果是"REPL 常态下功能不生效"。
+    /// 这正是本项目反复出现的失败模式，所以判定改成"赋值次数 ≥ 返回次数"。
+    /// </remarks>
+    private static string? CheckAssignedOnEveryBranch(string source, string property)
+    {
+        var returns = CountOccurrences(source, "return new LoopAgentRuntime");
+        var assignments = CountOccurrences(source, property + " =");
+
+        if (returns < 2)
+            return $"前提不成立：CreateRuntime 只找到 {returns} 条返回路径（预期至少 2 条）";
+
+        return assignments >= returns
+            ? null
+            : $"{property} 只在 {assignments} 条返回路径上赋值，而 CreateRuntime 有 {returns} 条——"
+                + "某条分支上功能不生效";
+    }
+
+    private static int CountOccurrences(string text, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
     }
 
     private static string FindRepoRoot()

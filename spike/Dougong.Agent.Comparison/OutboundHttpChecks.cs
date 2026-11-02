@@ -20,7 +20,7 @@ public static class OutboundHttpChecks
         var failures = 0;
         failures += await CheckAsync("proxy-is-read-from-environment", ReadsEnvironmentAsync);
         failures += await CheckAsync("proxy-https-wins-over-http", PriorityAsync);
-        failures += await CheckAsync("proxy-invalid-value-blocks-instead-of-direct", InvalidBlocksAsync);
+        failures += await CheckAsync("proxy-invalid-value-really-blocks-traffic", InvalidBlocksForRealAsync);
         failures += await CheckAsync("proxy-no-proxy-bypasses-by-suffix", NoProxyAsync);
         failures += await CheckAsync("proxy-no-proxy-is-escaped-not-raw-regex", NoProxyEscapingAsync);
         failures += await CheckAsync("proxy-absent-falls-back-to-system-default", AbsentAsync);
@@ -74,15 +74,23 @@ public static class OutboundHttpChecks
     }
 
     /// <summary>
-    /// 非法的代理值必须**拦住**，不能悄悄直连。
+    /// 非法的代理值必须**真的拦住流量**。
     /// </summary>
     /// <remarks>
-    /// <b>这是本能力的安全边界</b>：用户设了代理说明流量必须走代理。
-    /// 静默直连会让内部请求发到外网，而失败至少是可见的。
+    /// <b>这是本能力的安全边界，也是第一版检查最严重的失误</b>：
+    /// 当时只验对象形态（<c>IsBypassed == false</c> 且 <c>GetProxy == null</c>），
+    /// 并断言"于是请求在 handler 层失败"。而 .NET 的语义恰好相反——
+    /// <c>GetProxy</c> 返回 null 表示**该请求不走代理、直接发给目标**。
+    /// 所以那条检查在缺陷存在时照样通过，把"直连"判成了"拦住"。
+    ///
+    /// <para>
+    /// <b>现在起一个真实的本地服务来验</b>：把负责拦人的代理装进 handler，
+    /// 发一个请求给本机端口。若请求成功（且服务端真的收到了连接），
+    /// 就说明流量直连了——那就是缺陷。
+    /// </para>
     /// </remarks>
-    private static async Task<string?> InvalidBlocksAsync()
+    private static async Task<string?> InvalidBlocksForRealAsync()
     {
-        await Task.CompletedTask;
         using var env = new Env();
         env.Set("HTTPS_PROXY", "这不是一个地址");
 
@@ -95,13 +103,54 @@ public static class OutboundHttpChecks
         if (warnings.Count == 0)
             return "非法值没有给出警告，用户无从知道代理没生效";
 
-        // 拦住的形态：IsBypassed 为 false 且 GetProxy 返回 null → 请求在 handler 层失败。
-        if (proxy.IsBypassed(new Uri("https://api.example.com")))
-            return "非法值被判为绕过代理——那等于直连";
+        // 起本地服务，观察它到底有没有收到连接。
+        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var accepted = 0;
 
-        return proxy.GetProxy(new Uri("https://api.example.com")) is null
-            ? null
-            : "非法值仍给出了一个代理地址";
+        var acceptor = Task.Run(async () =>
+        {
+            try
+            {
+                using var client = await listener.AcceptTcpClientAsync();
+                Interlocked.Increment(ref accepted);
+                var stream = client.GetStream();
+                var buffer = new byte[2048];
+                // 这里只等客户端把请求头发过来，读多少无所谓；
+                // 用显式丢弃令牌避免 CA2022（本仓库把警告当错误）。
+                _ = await stream.ReadAsync(buffer.AsMemory(), CancellationToken.None);
+                var body = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                await stream.WriteAsync(System.Text.Encoding.ASCII.GetBytes(body));
+            }
+            catch (Exception)
+            {
+                // 没有连接进来就是我们要的结果。
+            }
+        });
+
+        using var handler = new SocketsHttpHandler { Proxy = proxy };
+        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
+
+        var reached = false;
+        try
+        {
+            using var response = await http.GetAsync($"http://127.0.0.1:{port}/");
+            reached = response.IsSuccessStatusCode;
+        }
+        catch (Exception)
+        {
+            // 预期：连不上代理，请求失败。
+        }
+
+        listener.Stop();
+        await Task.WhenAny(acceptor, Task.Delay(500));
+
+        if (reached || accepted > 0)
+            return $"非法代理值没有拦住流量：请求成功={reached}，目标服务收到连接={accepted}"
+                + "——等于悄悄直连，流量会走错出口";
+
+        return null;
     }
 
     /// <summary>NO_PROXY 里的主机不走代理。</summary>
@@ -184,7 +233,11 @@ public static class OutboundHttpChecks
         {
             var text = File.ReadAllText(file);
             var calls = CountOccurrences(text, "ChatClientFactory.Create(");
-            var withProxy = CountOccurrences(text, "OutboundHttp.Create()");
+
+            // **按前缀数，不按 "OutboundHttp.Create()" 数**：后者在把警告
+            // 接出去之后变成了 `OutboundHttp.Create(Log.Warning)`，
+            // 而第一版是精确匹配空括号——改一行调用就把这条检查变成永久红。
+            var withProxy = CountOccurrences(text, "OutboundHttp.Create(");
 
             // 每个构造点都该带一个代理客户端。少一处就是"那条路径不走代理"。
             if (withProxy < calls)

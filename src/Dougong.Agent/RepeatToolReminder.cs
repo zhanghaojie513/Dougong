@@ -100,9 +100,14 @@ public sealed class RepeatToolReminder
         ValidateThresholds(values);
 
         _thresholds = [.. values.Distinct().Order()];
-        _previewChars = argumentsPreviewChars > 0
-            ? argumentsPreviewChars
-            : DefaultArgumentsPreviewChars;
+        // **与阈值同一个判据：配置错就炸**。第一版这里悄悄换成默认值，
+        // 而本类的原则是"静默回退会让配置看起来生效了"。
+        if (argumentsPreviewChars <= 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(argumentsPreviewChars), argumentsPreviewChars,
+                "参数预览上限必须为正。");
+
+        _previewChars = argumentsPreviewChars;
     }
 
     /// <summary>当前连续重复次数，供诊断。</summary>
@@ -126,7 +131,7 @@ public sealed class RepeatToolReminder
     /// 记录一次调用，返回该发出的提醒；不需要提醒时返回 null。
     /// </summary>
     /// <param name="toolId">工具 ID。</param>
-    /// <param name="arguments">规范化后的参数（完整，未截断）。</param>
+    /// <param name="arguments">调用参数（完整，未截断；不经过规范化）。</param>
     public RepeatReminder? Observe(string toolId, JsonElement arguments)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolId);
@@ -158,11 +163,15 @@ public sealed class RepeatToolReminder
     /// 键：工具 + 完整规范化参数。
     /// </summary>
     /// <remarks>
-    /// <b>用原文而不是解析后的结构</b>：两个语义相同、空格不同的 JSON 会被算成
-    /// 两次不同的调用。这是刻意的保守——把"看起来一样"判成重复会让模型
-    /// 收到一条错误的提醒，而漏报只是少一次提示。参数在进入这里之前
-    /// 已经过 <c>ArgumentCanonicalizer</c> 的规范化，所以主要差异
-    /// （键序、空白）已经被消掉了。
+    /// <b>用原文，且不经过规范化</b>：两个语义相同、键序或空白不同的 JSON
+    /// 会被算成两次不同的调用。这是刻意的保守——把"看起来一样"判成重复
+    /// 会让模型收到一条错误的提醒，而漏报只是少一次提示。
+    /// <para>
+    /// <b>第一版注释说"已经过 ArgumentCanonicalizer 规范化、键序空白已消掉"，
+    /// 那是错的</b>：那个类只用于审批摘要（<c>ToolDispatcher</c> 里三处），
+    /// 运行时的重复检测拿到的是 <c>ParseArguments</c> 的原始结果。
+    /// 所以键序不同的同一个调用**不会**被算成重复——这是当前的真实行为。
+    /// </para>
     /// </remarks>
     private static string BuildKey(string toolId, JsonElement arguments)
     {

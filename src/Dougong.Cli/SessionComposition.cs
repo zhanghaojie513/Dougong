@@ -472,9 +472,14 @@ public sealed class SessionComposition : IDisposable
         // 已知无访问的工具（如 ask_user）不产生审批项：让用户先批准"允许提问"、
         // 再看到问题，等于把一次交互拆成两次。策略收得很窄，见 PermissionPolicyApprover。
         // 显式走 accessor 重载：审批器与存储都经访问点，避免重载解析产生歧义。
-        // 预设装饰在最外层：它决定"要不要问"，问的方式仍由入口的审批器决定。
-        // 顺序不能反——预设靠内的话，PermissionPolicyApprover 会先放行，
-        // 预设那一档就永远看不到"有风险的调用"。
+        // **预设装饰在内层**（Policy 包 Preset），这一句之前写反了。
+        //
+        // 实际顺序的效果是：PermissionPolicyApprover 先判"这个工具声明为无访问吗"，
+        // 是就直接放行、不再往下问；否则交给 PresetApprover 决定问不问。
+        //
+        // 代价是 PresetApprover 的 AskOnRisk + IsInert 分支在生产里走不到
+        // （外层的判据先命中）。两者判据逐字相同，所以结论一致——
+        // 但这是一处**冗余**，不是"预设决定一切"。如实记在这里。
         var dispatcher = new ToolDispatcher(
             new PermissionPolicyApprover(new PresetApprover(approver, Permissions)) is var policy
                 ? new FixedApproverAccessor(policy) : null,
@@ -732,6 +737,13 @@ public sealed class SessionComposition : IDisposable
             PromptBuilder = promptBuilder,
             Time = CreateTimeContext(),
             Directory = _directory,
+            // **这两项在两条分支上都要写**（与上面 Memory/PromptBuilder 同一道理：
+            // 漏一条返回路径就等于完全没有），而它们曾经只加在非压缩分支上。
+            // REPL 常态传 contextWindow
+            // （`dougong model` 必写该配置），于是技能目录从不注入、
+            // 重复检测从不触发，而组件本身都正常：症状是"功能在，但永远不生效"。
+            Skills = _skills,
+            RepeatDetection = _repeatDetection,
             // 交互场景打开重试：一次瞬时 429 不该结束整轮。
             // SDK 默认不重试（自动化要确定性），这里是我们替用户做的选择。
             Retry = RetryPolicy.Default,

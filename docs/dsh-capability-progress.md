@@ -215,7 +215,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | 状态 | 能力 | 实现方式 | dsh | 我们 | 备注 |
 |---|---|---|---|---|---|
 | ✅ | 计划模式 | `[自有]` | `dsh-plan-mode` | `PlanMode` + `ExitPlanModeTool` + `/plan` | **照 dsh 做**：`exit_plan_mode` 工具**阻塞**等审阅，批准后同一轮继续；`plan` 是完整 Markdown 文档（须 `# 标题`）；走 `AskUser` 通道带 `intent.kind=plan-review`；2026-11-02 |
-| ✅ | 技能提供者注册 | `[自有]` | `dsh-skill*` | `SkillDiscovery` + `SkillTool` | 两种形态（`<name>/SKILL.md` 与 `<name>.md`）；四个根按 rank 合并（项目级压用户级）且记影子链；只注入名字与描述、按需加载正文；`disable-model-invocation` 在目录与加载**两处**都生效；2026-11-03 |
+| ✅ | 技能提供者注册 | `[自有]` | `dsh-skill*` | `SkillDiscovery` + `SkillTool` | 两种形态（`<name>/SKILL.md` 与 `<name>.md`）；三个根按 rank 合并（项目级压用户级），影子链以**来源标签**（不含路径）报出；只注入名字与描述、按需加载正文；`disable-model-invocation` 在目录与加载**两处**都生效；2026-11-03 |
 | ⬜ | 会话内目标 | `[—]` | `dsh-goal*` | — | |
 | ⬜ | 子 agent | `[—]` | `dsh-subagent*` | — | |
 
@@ -396,7 +396,7 @@ P2 有 15 项，按什么顺序做决定了投入产出。
 | 30 | 消息级反馈 | ✅ | `feedback`（13 项） | 桌面端 | 小 |
 | 24 | 会话投影 / 轮次大纲 | ⬜ | — | 宿主各自从日志重算 | 中 |
 | 26 | 重复工具调用提醒 | ✅ | `repeat-reminder`（10 项） | 无 | 小 |
-| 27 | 权限预设 | ✅ | `permission-preset`（10 项） | 无 | 小 |
+| 27 | 权限预设 | ✅ | `permission-preset`（11 项） | 无 | 小 |
 | 25 | 出站代理 | ✅ | `outbound-http`（7 项） | 企业环境 | 小 |
 | 17 | 子 agent 委派 | ⬜ | — | 无 | 大 |
 | 18 | 会话内目标 | ⬜ | — | 无 | 中 |

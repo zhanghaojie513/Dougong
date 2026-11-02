@@ -23,17 +23,22 @@ namespace Dougong.Agent;
 /// </para>
 ///
 /// <para>
-/// <b>扫描顺序照 dsh 的优先级表，但只取我们有的四档</b>：
+/// <b>扫描顺序照 dsh 的优先级表，但只取我们有的三档</b>：
 /// </para>
 /// <list type="table">
 /// <item><term>100 <c>project-dsh</c></term><description><c>&lt;项目&gt;/.dougong/skills</c></description></item>
 /// <item><term>200 <c>project-agents</c></term><description><c>&lt;项目&gt;/.agents/skills</c></description></item>
 /// <item><term>400 <c>user-dsh</c></term><description><c>&lt;dougong home&gt;/skills</c></description></item>
-/// <item><term>500 <c>user-agents</c></term><description><c>&lt;agents home&gt;/skills</c></description></item>
 /// </list>
 /// <para>
 /// <b>没有 <c>custom</c>（300）与 <c>bundled</c>（600）</b>：前者要有配置项，
 /// 后者要有打包产物。等这两样真的出现时再加——加空的配置键比不加更难维护。
+/// <para>
+/// <b>也没有 <c>user-agents</c>（500）</b>：那一档读 <c>~/.agents/skills</c>，
+/// 是另一个工具生态的约定。我们没有那个目录的既定位置，
+/// 加一个"猜出来的"用户级根会让"我这条技能从哪来的"变得说不清。
+/// （复检时删掉了这个根，以及只有它在用的 `CreateDefault`——那是个零调用点的死方法。）
+/// </para>
 /// </para>
 ///
 /// <para>
@@ -70,31 +75,6 @@ public sealed class SkillDiscovery
         _descriptionMaxLength = descriptionMaxLength;
     }
 
-    /// <summary>
-    /// 按装配约定构造：项目级 → 用户级。
-    /// </summary>
-    /// <param name="projectDirectory">原始项目根（<b>不是</b>当前有效目录，见 D-27）。</param>
-    /// <param name="dougongHome">dougong 的用户目录。</param>
-    /// <param name="agentsHome">agents 的用户目录；null 表示没有。</param>
-    public static SkillDiscovery CreateDefault(
-        string projectDirectory, string dougongHome, string? agentsHome = null)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(projectDirectory);
-        ArgumentException.ThrowIfNullOrWhiteSpace(dougongHome);
-
-        var roots = new List<SkillRoot>
-        {
-            new(100, "project-dsh", Path.Combine(projectDirectory, ".dougong", "skills")),
-            new(200, "project-agents", Path.Combine(projectDirectory, ".agents", "skills")),
-            new(400, "user-dsh", Path.Combine(dougongHome, "skills")),
-        };
-
-        if (!string.IsNullOrWhiteSpace(agentsHome))
-            roots.Add(new SkillRoot(500, "user-agents", Path.Combine(agentsHome, "skills")));
-
-        return new SkillDiscovery(roots);
-    }
-
     /// <summary>扫描全部根，返回合并后的目录。</summary>
     /// <remarks>
     /// <b>同名取 rank 最小的那个</b>，并且**整条影子链都记下来**：
@@ -117,7 +97,10 @@ public sealed class SkillDiscovery
                     // 所以这里只记影子，不替换。
                     if (!shadowed.TryGetValue(existing.Name, out var list))
                         shadowed[existing.Name] = list = [];
-                    list.Add($"{root.Path}（rank {root.Rank}）");
+                    // **只记来源标签，不记路径**：这段文本会进模型上下文，
+                    // 而绝对路径含用户名、会随会话日志外发。同一个类的
+                    // SkillCatalogText 承诺"不给正文与绝对路径"，这里不能破例。
+                    list.Add($"{root.Source}（rank {root.Rank}）");
                     continue;
                 }
 
@@ -310,8 +293,12 @@ public sealed record SkillCandidate(SkillSummary Summary, SkillRoot Root, string
 /// <param name="ModelInvocable">模型是否可见/可加载。</param>
 /// <param name="UserInvocable">用户侧入口是否可见。</param>
 /// <param name="ShadowedBy">
-/// 被本项目内更高优先级根遮住的同名技能。
-/// <b>必须在目录里报出来</b>：否则用户会问"我项目里那个为什么没生效"。
+/// 被更高优先级根遮住的同名技能，形式是 <c>来源标签（rank N）</c>。
+/// <b>必须在目录里报出来</b>：否则用户会问"我那个为什么没生效"。
+/// <para>
+/// <b>只放来源标签，不放路径</b>：这段文本会进模型上下文，
+/// 而绝对路径会把用户名带进对话并随日志外发。
+/// </para>
 /// </param>
 public sealed record SkillSummary(
     string Name,
@@ -491,6 +478,19 @@ public static class SkillCatalogText
 
             if (!string.IsNullOrWhiteSpace(skill.WhenToUse))
                 sb.Append("  （何时用：").Append(Escape(skill.WhenToUse)).AppendLine("）");
+
+            // **被遮住的同名技能要说出来**。注释在 SkillSummary.ShadowedBy 上
+            // 写着"必须在目录里报出来，否则用户会问'我项目里那个为什么没生效'"，
+            // 而第一版只把字段填上、没有任何地方读它——承诺与实现脱节。
+            //
+            // 报给模型而不是只报给用户：模型看到"这个名字还有别的来源"，
+            // 在结果不如预期时才会想到去问，而不是默默换一种做法。
+            if (skill.ShadowedBy.Count > 0)
+            {
+                sb.Append("  （同名但优先级更低的来源，未生效：")
+                    .Append(Escape(string.Join("；", skill.ShadowedBy)))
+                    .AppendLine("）");
+            }
         }
 
         return sb.ToString().TrimEnd();

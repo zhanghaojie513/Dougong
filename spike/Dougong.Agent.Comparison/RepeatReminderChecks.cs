@@ -295,9 +295,19 @@ public static class RepeatReminderChecks
         var composition = Path.Combine(root, "src", "Dougong.Cli", "SessionComposition.cs");
         if (!File.Exists(composition)) return $"找不到装配：{composition}";
 
-        return File.ReadAllText(composition).Contains("RepeatDetection = _repeatDetection", StringComparison.Ordinal)
+        // **按分支数验，不只查字符串**：第一版只做 Contains，
+        // 而 RepeatDetection 曾只加进 CreateRuntime 的一条返回路径
+        // （REPL 常态走的是另一条），检查照样全绿。
+        var source = File.ReadAllText(composition);
+        var returns = CountOccurrences(source, "return new LoopAgentRuntime");
+        var assignments = CountOccurrences(source, "RepeatDetection =");
+
+        if (returns < 2)
+            return $"前提不成立：CreateRuntime 只找到 {returns} 条返回路径";
+
+        return assignments >= returns
             ? null
-            : "装配里没有接上重复检测";
+            : $"RepeatDetection 只在 {assignments} 条返回路径上赋值，而共 {returns} 条——某条分支上提醒不会触发";
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────
@@ -366,6 +376,19 @@ public static class RepeatReminderChecks
         {
             return true;
         }
+    }
+
+    private static int CountOccurrences(string text, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
     }
 
     private static string FindRepoRoot()
