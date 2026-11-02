@@ -21,7 +21,7 @@
 
 ## [未发布]
 
-**P2：后台作业、计划模式、文件引用、消息级反馈、会话内换目录、技能、拦截钩子、重复调用提醒。**
+**P2：后台作业、计划模式、文件引用、消息级反馈、会话内换目录、技能、拦截钩子、重复调用提醒、权限预设。**
 
 ### Added
 
@@ -37,6 +37,10 @@
   经 `AskUser` 通道带 `intent.kind=plan-review` 送出。
 - **`FileReferenceIndex`**：`@file` 补全。只返回工作区内的相对路径、不读文件内容
   （dsh 契约原话）；按深度/长度/字典序稳定排序；不越出工作区、跳过噪声目录。
+- **`PermissionPresets` + `PresetApprover`**：把审批策略打包成具名档
+  （`interactive` / `unattended`），`/permission` 切换、`/permission <键>` 生效。
+  `custom` 是派生值、不能选；预设不覆盖内层审批器的拒绝。
+  **只打包审批一维，不含沙箱**——我们没有沙箱，描述里如实写明。
 - **`RepeatToolReminder`**：检测同一调用被连续重复，并给模型一条提醒。
   **只提醒，不阻止**；按"连续相同（工具 + 完整参数）"计数，默认在第 3/5/8 次提醒；
   `todo_write` 等透明工具既不计数也不清零；判定用完整参数、提醒里引用参数截断到 500 字。
@@ -82,6 +86,10 @@
   我们不这么做，因为**加新记录类型会让旧程序在 `Enum.Parse<StoreRecordKind>`
   抛异常、整个会话打不开**。代价是反馈不随会话文件一起分发，需要单独带走
   `<session>.jsonl.feedback`。见 `porting-differences.md` D-24。
+- **权限预设不含沙箱维**：dsh 的预设是"沙箱模式 + 审批策略"两件套，我们只有审批。
+  因此键名刻意不用 dsh 的 `workspace-write` / `danger-full-access`——那两个名字在
+  描述沙箱范围。见 D-29。
+- **预设选择不持久化**：重开会话回到默认档（安全的缺省）。多对一时分不清用户选的是哪个。
 - **重复提醒没有 include/exclude 配置**：透明工具是固定集合（`todo_write`、
   `working_directory`、`skill`）。等出现"某个工具不该被算进去"的具体案例再加。见 D-28。
 - **拦截钩子不兼容 Claude Code / Codex 的 `hooks.json`**：只做类型化拦截点这一本体，

@@ -697,11 +697,62 @@ public static class Program
                 return true;
             }
 
+            // 权限预设：把审批策略打包成"要多严格"的一档。
+            case "/permission":
+            {
+                Output.Line($"  当前策略：{Describe(composition.Permissions.Current)}"
+                    + $"（预设 {composition.Permissions.CurrentKey}）");
+                Output.Line();
+                foreach (var option in composition.Permissions.Options())
+                {
+                    var marker = option.Value == composition.Permissions.CurrentKey ? "→ " : "  ";
+                    Output.Line($"  {marker}{option.Value,-12} {option.Name}"
+                        + (option.Selectable ? string.Empty : "（仅显示）"));
+                    if (option.Description is { Length: > 0 } description)
+                        Output.Line($"      {description}");
+                }
+
+                Output.Line();
+                Output.Line("  切换：/permission <预设键>");
+                return true;
+            }
+
             default:
+                // `/permission <键>` 带参数：切换。
+                if (input.StartsWith("/permission ", StringComparison.Ordinal))
+                {
+                    var key = input["/permission ".Length..].Trim();
+                    try
+                    {
+                        var policy = composition.Permissions.SwitchAsync(key)
+                            .GetAwaiter().GetResult();
+                        Output.Line($"  已切到 {key}：{Describe(policy)}");
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        Output.Line($"  {ex.Message}");
+                    }
+
+                    return true;
+                }
+
                 Output.Line($"  未知命令：{input}");
                 return true;
         }
     }
+
+    /// <summary>把审批策略描述成一句人话。</summary>
+    /// <remarks>
+    /// <b>显示枚举名没用</b>：用户不认识 <c>AskOnRisk</c>，
+    /// 而他真正要知道的是"哪些操作会被问"。
+    /// </remarks>
+    private static string Describe(ApprovalPolicy policy) => policy switch
+    {
+        ApprovalPolicy.AskAlways => "每次调用都询问",
+        ApprovalPolicy.AskOnRisk => "写操作与命令询问，纯内存工具跳过",
+        ApprovalPolicy.Never => "不询问任何审批",
+        _ => policy.ToString(),
+    };
 
     /// <summary>
     /// <c>/model</c>：列出或切换 provider。

@@ -33,6 +33,15 @@ public sealed class SessionComposition : IDisposable
     private readonly PlanMode _planMode = new();
 
     /// <summary>
+    /// 权限预设：当前审批策略与可选档位。
+    /// </summary>
+    /// <remarks>
+    /// <b>会话级</b>：用户切一次，跨轮保持。它不落盘——重开会话回到默认档，
+    /// 那是安全的缺省（不会因为上次选了"无人值守"而这次悄悄不问了）。
+    /// </remarks>
+    public PermissionPresets Permissions { get; }
+
+    /// <summary>
     /// 会话的有效工作目录。**会话级**：换过之后跨轮保持。
     /// </summary>
     /// <remarks>
@@ -107,6 +116,13 @@ public sealed class SessionComposition : IDisposable
         MemoryStore = memoryStore;
         _directoryStore = directoryStore;
         _skills = skills;
+
+        // 默认档取决于入口能不能问人：控制台与 ACP 都有人答，
+        // 自动批准模式下不问。**默认值在这里定，而不是让每个入口自己记着传**。
+        Permissions = PermissionPresets.CreateDefault(
+            approver is AutoApproveApprover
+                ? ApprovalPolicy.Never
+                : ApprovalPolicy.AskOnRisk);
 
         // **原始项目永远是构造时的工作区**，恢复的有效目录只影响相对路径起点。
         // 恢复的目录已不存在时退回原始项目——一个指向已删目录的会话
@@ -456,8 +472,11 @@ public sealed class SessionComposition : IDisposable
         // 已知无访问的工具（如 ask_user）不产生审批项：让用户先批准"允许提问"、
         // 再看到问题，等于把一次交互拆成两次。策略收得很窄，见 PermissionPolicyApprover。
         // 显式走 accessor 重载：审批器与存储都经访问点，避免重载解析产生歧义。
+        // 预设装饰在最外层：它决定"要不要问"，问的方式仍由入口的审批器决定。
+        // 顺序不能反——预设靠内的话，PermissionPolicyApprover 会先放行，
+        // 预设那一档就永远看不到"有风险的调用"。
         var dispatcher = new ToolDispatcher(
-            new PermissionPolicyApprover(approver) is var policy
+            new PermissionPolicyApprover(new PresetApprover(approver, Permissions)) is var policy
                 ? new FixedApproverAccessor(policy) : null,
             new ToolResourceGate(),
             _sessionId, "turn-1", _workspace,

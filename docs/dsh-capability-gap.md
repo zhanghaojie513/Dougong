@@ -236,7 +236,7 @@ Roslyn 只解析 C#。把 Roslyn 写进 SDK 恰好是把 harness 绑定到单一
 |---|---|---|---|
 | `dsh-user-approval` | 一次性审批，fail-closed，审批/请求瀑布 | `IToolApprover` + `PermissionPolicyApprover` + `ApprovalLog`（含记录持久化） | **已有** |
 | `dsh-user-questions` | 向人类提问的 seam | `AcpElicitationTool`（仅 ACP） | **部分**：REPL 侧没有等价物 |
-| `dsh-permission-presets` | 权限预设（沙箱 + 审批打包成一个选项） | **无** | **缺** |
+| `dsh-permission-presets` | 权限预设（沙箱 + 审批打包成一个选项） | `PermissionPresets` + `PresetApprover` | **部分**：打包了审批一维，**无沙箱维**（我们没有沙箱）；描述里如实说明，见 D-29 |
 
 **注**：dsh 没有独立的"审批持久化"包，审批记录拼在 `dsh-user-approval`
 与 `dsh-client-ui-approval` 里。我们的 `ApprovalLog` 是独立实现，
@@ -495,14 +495,14 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | 24 | 会话投影 / 轮次大纲 | `dsh-session-projection*` | |
 | 25 | 出站代理 | `dsh-http-proxy` | |
 | ~~26~~ | ~~重复工具调用提醒~~ | `dsh-repeat-tool-reminder` | **✅ 2026-11-03**：`RepeatToolReminder` |
-| 27 | 权限预设 | `dsh-permission-presets` | |
+| ~~27~~ | ~~权限预设~~ | `dsh-permission-presets` | **✅ 2026-11-03**：`PermissionPresets`（仅审批维） |
 | ~~28~~ | ~~文件引用 `@file`~~ | `dsh-file-reference*` | **✅ 2026-11-02**：`FileReferenceIndex` |
 | ~~29~~ | ~~会话内切换工作目录~~ | `dsh-session/working-directory` | **✅ 2026-11-03**：`WorkingDirectory` + `working_directory` 工具 |
 | ~~30~~ | ~~消息级反馈（正负 + 分类，进日志不进模型）~~ | `dsh-feedback/message-feedback` | **✅ 2026-11-02**：`MessageFeedback` + `JsonlMessageFeedbackStore`（伴生文件，不碰会话日志） |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 8 项 + 1 项部分（2026-11-03）**。八项的关键取舍与复核修掉的
-缺陷记在 `porting-differences.md` D-19 至 D-22、D-24 至 D-28。
+**P2 已完成 9 项 + 1 项部分（2026-11-03）**。九项的关键取舍与复核修掉的
+缺陷记在 `porting-differences.md` D-19 至 D-22、D-24 至 D-29。
 
 ### 明确不做
 

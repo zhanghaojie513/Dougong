@@ -56,6 +56,10 @@ public static class BareHoldChecks
             "装饰器：策略包装是透明的，它转发给内层；内层审批器本身由宿主或内核提供，"
             + "装饰器不延长其生命周期。",
 
+        ["PresetApprover._inner"] =
+            "装饰器：与 PermissionPolicyApprover 同一形态——只决定'要不要问'，"
+            + "问的方式转发给内层；它不延长内层审批器的生命周期，替换发生在装配层。",
+
         ["SessionComposition._approver"] =
             "装配器：它不参与运行，只在构造 dispatcher/runtime 时把审批器交出去；"
             + "内核路径下该字段未被使用（改用了内核解析的适配器）。",
