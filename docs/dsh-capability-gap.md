@@ -483,23 +483,26 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 
 ### P2 — 有更好，但可以等
 
-| # | 缺什么 | 对应 dsh |
-|---|---|---|
-| 17 | 子 agent 委派 | `dsh-subagent*` |
-| 18 | 会话内目标（goal） | `dsh-goal*` |
-| ~~19~~ | ~~计划模式（带审阅退出）~~ | `dsh-plan-mode` | **✅ 2026-11-02**：`PlanMode` + `/plan` |
+| # | 缺什么 | 对应 dsh | 状态 |
+|---|---|---|---|
+| 17 | 子 agent 委派 | `dsh-subagent*` | |
+| 18 | 会话内目标（goal） | `dsh-goal*` | |
+| ~~19~~ | ~~计划模式（带审阅退出）~~ | `dsh-plan-mode` | **✅ 2026-11-02**：`exit_plan_mode` 阻塞审阅 |
 | ~~20~~ | ~~后台任务~~ | `dsh-jobs*` | **✅ 2026-11-02**：`JobRegistry` + 四个工具 |
-| 21 | 持久 shell / PTY | `dsh-terminal*` |
-| 22 | 技能提供者 | `dsh-skill*` |
-| 23 | 拦截钩子 | `dsh-hook-protocol` |
-| 24 | 会话投影 / 轮次大纲 | `dsh-session-projection*` |
-| 25 | 出站代理 | `dsh-http-proxy` |
-| 26 | 重复工具调用提醒 | `dsh-repeat-tool-reminder` |
-| 27 | 权限预设 | `dsh-permission-presets` |
-| 28 | 文件引用 `@file` | `dsh-file-reference*` |
-| 29 | 会话内切换工作目录 | `dsh-session/working-directory` |
-| 30 | 消息级反馈（正负 + 分类，进日志不进模型） | `dsh-feedback/message-feedback` |
-| 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` |
+| 21 | 持久 shell / PTY | `dsh-terminal*` | **🟡 shell 已完成**（`PersistentShell`）；**PTY 未做** |
+| 22 | 技能提供者 | `dsh-skill*` | |
+| 23 | 拦截钩子 | `dsh-hook-protocol` | |
+| 24 | 会话投影 / 轮次大纲 | `dsh-session-projection*` | |
+| 25 | 出站代理 | `dsh-http-proxy` | |
+| 26 | 重复工具调用提醒 | `dsh-repeat-tool-reminder` | |
+| 27 | 权限预设 | `dsh-permission-presets` | |
+| 28 | 文件引用 `@file` | `dsh-file-reference*` | |
+| 29 | 会话内切换工作目录 | `dsh-session/working-directory` | |
+| 30 | 消息级反馈（正负 + 分类，进日志不进模型） | `dsh-feedback/message-feedback` | |
+| 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
+
+**P2 已完成 2 项 + 1 项部分（2026-11-02）**。三项的关键取舍与复核修掉的
+缺陷记在 `porting-differences.md` D-19 至 D-22。
 
 ### 明确不做
 
