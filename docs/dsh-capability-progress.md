@@ -164,7 +164,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | ✅ | shell 执行 seam | `[自有]` | `dsh-shell` | `IShellExecutor` + `LocalShellExecutor` | 2026-10-31 补齐；换沙箱只换实现，工具不改 |
 | 🟡 | shell | `[自有]` | `dsh-tool-bash` | `ShellTool` + `ShellCommandPolicy` | 有**命令策略层**（危险命令/凭据读取/`cd` 越界）；**不是沙箱**，有意绕过仍可行；无持久、无后台 |
 | ⬜ | PowerShell | `[—]` | `dsh-tool-pwsh*` | — | |
-| ⬜ | LSP 代码导航 | `[—]` | `dsh-lsp` / `-stdio` / `tool-lsp` | — | 定义/引用/实现/悬停；grep 的语义版本，文本搜索给不出"跳到定义" |
+| ⬜ | LSP 代码导航 | `[—]` | `dsh-lsp` / `-stdio` / `tool-lsp` | — | 定义/引用/实现/悬停。**是优化不是缺口**：编辑闭环不依赖它，只在"重构找全部引用"与"重载/同名方法"上有增量。见 D-10 |
 | ✅ | 工具超时 | `[自有]` | `dsh-tool-call-timeout-policy` | `ToolExecutionPlan.Timeout` + `ToolDispatcher.DefaultToolTimeout` | 逐工具上限优先；`TimedOut` 与"用户取消"分开；超时算已执行 |
 | ✅ | 向人类提问 | `[自有]` | `dsh-tool-ask-user` | `AskUser`（语义）+ `AcpElicitationTool` / `ConsoleElicitationTool`（传输） | 语义层下沉到 Agent，两个宿主共用；四态结果分开（答/拒/取消/不可用）；2026-11-02 |
 | ⬜ | 技能加载 | `[—]` | `dsh-tool-skill` | — | |

@@ -204,8 +204,11 @@ dsh 有三个包：`lsp`（seam）、`lsp-stdio`（传输）、`tool-lsp`（模�
 Roslyn 只解析 C#。把 Roslyn 写进 SDK 恰好是把 harness 绑定到单一语言，
 与 `goal.md` 的定位相反。
 
-**不做 LSP 的理由**不是"用不上"，是"还没有真实的定位错误报告"加上
-"依赖用户装 language server"。见 `porting-differences.md` D-10。
+**不做 LSP 的理由**：它**是效率优化，不是能力缺口**——没有它模型照样改代码，
+`glob/grep → read_file → edit_file → 验证` 这条闭环不依赖语义层。
+它只在两类任务上有增量：重构（找全部实现与调用点）与重载/同名方法。
+而它的规模接近一个子系统的三分之一，还要用户自己装 language server。
+所以等**具体的**低效场景出现再启动。完整论证见 `porting-differences.md` D-10。
 
 ### 工具归属错位（2026-10-31 已解决，留作记录）
 
@@ -468,10 +471,15 @@ HostProtocolContract.RegisterDerivedType<ClientCommand>(
 **P1 已完成九项（2026-11-02）**，只剩 LSP 导航（见下方定位说明）。
 已完成项的关键取舍记在 `porting-differences.md` §四 D-11 至 D-18。
 
-**关于 LSP 的定位**：它是 §五 里"扩展能力"而非"基本闭环"——但它不是"不做"。
-本项目的定位是**语言无关的 harness**，所以真正的导航能力只能是 LSP（跨语言协议），
-不能是 Roslyn（只解析 C#）。不做的理由是"还没有真实的定位错误报告"与
-"依赖用户装 language server"，**不是"用不上"**。见 `porting-differences.md` D-10。
+**关于 LSP 的定位**：**它是效率优化，不是能力缺口**——没有它模型照样改代码。
+编辑闭环是 `glob/grep → read_file → edit_file → 验证`，不依赖语义层；
+LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增量，而连它在这些
+任务上漏掉东西也是可自愈的（编译不过，模型下一轮会补）。
+
+它规模接近一个子系统的三分之一，还要用户自己装 language server，所以等
+**具体的**低效场景出现再启动。形态必须是 LSP（跨语言协议）而非 Roslyn
+（只解析 C#）——后者会把 harness 绑定到单一语言，与定位冲突。
+完整论证见 `porting-differences.md` D-10。
 
 ### P2 — 有更好，但可以等
 
