@@ -88,6 +88,7 @@ public static class Program
         "web-fetch",
         "workspace-changes",
         "jobs",
+        "persistent-shell",
         "workspace-lock",
     ];
 
@@ -280,6 +281,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "jobs")
             return await JobChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "persistent-shell")
+            return await PersistentShellChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

@@ -27,6 +27,7 @@ public sealed class SessionComposition : IDisposable
     private readonly bool _shellEnabled;
     // 作业注册表要随会话释放：留着会让子进程变成孤儿。
     private JobRegistry? _jobRegistry;
+    private PersistentShell? _persistentShell;
     private readonly int _contextWindow;
     private readonly int _requestOutputReserve;
     private readonly IReadOnlyList<McpServerSpec> _mcpServers;
@@ -388,6 +389,11 @@ public sealed class SessionComposition : IDisposable
         // 分开开关会让用户以为"禁了 shell 就安全了"，而作业照样能执行命令。
         if (_shellEnabled)
         {
+            // 持久 shell：与 shell 工具同一开关（它做的是同一件事的另一形态）。
+            // **必须随会话释放**：它持有子进程句柄。
+            _persistentShell = new PersistentShell(_workspace);
+            dispatcher.Register(new PersistentShellTool(_persistentShell));
+
             var jobs = new JobRegistry(_workspace);
             _jobRegistry = jobs;
             dispatcher.Register(new JobStartTool(jobs, _sessionId));
@@ -479,8 +485,12 @@ public sealed class SessionComposition : IDisposable
     /// </remarks>
     public void Dispose()
     {
+        // 顺序无关：两者互不依赖，都是"结束自己持有的子进程"。
         _jobRegistry?.Dispose();
         _jobRegistry = null;
+
+        _persistentShell?.Dispose();
+        _persistentShell = null;
     }
 
     /// <summary>

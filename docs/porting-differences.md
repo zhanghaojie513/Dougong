@@ -110,6 +110,7 @@
 | 每个 CLI 参数都能在帮助里找到 | `doctor`：`every-cli-flag-appears-in-help` | 从 `--help` 删掉 `--changes` → 报"没有出现在 --help 里"；白名单加 `--stats` 但不写进 help → 同样报错（检查直接引用参数解析用的清单，不另列一份） |
 | 检查测的是当前代码而非陈旧副本 | `terminal`：`comparison-uses-release-cli-assembly` | 把检查目录里的 `Dougong.Cli.dll` 时间戳改成 2020 年 → 报"比 Release 旧……任何负控结论都不作数"；恢复后转绿 |
 | 后台作业游标与环形缓冲守恒 | `jobs`：`job-start-returns-without-waiting`、`job-output-respects-cursor`、`job-output-reports-discarded-bytes`、`job-caps-concurrency-per-owner`、`job-limit-is-per-owner-not-global`、`job-unknown-id-is-not-silent`、`job-registry-dispose-kills-children`、`job-tool-declares-execute-permission`、`job-stop-kills-grandchildren-on-posix` | `OmittedBytes` 恒 0 → `job-output-reports-discarded-bytes` 报"总输出 7200 字节却报 omitted=0"；并发上限改全局 → `job-limit-is-per-owner-not-global` 失败 |
+| 持久 shell 的状态与输出干净度 | `persistent-shell`：`shell-keeps-cwd-across-commands`、`shell-exit-code-is-this-command`、`shell-failure-does-not-break-session`、`shell-output-has-no-prompt-noise`、`shell-reports-current-directory`、`shell-times-out-instead-of-hanging`、`shell-dispose-terminates-process`、`shell-reuses-one-process` | 每条命令重建进程 → 3 项同时失败（cd 失效、目录报错、变量丢失） |
 | 每个会被显示的阶段都有文案 | `terminal`：`every-phase-has-visible-label`、`binary-is-not-stale` | 新增 `Retrying` 时若只加枚举不加文案 → `every-phase-has-visible-label` 报"阶段 Retrying 会被显示却没有文案"；改源码不重建 Release → `binary-is-not-stale` 报"跑的是旧构建" |
 | 压缩比例默认值与可配置性 | `compaction`、`wiring`、`doctor` | 把 `DefaultTriggerRatio` 改成 0.99 → `compaction` 套的触发点检查失败；给 `--doctor` 传入 `retain >= trigger` → `doctor` 套的非法规格检查失败 |
 
@@ -360,6 +361,20 @@ home 决定"所有状态放哪一整个根"，`memory_dir` 决定"记忆是否�
 | **不做持久化** | 作业活在进程内，进程退出就没了。理由：把「进程内句柄」落盘再恢复是不可能的——重启后那些子进程已经不存在。这点写进工具描述，因为模型会合理假设"我启动的东西还在"。 |
 | **验证** | `jobs` 套 10 项；2 组负控见 §三。其中进程树那条在 Windows 上跳过、在 Linux/CI 上真跑。 |
 | **源码位置** | `src/Dougong.Agent/JobRegistry.cs`、`src/Dougong.Agent/JobTools.cs` |
+
+### D-20 持久 shell 用管道，不做 PTY
+
+| | |
+|---|---|
+| **哪不一样** | dsh 的 `dsh-terminal-bash` 是真 PTY（ConPTY / forkpty），带窗口大小、信号、作业控制。我们用普通管道，只保证"状态跨命令保留"。 |
+| **为什么模型不需要 PTY** | 模型不渲染。它要的是"先 cd 再执行"这类状态保留，不需要光标、ANSI 屏幕控制、IME。PTY 是给**终端 UI** 的——桌面端那个标签页要跑 vim、top，那是另一件事。 |
+| **因此两项分开** | 序号 21 记的是"持久 shell / PTY"两件事。**shell 部分已完成**（`PersistentShell` + `shell_session` 工具）；PTY 仍未做，等桌面端 P8f。把两者算成一项会让"已完成"看起来比实际多。 |
+| **管道模式的真实代价** | 没有作业控制：`vim`/`top`/`less` 会挂住或行为异常，`Ctrl+C` 语义无法传递，部分工具会因无 TTY 切到非交互模式（通常好，但不总是）。这些写进工具描述，否则模型会拿它跑交互式命令然后卡在超时上。 |
+| **怎么判断命令结束** | 管道模式没有提示符可解析。做法是**分两行发**：第一行命令，第二行 `echo <哨兵>:$?`（Windows 用 `!errorlevel!` + `/V:ON`）。顺序不能反，也不能合成一行。 |
+| **踩过的三个坑** | ① `prompt $` 写在 `_stdin` 赋值之前 → 从未生效，提示符混进输出；② Drain 线程在发送之后才启动 → 哨兵永远等不到，实测首条命令耗时 3049ms（修好后 75ms）；③ `WaitForBarrier` 截断后又多了一次 `Clear` → 把哨兵之后的输出也丢了。 |
+| **一处没能验证的断言** | 实现用 `!errorlevel!` 并开 `/V:ON`，但**检查抓不到它与 `%errorlevel%` 的差别**：实测两者分两行发时行为相同（`%errorlevel%` 在每行新输入时解析，正好取到上一行）。差别只在同一行用 `&` 串联时出现。所以这个决定是对的（防将来改回单行串联），但**检查不证明它必要**——如实记录，不算已验证。 |
+| **验证** | `persistent-shell` 套 8 项；1 组负控见 §三。 |
+| **源码位置** | `src/Dougong.Agent/PersistentShell.cs`、`src/Dougong.Agent/PersistentShellTool.cs` |
 
 ## 五、这份台账的边界
 
