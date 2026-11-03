@@ -383,6 +383,7 @@ home 决定"所有状态放哪一整个根"，`memory_dir` 决定"记忆是否�
 | **踩过的三个坑** | ① `prompt $` 写在 `_stdin` 赋值之前 → 从未生效，提示符混进输出；② Drain 线程在发送之后才启动 → 哨兵永远等不到，实测首条命令耗时 3049ms（修好后 75ms）；③ `WaitForBarrier` 截断后又多了一次 `Clear` → 把哨兵之后的输出也丢了。 |
 | **超时必须重启 shell（复核修的）** | 第一版超时后不清残留，于是**后续每条命令都返回同一条超时消息**——会话看起来"坏了"，用户唯一能做的重启整个程序。现在超时即 `Restart()`，诊断里说明 cd/export 状态已丢。代价是有，但比"永久不可用"好得多。 |
 | **一处没能验证的断言** | 实现用 `!errorlevel!` 并开 `/V:ON`，但**检查抓不到它与 `%errorlevel%` 的差别**：实测两者分两行发时行为相同（`%errorlevel%` 在每行新输入时解析，正好取到上一行）。差别只在同一行用 `&` 串联时出现。所以这个决定是对的（防将来改回单行串联），但**检查不证明它必要**——如实记录，不算已验证。 |
+| **PTY 判为不做（2026-11-03 复核）** | 原先 P2 把「持久 shell / PTY」记成一项、标 `🟡`，并在排序依据里写"唯一有硬等待方的是 PTY"。复核发现那是把两件不同的事捆在一起：持久 shell 是**模型**用的（工具调用保留 cd/export），PTY 是**人**用的（终端标签页跑 vim/top）。`architecture.md` §6.6 原话是"SDK 侧的 shell 工具与上述 PtyHost 是两套东西"。三条独立依据都指向桌面端：§6.1 把 `DougongDesktop.PtyHost` 列为与 `AgentHost` 并列的独立进程；`desktop-capability-feedback.md` §三 已拍板同意 PTY 属于桌面端（"塞进来会让内核同时管插件与终端进程"）；桌面端 `dsh-parity-progress.md` P8f 的 F3 记为 `[自有]`。**与 LSP 同类判断：不是做不了，是不该在这里做。** 因此 #21 拆成 21a（✅ 持久 shell）与 21b（➖ 真 PTY）。 |
 | **验证** | `persistent-shell` 套 10 项；2 组负控见 §三。 |
 | **源码位置** | `src/Dougong.Agent/PersistentShell.cs`、`src/Dougong.Agent/PersistentShellTool.cs` |
 

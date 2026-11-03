@@ -254,7 +254,7 @@ Roslyn 只解析 C#。把 Roslyn 写进 SDK 恰好是把 harness 绑定到单一
 | `dsh-bash-sandbox` / `pwsh-sandbox` | 沙箱内执行 | **无** | **缺** |
 | `dsh-subprocess` | 进程组、有界输出、升级杀 | `ShellTool`（简单版） | **部分** |
 | `dsh-win32-process` | Win32 Job Object | **无** | **缺** |
-| `dsh-terminal` / `-bash` | 持久 PTY | **无** | **缺**（桌面端要的 PTY） |
+| `dsh-terminal` / `-bash` | 持久 PTY | **不做** | **不做**：归属桌面端 `PtyHost`，理由见下 |
 | `dsh-shell` / `shell-env` | bash 执行 seam、受管环境变量 | `IShellExecutor` + `LocalShellExecutor` + `ShellEnvironment.Minimal()` | **已有**：seam 就位，环境变量走白名单 |
 | `dsh-ssh` / `-helper-runtime` | 远端会话（命令在远端跑） | **无** | **缺**：只在本地执行 |
 | `dsh-subprocess-ssh` / `sandbox-ssh` / `fs-ssh` | 远端的进程/沙箱/文件 seam | **无** | **缺**：`IShellExecutor` / `IFileSystem` 的形态允许，但没有实现 |
@@ -489,7 +489,8 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | 18 | 会话内目标（goal） | `dsh-goal*` | |
 | ~~19~~ | ~~计划模式（带审阅退出）~~ | `dsh-plan-mode` | **✅ 2026-11-02**：`exit_plan_mode` 阻塞审阅 |
 | ~~20~~ | ~~后台任务~~ | `dsh-jobs*` | **✅ 2026-11-02**：`JobRegistry` + 四个工具 |
-| 21 | 持久 shell / PTY | `dsh-terminal*` | **🟡 shell 已完成**（`PersistentShell`）；**PTY 未做** |
+| ~~21a~~ | ~~持久 shell~~ | `dsh-tool-terminal` | **✅**：`PersistentShell`（模型用的状态保留） |
+| 21b | 真 PTY | `dsh-terminal-bash` | **➖ 不做**：归属桌面端（见下） |
 | ~~22~~ | ~~技能提供者~~ | `dsh-skill*` | **✅ 2026-11-03**：`SkillDiscovery` + `SkillTool` |
 | ~~23~~ | ~~拦截钩子~~ | `dsh-hook-protocol` | **✅ 2026-11-03**：`IToolInterceptor`（类型化拦截点） |
 | 24 | 会话投影 / 轮次大纲 | `dsh-session-projection*` | |
@@ -501,8 +502,29 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~30~~ | ~~消息级反馈（正负 + 分类，进日志不进模型）~~ | `dsh-feedback/message-feedback` | **✅ 2026-11-02**：`MessageFeedback` + `JsonlMessageFeedbackStore`（伴生文件，不碰会话日志） |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 10 项 + 1 项部分（2026-11-03）**。十项的关键取舍与复核修掉的
-缺陷记在 `porting-differences.md` D-19 至 D-22、D-24 至 D-30。
+**P2 已完成 11 项 + 1 项部分 + 1 项明确不做（2026-11-03）**。各项的关键取舍与
+复核修掉的缺陷记在 `porting-differences.md` D-19 至 D-30。
+
+### 为什么真 PTY 判为不做
+
+2026-11-03 复核发现 P2 清单把两件不同的事捆成一项（#21「持久 shell / PTY」）：
+
+- **持久 shell**（`PersistentShell`）是给**模型**用的：工具调用要保留 cd/export 状态，
+  普通管道就够。**已完成**。
+- **真 PTY** 是给**人**用的：终端标签页里跑 vim/top/less，需要窗口尺寸、Ctrl+C、
+  光标控制、作业控制。
+
+`architecture.md` §6.6 原话：「**SDK 侧的 shell 工具与上述 PtyHost 是两套东西**」。
+三条独立依据都指向桌面端：
+
+1. `architecture.md` §6.1 把 `DougongDesktop.PtyHost` 列为与 `AgentHost` 并列的
+   独立进程，是三种进程角色之一。
+2. `desktop-capability-feedback.md` §三 已拍板同意「PTY 终端属于桌面端」：
+   「它要求进程生命周期管理，那是内核已有的职责但不是它的能力边界；
+   塞进来会让内核同时管插件与终端进程」。
+3. 桌面端自己的清单（`dsh-parity-progress.md` P8f 的 F3）记为 `[自有]`。
+
+**与 LSP 那个判断同类**：不是"做不了"，是"不该在这里做"。
 
 ### 明确不做
 
