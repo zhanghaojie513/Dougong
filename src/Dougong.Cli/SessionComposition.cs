@@ -494,13 +494,31 @@ public sealed class SessionComposition : IDisposable
         // 文件能力经 seam 注入：换一个实现就能加沙箱或换成远程工作区。
         var files = new LocalFileSystem(_directory.Current);
         _files = files;
-        dispatcher.Register(new ReadFileTool(files));
-        dispatcher.Register(new WriteFileTool(files));
+        // **资源键的基准必须与工具实际读写的目录一致**：用会话的有效目录，
+        // 不用进程 CWD。换过目录或从别的目录启动时，两者不同，
+        // 而症状是同一个文件得到两个键、互斥失效。
+        // **资源键的基准必须与工具实际读写的目录一致**：用会话的有效目录，
+        // 不用进程 CWD。换过目录或从别的目录启动时两者不同，
+        // 而症状是同一个文件得到两个键、互斥失效。
+        //
+        // 用属性式设置而不是构造参数：加构造参数会改变公开签名（ApiCompat CP0002）。
+        var readTool = new ReadFileTool(files);
+        var writeTool = new WriteFileTool(files);
+        readTool.UseResourceBase(_directory.Current);
+        writeTool.UseResourceBase(_directory.Current);
+        dispatcher.Register(readTool);
+        dispatcher.Register(writeTool);
         // 搜索与编辑：没有 grep 的编码 agent 等于没有眼睛。
         // 都建在同一个 seam 上，所以将来的沙箱实现自动覆盖它们。
-        dispatcher.Register(new GlobTool(files));
-        dispatcher.Register(new GrepTool(files));
-        dispatcher.Register(new EditFileTool(files));
+        var globTool = new GlobTool(files);
+        var grepTool = new GrepTool(files);
+        var editTool = new EditFileTool(files);
+        globTool.UseResourceBase(_directory.Current);
+        grepTool.UseResourceBase(_directory.Current);
+        editTool.UseResourceBase(_directory.Current);
+        dispatcher.Register(globTool);
+        dispatcher.Register(grepTool);
+        dispatcher.Register(editTool);
         // 计划工具：ACP plan 的唯一数据源。两个入口都要有，否则
         // "CLI 能看计划、ACP 看不到"——正是入口能力不一致的老问题。
         dispatcher.Register(new TodoWriteTool());
@@ -516,11 +534,14 @@ public sealed class SessionComposition : IDisposable
         // **shell 执行器要一起换根**，否则"模型以为换了、命令还在旧目录跑"——
         // 那种不一致只会表现为"命令找不到文件"，而原因看不出来。
         // 持久 shell 与后台作业不在此列：它们持有自己的进程与目录。
+        // **文件工具要一并交出去**：换目录时它们的资源键基准也得换，
+        // 否则键按旧目录算、读写按新目录走，同一个文件变成两个键。
         dispatcher.Register(new WorkingDirectoryTool(
             _directory,
             _directoryStore,
             files,
-            _shellExecutor));
+            _shellExecutor,
+            [readTool, writeTool, globTool, grepTool, editTool]));
 
         // 计划模式：模型调 exit_plan_mode 提交完整 Markdown 计划，
         // 工具**阻塞**等用户审阅（dsh 的做法），批准后同一轮继续。

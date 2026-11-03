@@ -23,10 +23,21 @@ namespace Dougong.Agent;
 /// </para>
 /// </remarks>
 /// <param name="files">文件能力来源。</param>
-public sealed class EditFileTool(IFileSystem files) : IAgentTool
+public sealed class EditFileTool(IFileSystem files)
+    : IAgentTool, IFileResourceKeyOwner
 {
     private readonly IFileSystem _files = files
         ?? throw new ArgumentNullException(nameof(files));
+
+    /// <summary>资源键的基准目录；换目录时随之更新。</summary>
+    private string? _resourceBase;
+
+    /// <summary>更新资源键基准（会话换目录时调用）。</summary>
+    /// <remarks>
+    /// <b>必须跟着换</b>：否则换目录之后，相对路径在键里仍按旧目录解析，
+    /// 而工具按新目录读写——同一个文件又变成两个键。
+    /// </remarks>
+    public void UseResourceBase(string directory) => _resourceBase = directory;
 
     public ToolDescriptor Descriptor { get; } = new(
         "edit_file", "edit_file", "1.0.0",
@@ -47,7 +58,7 @@ public sealed class EditFileTool(IFileSystem files) : IAgentTool
     public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
         new(ToolConcurrency.Serial)
         {
-            Writes = [FileResourceKeys.ForPath(arguments)],
+            Writes = [FileResourceKeys.ForPath(arguments, _resourceBase)],
         };
 
     public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) =>

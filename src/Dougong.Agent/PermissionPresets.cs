@@ -155,7 +155,20 @@ public sealed class PermissionPresets
     /// <summary>当前策略。</summary>
     public ApprovalPolicy Current => _current;
 
-    /// <summary>可选预设，按声明顺序。</summary>
+    /// <summary>
+    /// 可切换的预设（不含派生的 <see cref="CustomKey"/>），按声明顺序。
+    /// </summary>
+    /// <remarks>
+    /// <b>与 <see cref="Options"/> 的分工</b>：这个只给"有哪些能切过去"，
+    /// 是给需要自己渲染菜单的宿主用的；<see cref="Options"/> 额外包含
+    /// 派生的 <c>custom</c>（不可选，仅供显示当前值）。
+    /// <para>
+    /// 本仓库的 CLI 直接调 <see cref="Options"/>（它要连当前值一起显示），
+    /// 所以这里在生产路径上暂时没有调用点。**保留它是因为它是契约的一部分**：
+    /// 宿主需要"可选项"这个纯数据形状，而让它自己从 Options 里过滤
+    /// 等于把"custom 不可选"这条知识复制到每个宿主。
+    /// </para>
+    /// </remarks>
     public IReadOnlyList<PermissionPreset> Available => _presets;
 
     /// <summary>

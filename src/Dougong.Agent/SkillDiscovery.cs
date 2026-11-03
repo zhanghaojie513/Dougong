@@ -186,7 +186,7 @@ public sealed class SkillDiscovery
             if (!File.Exists(file)) continue;
 
             if (ReadSummary(root, name, file) is { } summary)
-                yield return new SkillCandidate(summary, root, file);
+                yield return new SkillCandidate(summary);
         }
 
         foreach (var file in files.OrderBy(f => f, StringComparer.Ordinal))
@@ -195,7 +195,7 @@ public sealed class SkillDiscovery
             if (!NamePattern.IsMatch(name)) continue;
 
             if (ReadSummary(root, name, file) is { } summary)
-                yield return new SkillCandidate(summary, root, file);
+                yield return new SkillCandidate(summary);
         }
     }
 
@@ -235,7 +235,6 @@ public sealed class SkillDiscovery
             description,
             metadata.WhenToUse,
             file,
-            root.Path,
             root.Source,
             ModelInvocable: metadata.ModelInvocable,
             UserInvocable: metadata.UserInvocable,
@@ -278,17 +277,19 @@ public sealed class SkillDiscovery
 public sealed record SkillRoot(int Rank, string Source, string Path);
 
 /// <summary>目录里的一个技能（发现阶段的中间形态）。</summary>
-/// <param name="Summary">摘要。</param>
-/// <param name="Root">来源根。</param>
-/// <param name="Path">正文文件绝对路径。</param>
-public sealed record SkillCandidate(SkillSummary Summary, SkillRoot Root, string Path);
+/// <param name="Summary">摘要（已含正文路径与来源标签）。</param>
+/// <remarks>
+/// <b>只有摘要</b>：这里曾经另外带 <c>Root</c> 与 <c>Path</c> 两个字段，
+/// 而它们与 <see cref="SkillSummary"/> 里的对应字段重复、且**零个读取点**。
+/// 同一事实存两处，改一处漏一处不会报错——删掉重复的那份。
+/// </remarks>
+public sealed record SkillCandidate(SkillSummary Summary);
 
 /// <summary>技能摘要：模型可见的那部分。</summary>
 /// <param name="Name">kebab-case 名字。</param>
 /// <param name="Description">一句说明，用于让模型判断"要不要用"。</param>
 /// <param name="WhenToUse">可选的额外路由提示。</param>
 /// <param name="Path">正文文件绝对路径。</param>
-/// <param name="RootPath">来源根目录。</param>
 /// <param name="Source">来源标签。</param>
 /// <param name="ModelInvocable">模型是否可见/可加载。</param>
 /// <param name="UserInvocable">用户侧入口是否可见。</param>
@@ -305,7 +306,6 @@ public sealed record SkillSummary(
     string Description,
     string? WhenToUse,
     string Path,
-    string RootPath,
     string Source,
     bool ModelInvocable,
     bool UserInvocable,

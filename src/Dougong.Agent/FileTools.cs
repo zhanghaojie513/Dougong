@@ -3,20 +3,46 @@ using System.Text.Json;
 namespace Dougong.Agent;
 
 /// <summary>
-/// 资源键的构造规则：规范化路径，避免同一文件被当成两个资源。
+/// 资源键的构造规则：按会话工作目录规范化路径，避免同一文件被当成两个资源。
 /// </summary>
 /// <remarks>
 /// <b>为什么必须规范化</b>：<c>./a.txt</c> 与 <c>a.txt</c> 是同一个文件。
 /// 若给出两个不同的键，该互斥的就没互斥——两个写并发落到同一个文件上，
 /// 结果是后写的那份覆盖前一份，而两边都以为成功了。
+///
+/// <para>
+/// <b>基准目录必须是会话目录，不是进程 CWD</b>。这是修掉的一个真实缺陷：
+/// 原先用 <c>Path.GetFullPath(value)</c>，它对相对路径取的是**进程当前目录**；
+/// 而工具真正读写时用的是 <see cref="LocalFileSystem"/> 的会话根。
+/// 两者在正常启动时恰好相同（进程在用户目录启动、会话也在那里），
+/// 所以平时看不出来。一旦会话换过目录（<c>working_directory</c>），
+/// 或宿主从别的目录启动，同一个文件就会得到两个键——互斥失效，
+/// 而症状是"两个写并发落上去，后写的覆盖前写的，两边都说成功"。
+/// </para>
+///
 /// <para>
 /// 框架不替工具猜：规范化是工具的责任，因为只有工具知道哪个参数是路径。
+/// 而基准是谁的目录，只有装配层知道——所以由构造参数传进来。
 /// </para>
 /// </remarks>
 public static class FileResourceKeys
 {
     /// <summary>把参数里的 <c>path</c> 变成资源键。</summary>
-    public static string ForPath(JsonElement arguments)
+    public static string ForPath(JsonElement arguments) => ForPath(arguments, null);
+
+    /// <summary>
+    /// 把参数里的 <c>path</c> 变成资源键，相对路径按 <paramref name="baseDirectory"/> 解析。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么不给上面那个重载加可选参数</b>：那会改变已有签名，
+    /// ApiCompat 报 CP0002（实测拦住了）。重载是纯增量。
+    /// </remarks>
+    /// <param name="arguments">工具参数。</param>
+    /// <param name="baseDirectory">
+    /// 相对路径的基准目录（会话的有效目录）。null 表示使用进程 CWD——
+    /// **只给没有会话上下文的调用方留的退路**，生产装配必须传。
+    /// </param>
+    public static string ForPath(JsonElement arguments, string? baseDirectory)
     {
         if (!arguments.TryGetProperty("path", out var path)
             || path.GetString() is not { Length: > 0 } value)
@@ -26,7 +52,13 @@ public static class FileResourceKeys
 
         try
         {
-            return "file:" + Path.GetFullPath(value);
+            // 绝对路径不受基准影响，直接规范化；
+            // 相对路径必须按会话目录解析，否则与工具实际读写的文件不是同一个。
+            var absolute = Path.IsPathRooted(value) || baseDirectory is null
+                ? Path.GetFullPath(value)
+                : Path.GetFullPath(Path.Combine(baseDirectory, value));
+
+            return "file:" + absolute;
         }
         catch (Exception)
         {
@@ -36,6 +68,21 @@ public static class FileResourceKeys
     }
 }
 
+/// <summary>
+/// 持有资源键基准、并能在会话换目录时更新它的工具。
+/// </summary>
+/// <remarks>
+/// <b>为什么要有这个接口</b>：换目录时既要把 <see cref="LocalFileSystem"/>
+/// 的根换掉，也要把这些工具的键基准换掉。只换前者的话，
+/// 键还按旧目录算，同一个文件会得到两个键、互斥失效。
+/// 把这个约定写成接口，装配时漏传就会编译不过。
+/// </remarks>
+public interface IFileResourceKeyOwner
+{
+    /// <summary>把资源键基准换成新的目录。</summary>
+    void UseResourceBase(string directory);
+}
+
 /// <summary>读取工作区内文件。</summary>
 /// <remarks>
 /// <b>这个工具住在 SDK 而不是某个宿主里</b>：CLI 与桌面端都需要它，
@@ -43,10 +90,21 @@ public static class FileResourceKeys
 /// <c>Dougong.Cli</c>，桌面端只能重写一遍——那正是能力不一致的成因。
 /// </remarks>
 /// <param name="files">文件能力来源。工具本身不做 IO，只组织参数与结果。</param>
-public sealed class ReadFileTool(IFileSystem files) : IAgentTool
+public sealed class ReadFileTool(IFileSystem files)
+    : IAgentTool, IFileResourceKeyOwner
 {
     private readonly IFileSystem _files = files
         ?? throw new ArgumentNullException(nameof(files));
+
+    /// <summary>资源键的基准目录；换目录时随之更新。</summary>
+    private string? _resourceBase;
+
+    /// <summary>更新资源键基准（会话换目录时调用）。</summary>
+    /// <remarks>
+    /// <b>必须跟着换</b>：否则换目录之后，相对路径在键里仍按旧目录解析，
+    /// 而工具按新目录读写——同一个文件又变成两个键。
+    /// </remarks>
+    public void UseResourceBase(string directory) => _resourceBase = directory;
 
     public ToolDescriptor Descriptor { get; } = new(
         "read_file", "read_file", "1.0.0", "读取工作区内的文本文件",
@@ -62,7 +120,7 @@ public sealed class ReadFileTool(IFileSystem files) : IAgentTool
     public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
         new(ToolConcurrency.Serial)
         {
-            Reads = [FileResourceKeys.ForPath(arguments)],
+            Reads = [FileResourceKeys.ForPath(arguments, _resourceBase)],
         };
 
     public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) =>
@@ -94,10 +152,21 @@ public sealed class ReadFileTool(IFileSystem files) : IAgentTool
 /// 宿主做"改动前后对照"需要它，而写完之后再读一次读到的是新内容，
 /// 届时不返回就永远拿不到了。
 /// </remarks>
-public sealed class WriteFileTool(IFileSystem files) : IAgentTool
+public sealed class WriteFileTool(IFileSystem files)
+    : IAgentTool, IFileResourceKeyOwner
 {
     private readonly IFileSystem _files = files
         ?? throw new ArgumentNullException(nameof(files));
+
+    /// <summary>资源键的基准目录；换目录时随之更新。</summary>
+    private string? _resourceBase;
+
+    /// <summary>更新资源键基准（会话换目录时调用）。</summary>
+    /// <remarks>
+    /// <b>必须跟着换</b>：否则换目录之后，相对路径在键里仍按旧目录解析，
+    /// 而工具按新目录读写——同一个文件又变成两个键。
+    /// </remarks>
+    public void UseResourceBase(string directory) => _resourceBase = directory;
 
     public ToolDescriptor Descriptor { get; } = new(
         "write_file", "write_file", "1.0.0", "写入工作区内的文本文件",
@@ -118,7 +187,7 @@ public sealed class WriteFileTool(IFileSystem files) : IAgentTool
     public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
         new(ToolConcurrency.Serial)
         {
-            Writes = [FileResourceKeys.ForPath(arguments)],
+            Writes = [FileResourceKeys.ForPath(arguments, _resourceBase)],
         };
 
     public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) =>

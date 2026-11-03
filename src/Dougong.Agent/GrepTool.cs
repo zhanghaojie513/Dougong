@@ -25,8 +25,20 @@ namespace Dougong.Agent;
 /// </para>
 /// </remarks>
 /// <param name="files">文件能力来源。</param>
-public sealed class GrepTool(IFileSystem files) : IAgentTool
+public sealed class GrepTool(IFileSystem files)
+    : IAgentTool, IFileResourceKeyOwner
 {
+
+    /// <summary>资源键的基准目录；换目录时随之更新。</summary>
+    private string? _resourceBase;
+
+    /// <summary>更新资源键基准（会话换目录时调用）。</summary>
+    /// <remarks>
+    /// <b>必须跟着换</b>：否则换目录之后，相对路径在键里仍按旧目录解析，
+    /// 而工具按新目录读写——同一个文件又变成两个键。
+    /// </remarks>
+    public void UseResourceBase(string directory) => _resourceBase = directory;
+
     /// <summary>最多扫描多少个文件。</summary>
     /// <remarks>
     /// <b>超限必须如实报告</b>：静默停下会让模型以为"没有匹配"，
@@ -72,7 +84,7 @@ public sealed class GrepTool(IFileSystem files) : IAgentTool
     public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
         new(ToolConcurrency.Serial)
         {
-            Reads = [FileResourceKeys.ForPath(arguments)],
+            Reads = [FileResourceKeys.ForPath(arguments, _resourceBase)],
         };
 
     public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) => [];

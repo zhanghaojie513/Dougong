@@ -37,22 +37,35 @@ public sealed class WorkingDirectoryTool : IAgentTool
     private readonly LocalFileSystem? _files;
     private readonly LocalShellExecutor? _shell;
 
+    /// <summary>
+    /// 换目录时要同步资源键基准的文件工具。
+    /// </summary>
+    /// <remarks>
+    /// <b>不传就会出真实缺陷</b>：换目录之后，文件工具按新目录读写，
+    /// 而它们的互斥键仍按旧目录算——同一个文件得到两个键，
+    /// 并发写不再互斥。
+    /// </remarks>
+    private readonly IReadOnlyList<IFileResourceKeyOwner> _keyOwners;
+
     /// <summary>构造。</summary>
     /// <param name="directory">会话目录状态。</param>
     /// <param name="store">变更存储；null 表示不持久化（仅测试与对比用）。</param>
     /// <param name="files">要跟着换根的文件系统；null 表示没有。</param>
     /// <param name="shell">要跟着换根的 shell 执行器；null 表示没有。</param>
+    /// <param name="keyOwners">换目录时要同步资源键基准的文件工具。</param>
     public WorkingDirectoryTool(
         WorkingDirectory directory,
         IWorkingDirectoryStore? store = null,
         LocalFileSystem? files = null,
-        LocalShellExecutor? shell = null)
+        LocalShellExecutor? shell = null,
+        IReadOnlyList<IFileResourceKeyOwner>? keyOwners = null)
     {
         ArgumentNullException.ThrowIfNull(directory);
         _directory = directory;
         _store = store;
         _files = files;
         _shell = shell;
+        _keyOwners = keyOwners ?? [];
     }
 
     public ToolDescriptor Descriptor { get; } = new(
@@ -130,6 +143,7 @@ public sealed class WorkingDirectoryTool : IAgentTool
         // 只影响之后的相对路径解析与之后启动的进程。
         _files?.UseDirectory(resolved);
         _shell?.UseDirectory(resolved);
+        foreach (var owner in _keyOwners) owner.UseResourceBase(resolved);
 
         return Result(ok: true, error: null, resolved, changed: true, _directory.Project);
     }

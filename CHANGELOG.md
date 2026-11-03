@@ -110,6 +110,11 @@
   支持运行时注册与热失效要等 agent preset 与插件入口出现。见 D-26。
 - **换目录不影响已启动的进程**：持久 shell、后台作业、之前起的命令都保持它们
   自己的目录。这是 dsh 的语义，也是唯一能推断"我在哪"的形态。见 D-25。
+- **文件工具的资源互斥键改按会话目录解析**（原先是进程 CWD）：从其它目录启动或
+  换过工作目录时，同一个文件会得到两个键、互斥失效。新增
+  `FileResourceKeys.ForPath(JsonElement, string?)` 重载与 `IFileResourceKeyOwner`。
+- **`SkillCandidate` 与 `SkillSummary` 删除了三个未被读取的字段**
+  （`Root`、`Path`、`RootPath`）——同一事实存两处，改一处漏一处不会报错。
 - **`RepeatToolReminder` 的 `argumentsPreviewChars` 传入非正数现在会抛异常**：
   此前会静默回退到默认值 500。本类的原则是"配置错就炸"，阈值那一半一直是这样，
   预览上限那一半漏了。

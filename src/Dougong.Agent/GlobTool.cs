@@ -20,8 +20,20 @@ namespace Dougong.Agent;
 /// </para>
 /// </remarks>
 /// <param name="files">文件能力来源。</param>
-public sealed class GlobTool(IFileSystem files) : IAgentTool
+public sealed class GlobTool(IFileSystem files)
+    : IAgentTool, IFileResourceKeyOwner
 {
+
+    /// <summary>资源键的基准目录；换目录时随之更新。</summary>
+    private string? _resourceBase;
+
+    /// <summary>更新资源键基准（会话换目录时调用）。</summary>
+    /// <remarks>
+    /// <b>必须跟着换</b>：否则换目录之后，相对路径在键里仍按旧目录解析，
+    /// 而工具按新目录读写——同一个文件又变成两个键。
+    /// </remarks>
+    public void UseResourceBase(string directory) => _resourceBase = directory;
+
     /// <summary>最多递归多少层目录。</summary>
     /// <remarks>
     /// <b>必须有上限</b>：<c>node_modules</c> 这类深目录能让一次 glob 跑几十秒，
@@ -58,7 +70,7 @@ public sealed class GlobTool(IFileSystem files) : IAgentTool
     public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
         new(ToolConcurrency.Serial)
         {
-            Reads = [FileResourceKeys.ForPath(arguments)],
+            Reads = [FileResourceKeys.ForPath(arguments, _resourceBase)],
         };
 
     public IReadOnlyList<string> DescribeFileDependencies(JsonElement arguments) => [];

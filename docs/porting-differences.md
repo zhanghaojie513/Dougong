@@ -577,6 +577,23 @@ P2 五项交付后做了一轮"声称 vs 实现"复检，用两个独立只读�
 检查照样全绿。这与本阶段早先记过的"检查看源码而不是看行为"是同一个毛病，
 **而且在同一个阶段内又犯了一次**。所有五条都改成了按分支数或真实运行断言。
 
+### 既有问题清理（2026-11-03，非本轮 P2 引入）
+
+复检顺带发现两处更早留下的问题，一并处理：
+
+| 问题 | 影响 | 修法 |
+|---|---|---|
+| `FileResourceKeys.ForPath` 用 `Path.GetFullPath(相对路径)`，取的是**进程 CWD**；而工具读写用的是会话根 | 正常启动时两者恰好相同，看不出来。一旦宿主从别的目录启动、或会话换过工作目录，同一个文件就得到两个资源键——**互斥失效**，症状是"两个写并发落上去，后写的覆盖前写的，两边都说成功" | 加 `ForPath(arguments, baseDirectory)` 重载（**不改原签名**——ApiCompat 报过 CP0002），工具持有 `_resourceBase` 并在换目录时由 `WorkingDirectoryTool` 一并更新。新增 `IFileResourceKeyOwner` 接口把这个约定写成类型，装配漏传就编译不过 |
+| `SkillCandidate` 的 `Root`/`Path`、`SkillSummary` 的 `RootPath` 三个字段零读取点 | 同一事实存两处，改一处漏一处不会报错 | 删除。`SkillCandidate` 只留 `Summary`（它已含路径与来源） |
+
+`PermissionPresets.Available` 一度也被列为"未消费"，**但它不是死代码**——
+它是给宿主渲染自己的预设菜单用的契约形状，删除等于逼每个宿主重新实现
+"custom 不可选"这条知识。补了注释说明它与 `Options()` 的分工。
+
+**验证**：`workspace-lock` 套新增 2 项——`resource-key-uses-session-dir-not-process-cwd`
+与 `resource-key-base-follows-directory-change`。负控：把基准逻辑改回"CWD 解析"
+→ 两项同时红（报出 `C:\work\myProject\dougong.txt` 这个进程 CWD 键）。
+
 ## 五、这份台账的边界
 
 **它不保证正确，只保证"声称与证据对得上"。**
