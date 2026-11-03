@@ -12,13 +12,13 @@
 ```bash
 cd C:/work/myProject/dougong
 git pull
-bash scripts/all-checks.sh        # 70 个检查套件，预期全绿
+bash scripts/all-checks.sh        # 71 个检查套件，预期全绿
 ```
 
-**唯一允许的失败**：`tool-package-checks` 的 `version-not-already-published`。
-版本号 `0.1.16-alpha.1` 已发布到 nuget.org，而代码有变化——它在提醒
-"发版前必须升号"，不是"现在必须升"。**没有明确指示时不要动版本号与
-API 基线**（用户 2026-11-02 明确要求过）。
+**发版后 `version-not-already-published` 会转红**：它检查当前版本号是否
+已在 nuget.org 上存在，而 `0.1.17-alpha.1` 一旦发布，代码再有改动它就会
+提醒"发版前必须升号"。**那是预期行为，不是缺陷**——下次发版时升号即可。
+**没有明确指示时不要动版本号与 API 基线**（用户 2026-11-02 明确要求过）。
 
 ---
 
