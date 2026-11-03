@@ -226,7 +226,7 @@ public static class SessionBranch
                 continue;
             }
 
-            var (firstSequence, lastSequence, records, hasGap) = Scan(file);
+            var (firstSequence, lastSequence, records, hasGap, unreadable) = Scan(file);
             results.Add(new SessionSummary(
                 file,
                 Path.GetFileNameWithoutExtension(file),
@@ -235,13 +235,16 @@ public static class SessionBranch
                 records,
                 firstSequence,
                 lastSequence,
-                hasGap));
+                hasGap)
+            {
+                IsUnreadable = unreadable,
+            });
         }
 
         return [.. results.OrderByDescending(r => r.LastWriteUtc)];
     }
 
-    private static (long First, long Last, int Records, bool HasGap) Scan(string path)
+    private static (long First, long Last, int Records, bool HasGap, bool Unreadable) Scan(string path)
     {
         long first = 0, last = 0, expected = 1;
         var records = 0;
@@ -260,7 +263,7 @@ public static class SessionBranch
                 {
                     case SessionLineKind.End:
                     case SessionLineKind.Stop:
-                        return (first, last, records, gap);   // 坏行或结束：停止统计
+                        return (first, last, records, gap, false);   // 坏行或结束：停止统计
                     case SessionLineKind.Skip:
                         continue;
                 }
@@ -275,10 +278,17 @@ public static class SessionBranch
         }
         catch (IOException)
         {
-            return (0, 0, 0, true);
+            // **读不到不等于有缺口**。写者持有 FileShare.None 的写租约，
+            // 所以"这个会话正在被使用"与"日志真被破坏"在这里看起来一样。
+            // 分开之后调用方才能说清是哪一种——两者的处置完全不同：
+            // 前者等一下再看，后者要恢复数据。
+            //
+            // 第一版把两者都报成 (0,0,0,true)，于是正在使用的会话在
+            // --list 里显示"序号缺口（不可续跑）"，用户会以为数据坏了。
+            return (0, 0, 0, false, true);
         }
 
-        return (first, last, records, gap);
+        return (first, last, records, gap, false);
     }
 }
 
@@ -298,4 +308,20 @@ public sealed record SessionSummary(
     int RecordCount,
     long FirstSequence,
     long LastSequence,
-    bool HasSequenceGap);
+    bool HasSequenceGap)
+{
+    /// <summary>
+    /// 这个会话当前读不到（通常是被另一个进程持有写租约）。
+    /// </summary>
+    /// <remarks>
+    /// <b>与 <see cref="HasSequenceGap"/> 是两件事</b>：那个是"日志真有问题"
+    /// （序号不连续，说明被外部改动过），这个只是"现在看不了"。
+    /// 混成一个时，正在使用的会话会被报成"序号缺口（不可续跑）"——
+    /// 用户会以为数据坏了。
+    /// <para>
+    /// 用 <c>init</c> 属性追加而不是构造参数：后者改变公开签名，
+    /// ApiCompat 会报 CP0002。
+    /// </para>
+    /// </remarks>
+    public bool IsUnreadable { get; init; }
+}

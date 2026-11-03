@@ -26,6 +26,7 @@ public static class SessionChecks
         failures += await CheckAsync("branch-rejects-missing-sequence", BranchMissingSequenceAsync);
         failures += await CheckAsync("list-reports-sequence-range", ListReportsRangeAsync);
         failures += await CheckAsync("list-detects-gap", ListDetectsGapAsync);
+        failures += await CheckAsync("list-separates-in-use-from-broken", ListSeparatesInUseAsync);
         failures += await CheckAsync("legacy-string-payload-still-reads", LegacyPayloadAsync);
         failures += await CheckAsync("branch-avoids-dangling-tool-call", BranchAvoidsDanglingAsync);
 
@@ -262,6 +263,50 @@ public static class SessionChecks
     }
 
     // 序号缺口必须被 list 报出，不能静默当作连续。
+    /// <summary>
+    /// "正在被使用"与"日志有缺口"必须分开报。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是真实使用中发现的问题</b>：`--list` 跑在用户机器上时，
+    /// 正在进行的那个会话显示成"序号缺口（不可续跑）"——因为写者持有
+    /// <c>FileShare.None</c> 的写租约，扫描用的 <c>FileShare.ReadWrite</c>
+    /// 打不开，走了 <c>catch (IOException)</c> 分支。
+    ///
+    /// <para>
+    /// 两者的处置完全相反：一个是"等一下再看"，另一个是"数据坏了要恢复"。
+    /// 混成一句话会把用户引向错误的动作。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> ListSeparatesInUseAsync()
+    {
+        var root = NewRoot();
+        try
+        {
+            var path = Path.Combine(root, "inuse.jsonl");
+            await using var store = await JsonlAgentStore.OpenAsync(path, "inuse");
+
+            await store.CommitAsync(Record(StoreRecordKind.UserInput, "x"));
+
+            // store 还持有写租约，此时从外面列目录。
+            var listed = SessionBranch.List(root);
+            var summary = listed.FirstOrDefault(s => s.SessionId == "inuse");
+
+            if (summary is null) return "会话没有被列出来";
+
+            if (!summary.IsUnreadable)
+                return "持有写租约的会话没有被标记为不可读";
+
+            if (summary.HasSequenceGap)
+                return "不可读被同时报成了序号缺口——两者的处置完全不同";
+
+            return null;
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
     private static async Task<string?> ListDetectsGapAsync()
     {
         var root = NewRoot();

@@ -1119,7 +1119,13 @@ public static class Program
         for (var i = 0; i < sessions.Count; i++)
         {
             var session = sessions[i];
-            var note = session.HasSequenceGap ? "序号缺口（不可续跑）" : string.Empty;
+            // **"读不到"与"有缺口"分开说**：前者通常只是会话正在被另一个进程
+            // 使用（写租约是 FileShare.None），等下再看即可；后者才是日志有问题。
+            // 混成一句话时，正在用的会话会显示"序号缺口（不可续跑）"，
+            // 用户会以为数据坏了。
+            var note = session.IsUnreadable
+                ? "正在使用（另一个进程持有写租约）"
+                : session.HasSequenceGap ? "序号缺口（不可续跑）" : string.Empty;
 
             // **标题按显示宽度补齐，不按字符数。** 一个汉字占两格，
             // 用 `,-21` 那种字符补齐会让中文标题的行比英文行宽出近一倍，
