@@ -231,10 +231,28 @@ public static class Output
         }
 
         // 汇总行：本轮耗时 + 工具数。
+        //
+        // **有底部状态行时不报耗时**（P4）：状态行已经常驻显示本轮时长，
+        // 这里再打一次就是同一件事说两遍——真机上表现为回答下面多出一行
+        // `─ 4.2s ────`，与底部的 `◇ │ ... │ 4.2s` 重复。
+        //
+        // 没有底部区域时（Plain 档、窄终端）照旧报耗时：
+        // 那时没有别的地方显示它了。
+        var hasStatusLine = _region is { IsActive: true };
         var seconds = elapsed.TotalSeconds;
-        var summary = tools.Count > 0
-            ? $"  ─ {seconds:F1}s · {tools.Count} 个工具"
-            : $"  ─ {seconds:F1}s";
+
+        var summary = (tools.Count, hasStatusLine) switch
+        {
+            // 没有工具、底部已有耗时 → 整行省掉
+            (0, true) => null,
+            (> 0, true) => $"  ─ {tools.Count} 个工具",
+            (0, false) => $"  ─ {seconds:F1}s",
+            _ => $"  ─ {seconds:F1}s · {tools.Count} 个工具",
+        };
+
+        // 空行已经在上面打过，这里没有内容就不再多打一行。
+        if (summary is null) return;
+
         Muted(summary + $" {new string('─', Math.Max(0, Math.Min(20, _capability.Width - summary.Length - 4)))}");
     }
 

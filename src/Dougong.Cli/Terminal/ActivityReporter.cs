@@ -176,7 +176,15 @@ public sealed class ActivityReporter : IAsyncDisposable
         _pump = null;
         _turnCts?.Dispose();
         _turnCts = null;
-        _region.Clear();
+
+        // **不清空区域，改画空闲状态行**。
+        //
+        // 原来这里是 `_region.Clear()`，于是轮次一结束底部整块消失——
+        // 用户看到的就是"底部空荡"。而 Hermes 的空闲状态行是**常驻**的
+        // （`ui.statusBar` 默认 `'top'`，只有显式配 `'off'` 才消失）。
+        //
+        // 常驻的收益是实打实的：不用 `/status` 也能一直看到模型名与上下文占用。
+        Render();
     }
 
     /// <inheritdoc />
@@ -223,28 +231,41 @@ public sealed class ActivityReporter : IAsyncDisposable
 
     /// <summary>按当前状态重画底部区域。</summary>
     /// <remarks>
-    /// <b>流式期间整块收起</b>：正文在逐字滚动，区域留着只会多一次擦画开销，
-    /// 而"还活着"这件事正文本身已经证明了（方案 §3.8.8）。收起之后
-    /// <see cref="LiveRegion.RunExclusive"/> 里没有区域要擦要画，
-    /// 流式路径上没有任何多余写操作。
+    /// <b>单行，忙闲共用槽位</b>（P4）：原来是"活动行 + 状态栏"两行，
+    /// 而 Hermes 从头到尾只有一行——忙时 <c>FaceTicker</c>、闲时静态文案
+    /// （<c>appChrome.tsx:735-745</c>）。
+    ///
+    /// <para>
+    /// 合并的关键收益：<b>空闲时状态行常驻</b>。原来轮次一结束就
+    /// <c>SetLines([])</c> 整块收起，用户看到"底部空荡"；
+    /// 而 Hermes 的空闲状态行始终在，能看到模型名与上下文占用。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>流式期间仍然整块收起</b>：正文在逐字滚动，区域留着只会多一次
+    /// 擦画开销，而"还活着"这件事正文本身已经证明了（方案 §3.8.8）。
+    /// </para>
     /// </remarks>
     private void Render()
     {
-        if (_state.Phase is ActivityPhase.Streaming or ActivityPhase.Idle)
+        // 流式期间不画：正文自己在滚，那是更好的"活着"证据。
+        if (_state.Phase is ActivityPhase.Streaming)
         {
             _region.SetLines([]);
             return;
         }
 
         var now = _clock.GetUtcNow();
-        var lines = new List<string>(2);
 
-        if (StatusLine.RenderActivity(_state, now, _region.Width) is { } activity)
-            lines.Add(activity);
+        var line = StatusLine.RenderSingleLine(
+            _state,
+            _model,
+            _tokensUsed(),
+            _contextWindow,
+            _state.TurnElapsed(now),
+            now,
+            _region.Width);
 
-        lines.Add(StatusLine.RenderStatus(
-            _model, _tokensUsed(), _contextWindow, _state.TurnElapsed(now), _region.Width));
-
-        _region.SetLines(lines);
+        _region.SetLines([line]);
     }
 }

@@ -58,6 +58,120 @@ public static class StatusLine
     /// <summary>该阶段是否有面孔。供覆盖性检查使用。</summary>
     public static bool HasFace(ActivityPhase phase) => Faces.ContainsKey(phase);
 
+    /// <summary>状态行各段之间的分隔符。</summary>
+    /// <remarks>
+    /// <b>用 <c>│</c> 而不是 <c>·</c></b>：段数变多后（指示符 / 模型 / 上下文 /
+    /// 耗时 / 成本），光靠空格与圆点分不开——视觉上会连成一句。
+    /// Hermes 用的也是竖线（<c>appChrome.tsx</c> 的 status segments）。
+    /// </remarks>
+    private const string Separator = " │ ";
+
+    /// <summary>窄终端下上下文段的紧凑形式。</summary>
+    /// <remarks>
+    /// <b>窄终端要压成 <c>12k tok</c> 并去掉进度条</b>：Hermes 的
+    /// <c>segs.compactCtx</c> 就是这么做的。我们原来窄终端只是把进度条
+    /// 从 10 格缩到 5 格，结果挤掉了模型名——而模型名比进度条精度重要。
+    /// </remarks>
+    private static string CompactTokens(int used) => $"{FormatTokens(used)} tok";
+
+    /// <summary>
+    /// 生成**单行**状态行：忙闲共用同一个槽位。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是 P4 的核心改动</b>：原来底部是"活动行 + 状态栏"两行，
+    /// 而 Hermes **从头到尾只有一行**（<c>appChrome.tsx:735-745</c>：
+    /// 忙时渲染 <c>FaceTicker</c>，闲时渲染静态 status 文案，同一个槽位）。
+    ///
+    /// <para>
+    /// 合并的收益不只是省一行：<b>空闲时底部不再是空的</b>。原来轮次一结束
+    /// 就 <c>SetLines([])</c> 整块收起，用户看到的是"底部空荡"——
+    /// 而 Hermes 的空闲状态行始终在，能看到模型名与上下文占用。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>渐进披露照抄 Hermes 的判据</b>（<c>appChrome.tsx:596-660</c>）：
+    /// 左段（指示符 / 模型）**不可压缩**、先占位；尾部段按
+    /// <c>bar → duration → compressions → cost</c> 的顺序逐个尝试，
+    /// **放不下的整段丢弃，而不是截断中间**。
+    /// 这比"整行截断"好：它保证"模型名和上下文占用永远能看到"。
+    /// </para>
+    ///
+    /// <para>
+    /// 宽度不足 40 时只留指示符——那时连模型名都放不下，
+    /// 而"它在动"是这一行唯一不可让渡的信息。
+    /// </para>
+    /// </remarks>
+    /// <param name="state">活动状态机；null 表示空闲（显示静态状态行）。</param>
+    /// <param name="model">模型名。</param>
+    /// <param name="tokensUsed">已用 token；null 表示未知。</param>
+    /// <param name="contextWindow">上下文窗口；0 表示不显示占用。</param>
+    /// <param name="turnElapsed">本轮耗时；空闲时传上一轮的即可。</param>
+    /// <param name="now">当前时刻（spinner 与面孔轮换用）。</param>
+    /// <param name="width">可用宽度。</param>
+    public static string RenderSingleLine(
+        ActivityState? state,
+        string model,
+        int? tokensUsed,
+        int contextWindow,
+        TimeSpan turnElapsed,
+        DateTimeOffset now,
+        int width)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+
+        var busy = state is { Phase: not ActivityPhase.Idle } && state.ShouldDisplay;
+
+        // ── 左段：不可压缩，先占位 ──────────────────────────
+        string indicator;
+        if (busy)
+        {
+            var spinner = PickSpinner(now);
+            var face = PickFace(state!.Phase, now);
+            var label = Labels.TryGetValue(state.Phase, out var found) ? found : string.Empty;
+
+            // 极窄终端：只留 spinner。连"它在动"都要省掉时这一行就没意义了。
+            if (width < 24) return spinner;
+
+            indicator = string.IsNullOrEmpty(face)
+                ? $"{spinner} {label}"
+                : $"{spinner} {face} {label}";
+        }
+        else
+        {
+            // 空闲：不是"什么都没有"，而是"待命"。
+            // 用一个静态符号而不是 spinner——转着的东西会让用户以为还在跑。
+            indicator = "◇";
+        }
+
+        var builder = new StringBuilder(indicator);
+
+        // ── 模型名：不可压缩（放不下就整行只有指示符）──────
+        if (width >= 40)
+            builder.Append(Separator).Append(model);
+
+        // ── 尾部段：按优先级逐个 fits() 尝试 ────────────────
+        var tail = new List<string>();
+        if (tokensUsed is { } used && contextWindow > 0)
+        {
+            var percent = Math.Min(100, used * 100 / contextWindow);
+            tail.Add(width >= 80
+                ? $"{FormatTokens(used)}/{FormatTokens(contextWindow)} {RenderGauge(percent, 10)} {percent}%"
+                : CompactTokens(used));
+        }
+
+        if (busy || turnElapsed > TimeSpan.Zero)
+            tail.Add(FormatDuration(turnElapsed));
+
+        foreach (var segment in tail)
+        {
+            var candidate = builder + Separator + segment;
+            if (DisplayWidth.Of(candidate) > width - 1) break;   // 放不下就停
+            builder.Append(Separator).Append(segment);
+        }
+
+        return PadToWidth(builder.ToString(), width);
+    }
+
     /// <summary>
     /// 生成活动行。返回 null 表示当前不该显示。
     /// </summary>

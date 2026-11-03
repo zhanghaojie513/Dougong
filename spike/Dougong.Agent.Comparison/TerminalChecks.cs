@@ -86,6 +86,13 @@ public static class TerminalChecks
         failures += Check("reasoning-does-not-downgrade-streaming", ReasoningKeepsStreaming);
         failures += Check("agent-phase-tracker-is-usable-standalone", TrackerStandalone);
 
+        // P4：单行状态行（忙闲共用槽位）+ 渐进披露。
+        failures += Check("status-is-single-line-when-busy", SingleLineBusy);
+        failures += Check("status-persists-when-idle", StatusPersistsIdle);
+        failures += Check("status-drops-whole-tail-segments-not-truncates", TailDroppedWhole);
+        failures += Check("status-uses-vertical-bar-separator", VerticalBar);
+        failures += Check("anchored-region-survives-body-scroll", RegionSurvivesScroll);
+
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
             : $"TERMINAL: {failures} FAILURE(S)");
@@ -1335,7 +1342,11 @@ public static class TerminalChecks
     /// <summary>
     /// 在受控的 Console.Out 下跑一段区域操作，返回渲染后的屏幕与原始输出。
     /// </summary>
-    private static (VtScreen Live, VtScreen AfterDispose) ReplayRegion(Action<LiveRegion> action)
+    private static (VtScreen Live, VtScreen AfterDispose) ReplayRegion(Action<LiveRegion> action) =>
+        ReplayRegion(new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false), action);
+
+    private static (VtScreen Live, VtScreen AfterDispose) ReplayRegion(
+        TerminalCapability capability, Action<LiveRegion> action)
     {
         // stderr 与 stdout 写的是同一块屏幕，只是流不同。两者必须拼成一条
         // 字节流再喂给模拟器，否则看不出"stderr 打在活动行上面"这类叠加。
@@ -1352,8 +1363,7 @@ public static class TerminalChecks
 
         try
         {
-            var rich = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false);
-            region = LiveRegion.Create(rich);
+            region = LiveRegion.Create(capability);
             if (!region.IsActive) throw new InvalidOperationException("富终端应激活区域");
 
             action(region);
@@ -1369,11 +1379,14 @@ public static class TerminalChecks
             Console.SetError(originalError);
         }
 
-        var live = new VtScreen(columns: 80, rows: 12);
+        var screenRows = capability.Height > 0 ? capability.Height : 12;
+        var screenColumns = capability.Width > 0 ? capability.Width : 80;
+
+        var live = new VtScreen(columns: screenColumns, rows: screenRows);
         live.Feed(whileLive);
 
         // 退出后的屏幕：从同一段字节接着喂，看 Clear 是否真的擦干净了。
-        var afterDispose = new VtScreen(columns: 80, rows: 12);
+        var afterDispose = new VtScreen(columns: screenColumns, rows: screenRows);
         afterDispose.Feed(captured.ToString());
 
         return (live, afterDispose);
@@ -1397,6 +1410,15 @@ public static class TerminalChecks
         private int _savedRow;
         private int _savedColumn;
 
+        /// <summary>Scroll the whole screen up one row; last row becomes blank.</summary>
+        private void ScrollUp()
+        {
+            for (var r = 0; r < rows - 1; r++)
+                Array.Copy(_grid[r + 1], _grid[r], columns);
+
+            Array.Fill(_grid[rows - 1], ' ');
+        }
+
         public void Feed(string text)
         {
             for (var i = 0; i < text.Length; i++)
@@ -1418,7 +1440,15 @@ public static class TerminalChecks
 
                 switch (c)
                 {
-                    case '\n': _row = Math.Min(rows - 1, _row + 1); break;
+                    case '\n':
+                        // Real scrolling, not clamping the cursor to the last row.
+                        // A real terminal scrolls the screen up when newline is
+                        // issued on the last row. The earlier version used
+                        // Math.Min(rows - 1, _row + 1), so the region being pushed
+                        // off by long body output was invisible to this simulator.
+                        if (_row >= rows - 1) ScrollUp();
+                        else _row++;
+                        break;
                     case '\r': _column = 0; break;
                     default:
                         // **写满最后一列要自动折行**。真实终端就是这么做的，
@@ -1472,6 +1502,22 @@ public static class TerminalChecks
                     Array.Fill(_grid[_row], ' ');
                     break;
 
+                case 'H':
+                {
+                    // CUP: absolute cursor position, 1-based. Used by the
+                    // bottom-anchored region (P3) to place the status line at a
+                    // fixed absolute row instead of a relative offset.
+                    //
+                    // Parameters are "row;column"; a missing part means 1.
+                    var parts = parameter.Split(';');
+                    var row = parts.Length > 0 ? ParseOrOne(parts[0]) : 1;
+                    var column = parts.Length > 1 ? ParseOrOne(parts[1]) : 1;
+
+                    _row = Math.Clamp(row - 1, 0, rows - 1);
+                    _column = Math.Clamp(column - 1, 0, columns - 1);
+                    break;
+                }
+
                 case 's':
                     // **故意不支持**。ESC[s/ESC[u 是 SCO 私有序列，
                     // 真实终端与 pyte 都不保证保存/还原位置——用 pyte 实测过：
@@ -1520,6 +1566,151 @@ public static class TerminalChecks
     /// 区域被收起（擦除）→ 紧接着写正文。此时光标列必须回到原来的位置。
     /// </para>
     /// </remarks>
+    /// <summary>忙时状态行是**一行**，且含指示符与模型名。</summary>
+    private static string? SingleLineBusy()
+    {
+        var state = new ActivityState();
+        state.OnRunStarted(DateTimeOffset.UnixEpoch);
+
+        var line = StatusLine.RenderSingleLine(
+            state, "mimo-v2.6-flash", 12_000, 1_000_000,
+            TimeSpan.FromSeconds(3), DateTimeOffset.UnixEpoch, 120);
+
+        if (line.Contains(NewLineChar)) return "状态行含换行——应该是单行";
+
+        if (!line.Contains("mimo-v2.6-flash", StringComparison.Ordinal))
+            return $"状态行没有模型名：{line}";
+
+        // 忙时应有 spinner 或面孔，不该是空闲符号。
+        return line.TrimStart().StartsWith('◇') ? "忙时显示了空闲符号" : null;
+    }
+
+    /// <summary>
+    /// 空闲时状态行**仍然在**（P4 的核心收益）。
+    /// </summary>
+    /// <remarks>
+    /// 原来轮次结束就 <c>Clear()</c> 整块收起，用户看到"底部空荡"。
+    /// Hermes 的空闲状态行是常驻的。
+    /// </remarks>
+    private static string? StatusPersistsIdle()
+    {
+        var idle = new ActivityState();   // 初始就是 Idle
+
+        var line = StatusLine.RenderSingleLine(
+            idle, "mimo-v2.6-flash", 12_000, 1_000_000,
+            TimeSpan.FromSeconds(6.6), DateTimeOffset.UnixEpoch, 120);
+
+        if (string.IsNullOrWhiteSpace(line)) return "空闲时状态行是空的——底部会显得空荡";
+
+        if (!line.Contains("mimo-v2.6-flash", StringComparison.Ordinal))
+            return $"空闲状态行没有模型名：{line}";
+
+        // 空闲不该有转动的 spinner（会让用户以为还在跑）。
+        return line.TrimStart().StartsWith('◇')
+            ? null
+            : $"空闲时应显示静态符号而非 spinner：{line}";
+    }
+
+    /// <summary>
+    /// 放不下时**整段丢弃**，不是截断中间。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么整段丢</b>：截断中间会切出"12k/1M ██░…"这种半截进度条，
+    /// 既不精确也难看。Hermes 的判据是逐段 <c>fits()</c>，放不下就停——
+    /// 这样保证"模型名和上下文占用永远完整可见"。
+    /// </remarks>
+    private static string? TailDroppedWhole()
+    {
+        var idle = new ActivityState();
+
+        var wide = StatusLine.RenderSingleLine(
+            idle, "model", 12_000, 1_000_000,
+            TimeSpan.FromSeconds(3), DateTimeOffset.UnixEpoch, 200);
+
+        var narrow = StatusLine.RenderSingleLine(
+            idle, "model", 12_000, 1_000_000,
+            TimeSpan.FromSeconds(3), DateTimeOffset.UnixEpoch, 45);
+
+        if (!wide.Contains('%')) return $"宽终端应显示百分比：{wide}";
+        if (narrow.Contains('%')) return $"窄终端不该显示百分比（应压成 12K tok）：{narrow}";
+        if (!narrow.Contains("tok", StringComparison.Ordinal))
+            return $"窄终端应压成 compact 形式：{narrow}";
+
+        // 极窄：只剩指示符。
+        var tiny = StatusLine.RenderSingleLine(
+            idle, "model", 12_000, 1_000_000,
+            TimeSpan.FromSeconds(3), DateTimeOffset.UnixEpoch, 20);
+
+        return tiny.Contains("model", StringComparison.Ordinal)
+            ? $"极窄终端不该有模型名：{tiny}"
+            : null;
+    }
+
+    /// <summary>段分隔符是 <c>│</c> 不是 <c>·</c>。</summary>
+    private static string? VerticalBar()
+    {
+        var state = new ActivityState();
+        state.OnRunStarted(DateTimeOffset.UnixEpoch);
+
+        var line = StatusLine.RenderSingleLine(
+            state, "mimo", 12_000, 1_000_000,
+            TimeSpan.FromSeconds(3), DateTimeOffset.UnixEpoch, 120);
+
+        return line.Contains('│')
+            ? null
+            : $"状态行没有用 │ 分隔：{line}";
+    }
+
+    /// <summary>换行符常量，避免字符字面量在编辑流程里被转义成真换行。</summary>
+    private const char NewLineChar = (char)10;
+
+    /// <summary>
+    /// Body output that fills the screen must not make the region vanish.
+    /// </summary>
+    /// <remarks>
+    /// <b>What this check does NOT prove</b>: it does not prove anchoring works.
+    /// Verified by negative control -- switching the region back to the
+    /// relative path leaves this check green, because a cursor-relative region
+    /// follows the body and is therefore never pushed off. Only the three
+    /// anchoring-specific checks go red in that case.
+    ///
+    /// <para>
+    /// So the honest claim is narrower: <b>"after body text fills the screen,
+    /// the region content is still readable and the body was not overwritten"</b>.
+    /// That is the exact failure the P3 debt would produce -- a repaint that
+    /// still targets the pre-scroll absolute row writes to the wrong place,
+    /// or the region scrolls out of view entirely.
+    /// </para>
+    ///
+    /// <para>
+    /// The VT simulator used to clamp the cursor at the last row instead of
+    /// scrolling, which made this whole class of defect invisible. It now
+    /// scrolls for real.
+    /// </para>
+    /// </remarks>
+    private static string? RegionSurvivesScroll()
+    {
+        var cap = new TerminalCapability(TerminalTier.Rich, 60, IsRedirected: false, Height: 8);
+
+        var (live, _) = ReplayRegion(cap, rich =>
+        {
+            // Fill most of the screen with body text.
+            for (var i = 0; i < 6; i++)
+                rich.RunExclusive(() => Output.Control("body " + i));
+
+            rich.SetLines(["STATUSLINE"]);
+        });
+
+        var text = live.Text();
+
+        if (!text.Contains("STATUSLINE", StringComparison.Ordinal))
+            return "region content is not visible after body output: " + live.Dump();
+
+        return text.Contains("body 0", StringComparison.Ordinal)
+            ? null
+            : "early body text was overwritten by a repaint: " + live.Dump();
+    }
+
     private static string? VtReplayPromptLine()
     {
         var (live, _) = ReplayRegion(rich =>
