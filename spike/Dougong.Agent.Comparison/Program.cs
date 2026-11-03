@@ -100,6 +100,7 @@ public static class Program
         "outbound-http",
         "session-projection",
         "subagent",
+        "goal",
         "workspace-lock",
     ];
 
@@ -328,6 +329,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "subagent")
             return await SubagentChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "goal")
+            return await GoalChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

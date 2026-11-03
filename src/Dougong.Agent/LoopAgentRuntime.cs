@@ -128,6 +128,16 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     public SkillDiscovery? Skills { get; init; }
 
     /// <summary>
+    /// 会话目标；null 表示不追踪。
+    /// </summary>
+    /// <remarks>
+    /// <b>只记账，不驱动</b>：这里的职责是"每开始一轮就记一次"，
+    /// 让轮次上限与 blocked 门槛有依据。**不做自动续轮**——
+    /// 目标完成后不会自动开始下一轮，那是人或宿主的决定（见 D-33）。
+    /// </remarks>
+    public SessionGoal? Goal { get; init; }
+
+    /// <summary>
     /// 重复调用检测；null 表示不检测。
     /// </summary>
     /// <remarks>
@@ -232,6 +242,10 @@ public sealed class LoopAgentRuntime : IAgentRuntime
 
         // 每轮清零：用户说"再跑一次"时，那是一次新的开始，不是上一个循环的延续。
         RepeatDetection?.Reset();
+
+        // 记一轮：目标的轮次上限与 blocked 门槛都基于这个数。
+        // 只有 active 阶段才计数（见 SessionGoal.BeginRound）。
+        Goal?.BeginRound();
 
         // **待注入的提醒也要清**。第一版只重置了检测链，提醒列表保留着：
         // 若上一轮在"已加入提醒但还没发出去"时结束（工具轮上限、取消、

@@ -87,6 +87,11 @@ public sealed class SessionComposition : IDisposable
     /// </remarks>
     private readonly SubagentRegistry _subagents = new();
 
+    /// <summary>
+    /// 会话目标。**会话级**：跨轮保持，与 plan mode 同级。
+    /// </summary>
+    private readonly SessionGoal _goal = new();
+
     /// <summary>当前委派深度；主对话为 0。</summary>
     private readonly int _delegationDepth;
 
@@ -575,6 +580,13 @@ public sealed class SessionComposition : IDisposable
         dispatcher.Register(new SubagentListTool(_subagents));
         dispatcher.Register(new SubagentResultTool(_subagents));
 
+        // 会话目标：跨轮次的完成判据。**不做自动续轮**——见 D-33。
+        // 子 agent 不给这三个工具：目标属于"主对话在追的这件事"，
+        // 而子 agent 是一次性的自包含任务，给它立目标毫无意义。
+        dispatcher.Register(new CreateGoalTool(_goal));
+        dispatcher.Register(new GetGoalTool(_goal));
+        dispatcher.Register(new UpdateGoalTool(_goal));
+
         // 计划模式：模型调 exit_plan_mode 提交完整 Markdown 计划，
         // 工具**阻塞**等用户审阅（dsh 的做法），批准后同一轮继续。
         // 它不执行命令，所以不受 shell 开关约束。
@@ -863,6 +875,7 @@ public sealed class SessionComposition : IDisposable
                 Directory = _directory,
                 Skills = _skills,
                 RepeatDetection = _repeatDetection,
+                Goal = _goal,
                 Retry = RetryPolicy.Default,
                 Spill = CreateSpillStore(),
                 PlanMode = _planMode,
@@ -896,6 +909,7 @@ public sealed class SessionComposition : IDisposable
             // 重复检测从不触发，而组件本身都正常：症状是"功能在，但永远不生效"。
             Skills = _skills,
             RepeatDetection = _repeatDetection,
+            Goal = _goal,
             // 交互场景打开重试：一次瞬时 429 不该结束整轮。
             // SDK 默认不重试（自动化要确定性），这里是我们替用户做的选择。
             Retry = RetryPolicy.Default,
