@@ -256,7 +256,7 @@ Roslyn 只解析 C#。把 Roslyn 写进 SDK 恰好是把 harness 绑定到单一
 | `dsh-win32-process` | Win32 Job Object | **无** | **缺** |
 | `dsh-terminal` / `-bash` | 持久 PTY | **不做** | **不做**：归属桌面端 `PtyHost`，理由见下 |
 | `dsh-shell` / `shell-env` | bash 执行 seam、受管环境变量 | `IShellExecutor` + `LocalShellExecutor` + `ShellEnvironment.Minimal()` | **已有**：seam 就位，环境变量走白名单 |
-| `dsh-ssh` / `-helper-runtime` | 远端会话（命令在远端跑） | **无** | **缺**：只在本地执行 |
+| `dsh-ssh` / `-helper-runtime` | 远端会话（命令在远端跑） | **无** | **暂缓**（2026-11-03）：seam 形态允许（`IShellExecutor` / `IFileSystem`），但无真实场景。理由见 `dsh-capability-progress.md` §三之三 |
 | `dsh-subprocess-ssh` / `sandbox-ssh` / `fs-ssh` | 远端的进程/沙箱/文件 seam | **无** | **缺**：`IShellExecutor` / `IFileSystem` 的形态允许，但没有实现 |
 
 **沙箱这块 2026-10-31 已定案：只做策略层，不做 OS 级隔离。**
@@ -502,8 +502,13 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~30~~ | ~~消息级反馈（正负 + 分类，进日志不进模型）~~ | `dsh-feedback/message-feedback` | **✅ 2026-11-02**：`MessageFeedback` + `JsonlMessageFeedbackStore`（伴生文件，不碰会话日志） |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 14 项 + 1 项明确不做（2026-11-03）**。剩 #31 SSH。
-各项的关键取舍与复核修掉的缺陷记在 `porting-differences.md` D-19 至 D-33。
+**P2 已完成 14 项（+ 1 项明确不做、1 项暂缓）。**
+
+- 明确不做：**真 PTY**（归属桌面端 `PtyHost`）
+- 暂缓：**#31 SSH**（没有场景；状态仍是 ⬜，有需求时直接接上）
+
+P2 没有剩余的"应该做但没做"项。各项的关键取舍与复核修掉的缺陷记在
+`porting-differences.md` D-19 至 D-33。
 
 ### 为什么真 PTY 判为不做
 
