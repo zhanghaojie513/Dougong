@@ -328,8 +328,14 @@ public static class SkillChecks
     /// </remarks>
     private static string? CheckAssignedOnEveryBranch(string source, string property)
     {
-        var returns = CountOccurrences(source, "return new LoopAgentRuntime");
-        var assignments = CountOccurrences(source, property + " =");
+        // **只数 CreateRuntime 方法体内部**。全文件数会把子 agent 的运行时构造
+        // （CreateSubagentRuntime）也算进来——那不是本检查的对象，
+        // 而多算一处就要求属性在那里也赋值，于是检查变成假的红。
+        var body = MethodBody(source, "LoopAgentRuntime CreateRuntime(");
+        if (body is null) return "找不到 CreateRuntime 方法体——检查失效";
+
+        var returns = CountOccurrences(body, "return new LoopAgentRuntime");
+        var assignments = CountOccurrences(body, property + " =");
 
         if (returns < 2)
             return $"前提不成立：CreateRuntime 只找到 {returns} 条返回路径（预期至少 2 条）";
@@ -338,6 +344,29 @@ public static class SkillChecks
             ? null
             : $"{property} 只在 {assignments} 条返回路径上赋值，而 CreateRuntime 有 {returns} 条——"
                 + "某条分支上功能不生效";
+    }
+
+    /// <summary>截取一个方法的正文（从签名后的第一个 { 到配对的 }）。</summary>
+    private static string? MethodBody(string source, string signature)
+    {
+        var start = source.IndexOf(signature, StringComparison.Ordinal);
+        if (start < 0) return null;
+
+        var open = source.IndexOf('{', start);
+        if (open < 0) return null;
+
+        var depth = 0;
+        for (var i = open; i < source.Length; i++)
+        {
+            if (source[i] == '{') depth++;
+            else if (source[i] == '}')
+            {
+                depth--;
+                if (depth == 0) return source[open..(i + 1)];
+            }
+        }
+
+        return null;
     }
 
     private static int CountOccurrences(string text, string needle)

@@ -99,6 +99,7 @@ public static class Program
         "permission-preset",
         "outbound-http",
         "session-projection",
+        "subagent",
         "workspace-lock",
     ];
 
@@ -324,6 +325,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "session-projection")
             return await SessionProjectionChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "subagent")
+            return await SubagentChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

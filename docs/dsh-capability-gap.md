@@ -164,7 +164,7 @@
 | `dsh-tool-todo` | `todo_write` | `TodoWriteTool` | **已有** |
 | `dsh-tool-ask-user` | `ask_user_question` | `AcpElicitationTool`（仅 ACP） | **缺**：REPL 里没有等价物 |
 | `dsh-tool-skill` | 技能加载工具 | `SkillTool` | **已有** |
-| `dsh-tool-subagent` / `-control` | 子 agent 委派与控制 | **无** | **缺** |
+| `dsh-tool-subagent` / `-control` | 子 agent 委派与控制 | `subagent` / `subagent_list` / `subagent_result` | **部分**：有委派与取结果，**无中途 steering（send_message）与 interrupt_agent**；见 D-32 |
 | `dsh-tool-jobs` | 后台任务控制 | **无** | **缺** |
 | `dsh-tool-web` | `web_search` / `web_fetch` | **无** | **缺** |
 | `dsh-tool-goal` | 目标工具 | **无** | **缺** |
@@ -295,7 +295,7 @@ Roslyn 只解析 C#。把 Roslyn 写进 SDK 恰好是把 harness 绑定到单一
 | `dsh-skill` / `-filesystem` | 技能提供者注册表 | `SkillDiscovery` | **部分**：有发现与合并，**无分层注册表与热失效**；理由见 D-26 |
 | `dsh-goal` / `-round-driver` | 会话内目标的持久状态与轮次驱动 | **无** | **缺** |
 | `dsh-plan-mode` | 计划模式（带用户审阅的退出） | **部分**：`TodoWriteTool` 只是计划展示 | **缺** |
-| `dsh-subagent` / `-fork` / `-spawn` | 子 agent seam 与两种后端 | **无** | **缺** |
+| `dsh-subagent` / `-fork` / `-spawn` | 子 agent seam 与两种后端 | `SubagentRegistry` | **部分**：只有一种"空历史"子 agent，**无 fork（继承历史）与 spawn（独立 preset）两种**；见 D-32 |
 
 ---
 
@@ -485,7 +485,7 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 
 | # | 缺什么 | 对应 dsh | 状态 |
 |---|---|---|---|
-| 17 | 子 agent 委派 | `dsh-subagent*` | |
+| ~~17~~ | ~~子 agent 委派~~ | `dsh-subagent*` | **✅ 2026-11-03**：`SubagentRegistry` + 三个工具 |
 | 18 | 会话内目标（goal） | `dsh-goal*` | |
 | ~~19~~ | ~~计划模式（带审阅退出）~~ | `dsh-plan-mode` | **✅ 2026-11-02**：`exit_plan_mode` 阻塞审阅 |
 | ~~20~~ | ~~后台任务~~ | `dsh-jobs*` | **✅ 2026-11-02**：`JobRegistry` + 四个工具 |
@@ -502,8 +502,8 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~30~~ | ~~消息级反馈（正负 + 分类，进日志不进模型）~~ | `dsh-feedback/message-feedback` | **✅ 2026-11-02**：`MessageFeedback` + `JsonlMessageFeedbackStore`（伴生文件，不碰会话日志） |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 12 项 + 1 项明确不做（2026-11-03）**。各项的关键取舍与
-复核修掉的缺陷记在 `porting-differences.md` D-19 至 D-31。
+**P2 已完成 13 项 + 1 项明确不做（2026-11-03）**。各项的关键取舍与
+复核修掉的缺陷记在 `porting-differences.md` D-19 至 D-32。
 
 ### 为什么真 PTY 判为不做
 

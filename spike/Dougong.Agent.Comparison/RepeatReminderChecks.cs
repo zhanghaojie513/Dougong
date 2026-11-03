@@ -298,9 +298,28 @@ public static class RepeatReminderChecks
         // **按分支数验，不只查字符串**：第一版只做 Contains，
         // 而 RepeatDetection 曾只加进 CreateRuntime 的一条返回路径
         // （REPL 常态走的是另一条），检查照样全绿。
+        // **只数 CreateRuntime 方法体**：全文件数会把子 agent 的运行时构造
+        // 也算进去（那里有自己的 RepeatDetection），于是这条检查会假红。
         var source = File.ReadAllText(composition);
-        var returns = CountOccurrences(source, "return new LoopAgentRuntime");
-        var assignments = CountOccurrences(source, "RepeatDetection =");
+        var bodyStart = source.IndexOf("LoopAgentRuntime CreateRuntime(", StringComparison.Ordinal);
+        if (bodyStart < 0) return "找不到 CreateRuntime 方法体——检查失效";
+
+        var open = source.IndexOf('{', bodyStart);
+        var depth = 0;
+        var end = open;
+        for (var i = open; i < source.Length; i++)
+        {
+            if (source[i] == '{') depth++;
+            else if (source[i] == '}')
+            {
+                depth--;
+                if (depth == 0) { end = i; break; }
+            }
+        }
+
+        var body = source[bodyStart..(end + 1)];
+        var returns = CountOccurrences(body, "return new LoopAgentRuntime");
+        var assignments = CountOccurrences(body, "RepeatDetection =");
 
         if (returns < 2)
             return $"前提不成立：CreateRuntime 只找到 {returns} 条返回路径";

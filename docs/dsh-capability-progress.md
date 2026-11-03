@@ -47,18 +47,18 @@
 | 1. Agent 循环 | 7 | 0 | 1 | 1 | 9 | 88% |
 | 2. LLM 与用量 | 5 | 2 | 2 | 0 | 9 | 56% |
 | 3. 会话与持久化 | 9 | 5 | 3 | 0 | 17 | 68% |
-| 4. 工具 | 11 | 3 | 5 | 4 | 23 | 58% |
+| 4. 工具 | 12 | 3 | 4 | 4 | 23 | 61% |
 | 5. 审批与提问 | 4 | 0 | 0 | 0 | 4 | 100% |
 | 6. 沙箱与进程 | 1 | 2 | 3 | 1 | 7 | 17% |
 | 7. 文件系统 | 4 | 0 | 2 | 0 | 6 | 67% |
-| 8. 技能 / 目标 / 计划 / 子 agent | 2 | 0 | 2 | 0 | 4 | 50% |
+| 8. 技能 / 目标 / 计划 / 子 agent | 3 | 0 | 1 | 0 | 4 | 75% |
 | 9. 任务与调度 | 3 | 1 | 2 | 0 | 6 | 50% |
 | 10. 网络与外部 | 3 | 2 | 0 | 1 | 6 | 60% |
 | 11. 配置与凭据 | 3 | 2 | 1 | 0 | 6 | 50% |
-| **合计** | **52** | **17** | **21** | **7** | **97** | **60%** |
+| **合计** | **54** | **17** | **19** | **7** | **97** | **62%** |
 
 完成度算法：`(✅ + 🟡×0.5) / (✅+🟡+⬜)`，不含 `➖`。
-（`(52 + 8.5) / 90 = 60%`）
+（`(54 + 8.5) / 90 = 62%`）
 
 > **这张表曾长期与逐行数据不一致**（2026-11-03 复核时发现：多个领域的
 > ✅/🟡/⬜ 都在改行时漏改过，而 `capability-progress-counts-are-consistent`
@@ -172,7 +172,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | ✅ | 工具超时 | `[自有]` | `dsh-tool-call-timeout-policy` | `ToolExecutionPlan.Timeout` + `ToolDispatcher.DefaultToolTimeout` | 逐工具上限优先；`TimedOut` 与"用户取消"分开；超时算已执行 |
 | ✅ | 向人类提问 | `[自有]` | `dsh-tool-ask-user` | `AskUser`（语义）+ `AcpElicitationTool` / `ConsoleElicitationTool`（传输） | 语义层下沉到 Agent，两个宿主共用；四态结果分开（答/拒/取消/不可用）；2026-11-02 |
 | ⬜ | 技能加载 | `[—]` | `dsh-tool-skill` | — | |
-| ⬜ | 子 agent 委派 | `[—]` | `dsh-tool-subagent*` | — | |
+| ✅ | 子 agent 委派 | `[自有]` | `dsh-tool-subagent*` | `subagent` / `subagent_list` / `subagent_result` | 三工具分动作，不用 mode 参数；2026-11-03 |
 | ✅ | 后台任务控制 | `[自有]` | `dsh-tool-jobs` | `JobStartTool` / `JobOutputTool` / `JobStopTool` / `JobListTool` | 四个名字各自说清动作，不用 mode 参数（模型会选错）；2026-11-02 |
 | 🟡 | web 抓取 | `[自有]` | `dsh-web-fetch-http` | `WebFetchTool` | 只做抓取，不执行 JS；默认关闭（`DOUGONG_WEB_FETCH=1`）；报 `ToolAccess.Network` + 目标域名；2026-11-02 |
 | 🟡 | `present` 工具 | `[自有]` | `dsh-tool-present` | — | 改动清单有了（`--changes`），但**没有 `present` 工具**让模型主动声明交付物 |
@@ -222,7 +222,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | ✅ | 计划模式 | `[自有]` | `dsh-plan-mode` | `PlanMode` + `ExitPlanModeTool` + `/plan` | **照 dsh 做**：`exit_plan_mode` 工具**阻塞**等审阅，批准后同一轮继续；`plan` 是完整 Markdown 文档（须 `# 标题`）；走 `AskUser` 通道带 `intent.kind=plan-review`；2026-11-02 |
 | ✅ | 技能提供者注册 | `[自有]` | `dsh-skill*` | `SkillDiscovery` + `SkillTool` | 两种形态（`<name>/SKILL.md` 与 `<name>.md`）；三个根按 rank 合并（项目级压用户级），影子链以**来源标签**（不含路径）报出；只注入名字与描述、按需加载正文；`disable-model-invocation` 在目录与加载**两处**都生效；2026-11-03 |
 | ⬜ | 会话内目标 | `[—]` | `dsh-goal*` | — | |
-| ⬜ | 子 agent | `[—]` | `dsh-subagent*` | — | |
+| ✅ | 子 agent | `[自有]` | `dsh-subagent*` | `SubagentRegistry` + 三个工具 | 空历史隔离、只回最终正文、启动即返回；深度上限 3 且**到顶不注册工具**（防递归）；并发满拒绝不排队；**不做延续对话**；2026-11-03 |
 
 ### 9. 任务与调度
 
@@ -404,7 +404,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | 26 | 重复工具调用提醒 | ✅ | `repeat-reminder`（10 项） | 无 | 小 |
 | 27 | 权限预设 | ✅ | `permission-preset`（11 项） | 无 | 小 |
 | 25 | 出站代理 | ✅ | `outbound-http`（7 项） | 企业环境 | 小 |
-| 17 | 子 agent 委派 | ⬜ | — | 无 | 大 |
+| 17 | 子 agent 委派 | ✅ | `subagent`（9 项） | 无 | 大 |
 | 18 | 会话内目标 | ⬜ | — | 无 | 中 |
 | 31 | 远端执行（SSH） | ⬜ | — | 无 | 大 |
 

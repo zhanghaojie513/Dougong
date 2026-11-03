@@ -79,6 +79,17 @@ public sealed class SessionComposition : IDisposable
     /// </remarks>
     private readonly RepeatToolReminder? _repeatDetection = new();
 
+    /// <summary>
+    /// 子 agent 注册表（含深度与并发上限）。
+    /// </summary>
+    /// <remarks>
+    /// <b>会话级单实例</b>：活跃子 agent 的生命周期归它管，释放时要等它们退出。
+    /// </remarks>
+    private readonly SubagentRegistry _subagents = new();
+
+    /// <summary>当前委派深度；主对话为 0。</summary>
+    private readonly int _delegationDepth;
+
     /// <summary>提问传输。默认走终端；ACP 路径注入自己的实现。</summary>
     private readonly IAskUserHost _askUserHost;
 
@@ -102,7 +113,9 @@ public sealed class SessionComposition : IDisposable
         IAskUserHost? askUserHost = null,
         string? restoredDirectory = null,
         IWorkingDirectoryStore? directoryStore = null,
-        SkillDiscovery? skills = null)
+        SkillDiscovery? skills = null,
+        int delegationDepth = 0,
+        SubagentRegistry? subagents = null)
     {
         _sessionId = sessionId;
         _workspace = workspace;
@@ -116,6 +129,8 @@ public sealed class SessionComposition : IDisposable
         MemoryStore = memoryStore;
         _directoryStore = directoryStore;
         _skills = skills;
+        _delegationDepth = delegationDepth;
+        if (subagents is not null) _subagents = subagents;
 
         // 默认档取决于入口能不能问人：控制台与 ACP 都有人答，
         // 自动批准模式下不问。**默认值在这里定，而不是让每个入口自己记着传**。
@@ -495,9 +510,6 @@ public sealed class SessionComposition : IDisposable
         var files = new LocalFileSystem(_directory.Current);
         _files = files;
         // **资源键的基准必须与工具实际读写的目录一致**：用会话的有效目录，
-        // 不用进程 CWD。换过目录或从别的目录启动时，两者不同，
-        // 而症状是同一个文件得到两个键、互斥失效。
-        // **资源键的基准必须与工具实际读写的目录一致**：用会话的有效目录，
         // 不用进程 CWD。换过目录或从别的目录启动时两者不同，
         // 而症状是同一个文件得到两个键、互斥失效。
         //
@@ -543,6 +555,26 @@ public sealed class SessionComposition : IDisposable
             _shellExecutor,
             [readTool, writeTool, globTool, grepTool, editTool]));
 
+        // 子 agent：把自包含的任务丢出去做，中间过程不进主对话的上下文。
+        //
+        // **深度到上限就不再注册这个工具**：这是防无限递归的唯一屏障。
+        // 靠"子 agent 自己克制"不可靠，而递归失控的失败形态是
+        // "跑了几百层之后额度烧光"，没有任何能指向原因的线索。
+        //
+        // 子 agent 的工具集**不含 subagent 本身**（除非还没到上限），
+        // 也不含 subagent_list/result 之外的编排工具。
+        if (_delegationDepth < _subagents.MaxDepth)
+        {
+            dispatcher.Register(new SubagentTool(
+                _subagents,
+                request => CreateSubagentRuntime(
+                    request, approver, files, readTool, writeTool, globTool, grepTool, editTool),
+                _sessionId, "turn-1"));
+        }
+
+        dispatcher.Register(new SubagentListTool(_subagents));
+        dispatcher.Register(new SubagentResultTool(_subagents));
+
         // 计划模式：模型调 exit_plan_mode 提交完整 Markdown 计划，
         // 工具**阻塞**等用户审阅（dsh 的做法），批准后同一轮继续。
         // 它不执行命令，所以不受 shell 开关约束。
@@ -587,6 +619,84 @@ public sealed class SessionComposition : IDisposable
         }
 
         return dispatcher;
+    }
+
+    /// <summary>
+    /// 为一个子 agent 造**独立的**运行时与工具集。
+    /// </summary>
+    /// <remarks>
+    /// <b>"独立"是这条能力的全部意义</b>，三件事必须各自成立：
+    /// <list type="number">
+    /// <item><b>独立历史</b>：<see cref="AgentRunRequest.History"/> 传空。
+    /// 共用主对话的历史等于子 agent 就是主对话，那省不下任何上下文。</item>
+    /// <item><b>独立存储</b>：子 agent 不落盘。给它一个 store 会让它的中间记录
+    /// 出现在会话目录里，而用户 <c>--list</c> 时会看到一堆莫名其妙的会话。
+    /// 代价是子 agent 不可恢复——它是一次性的，见 D-32。</item>
+    /// <item><b>不注册 <c>subagent</c> 工具</b>（除非还没到深度上限）：
+    /// 否则可以无限往下委派。</item>
+    /// </list>
+    ///
+    /// <para>
+    /// <b>但工具集本身要共享</b>：子 agent 若没有 read/write/shell，
+    /// 它能做的事只剩"空想"。它复用父会话的 <see cref="LocalFileSystem"/>
+    /// 与执行器实例，因此换目录、资源键等行为完全一致。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>不共享审批器</b>：子 agent 的调用不逐次问用户——那会在一次委派里
+    /// 弹十几次确认，而用户只批准了"把这个任务交出去"这一件事。
+    /// 但**拦截器仍然生效**（它在审批之前跑），所以规则类限制不失效。
+    /// </para>
+    /// </remarks>
+    private LoopAgentRuntime CreateSubagentRuntime(
+        AgentRunRequest request,
+        IToolApprover approver,
+        LocalFileSystem files,
+        params IFileResourceKeyOwner[] keyOwners)
+    {
+        // 子 dispatcher：独立实例，只装"干活用的"工具。
+        // 用访问点重载（第一个参数是 IApproverAccessor）：裸实例重载会把
+        // 审批器固定下来，而这里希望它与父会话共用同一个当前审批器。
+        var childDispatcher = new ToolDispatcher(
+            new PermissionPolicyApprover(approver),
+            new ToolResourceGate(),
+            request.SessionId, request.TurnId, _directory.Project,
+            TimeSpan.FromMinutes(5),
+            new WorkspacePathGuard(_directory.Project),
+            store: null);
+
+        // 文件与搜索工具：与父会话同一批实体（同一 LocalFileSystem、同一基准）。
+        childDispatcher.Register(new ReadFileTool(files));
+        childDispatcher.Register(new WriteFileTool(files));
+        childDispatcher.Register(new GlobTool(files));
+        childDispatcher.Register(new GrepTool(files));
+        childDispatcher.Register(new EditFileTool(files));
+
+        if (_shellEnabled) childDispatcher.Register(new ShellTool(_workspace));
+
+        // 更深一层：还没到上限时允许它继续委派，共用同一个注册表
+        // （所以并发上限是跨层级的总数，不是每层各四份）。
+        if (_delegationDepth + 1 < _subagents.MaxDepth)
+        {
+            childDispatcher.Register(new SubagentTool(
+                _subagents,
+                r => CreateSubagentRuntime(r, approver, files, keyOwners),
+                request.SessionId, request.TurnId));
+        }
+
+        childDispatcher.Register(new SubagentListTool(_subagents));
+        childDispatcher.Register(new SubagentResultTool(_subagents));
+
+        return new LoopAgentRuntime(_client, childDispatcher, store: null)
+        {
+            Memory = Memory,
+            MemoryWorkspace = _workspace,
+            PromptBuilder = CreatePromptBuilder(),
+            Time = CreateTimeContext(),
+            Directory = _directory,
+            RepeatDetection = new RepeatToolReminder(),
+            // **不给 PlanMode**：子 agent 没有人在看它的计划，等审阅会永久阻塞。
+        };
     }
 
     /// <summary>
@@ -658,8 +768,29 @@ public sealed class SessionComposition : IDisposable
     /// 判定停在半路。见 <c>Program.cs</c> 的退出路径。
     /// </para>
     /// </remarks>
+    /// <remarks>
+    /// <b>子 agent 必须先停</b>：它们还在跑的时候释放文件系统与作业注册表，
+    /// 会让子 agent 的下一次工具调用打在一个已释放的对象上。而它们本身是
+    /// 后台任务，不会因为宿主 Dispose 而自动停。
+    /// <para>
+    /// 这里**同步等待有界时间**：<c>Dispose</c> 的签名是同步的，
+    /// 而子 agent 的退出是异步的。等 5 秒是为了"让它们收尾"，不是因为
+    /// 5 秒一定能等完——超时之后仍然继续释放，卡死的子 agent
+    /// 不该让整个宿主退不出去。
+    /// </para>
+    /// </remarks>
     public void Dispose()
     {
+        // 先停子 agent（它们会用到下面这些资源）。
+        try
+        {
+            _subagents.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (AggregateException)
+        {
+            // 子 agent 退出时的异常不该阻止宿主继续释放。
+        }
+
         // 顺序无关：两者互不依赖，都是"结束自己持有的子进程"。
         _jobRegistry?.Dispose();
         _jobRegistry = null;
