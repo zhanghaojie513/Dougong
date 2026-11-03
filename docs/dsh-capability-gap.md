@@ -121,10 +121,10 @@
 | `dsh-session-persistence-jsonl` | JSONL 后端 | `JsonlAgentStore` | **已有** |
 | `dsh-session-format*` | 格式版本与迁移链（v0→v1→v2） | `SessionFormat`（版本行 + 拒绝） | **部分**：有版本号且不兼容会明确报错，**无迁移链**；理由见 `compat-policy.md` §7.1 |
 | `dsh-session-checkpoint-policy` | 模型请求与工具副作用前的语义检查点 | **部分**：有提交屏障，无显式检查点策略 | **缺** |
-| `dsh-session-projection*` | 日志派生的会话状态投影 | **无** | **缺**：宿主各自从日志重算 |
+| `dsh-session-projection*` | 日志派生的会话状态投影 | `ISessionProjection` + `SessionProjector` | **已有**：纯同步 fold；见 D-31 |
 | `dsh-session-query` / `-sqlite` | 会话查询（FTS5 全文搜索） | `SessionBranch.List`（列文件） | **缺**：不能搜内容 |
 | `dsh-session-title*` | 会话标题生成（LLM） | **无** | **缺**：CLI 显示会话文件名 |
-| `dsh-session-turn-outline` | 轮次大纲投影 | **无** | **缺** |
+| `dsh-session-turn-outline` | 轮次大纲投影 | `TurnOutlineProjection` + `--outline` | **已有** |
 | `dsh-session-reference` | 跨会话快照引用 | **无** | **缺** |
 | `dsh-session-log-export` | 会话日志导出 | **无** | **缺** |
 | `dsh-session-telemetry*` | 会话遥测 | `DougongTelemetry`（Meter） | **部分** |
@@ -493,7 +493,7 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | 21b | 真 PTY | `dsh-terminal-bash` | **➖ 不做**：归属桌面端（见下） |
 | ~~22~~ | ~~技能提供者~~ | `dsh-skill*` | **✅ 2026-11-03**：`SkillDiscovery` + `SkillTool` |
 | ~~23~~ | ~~拦截钩子~~ | `dsh-hook-protocol` | **✅ 2026-11-03**：`IToolInterceptor`（类型化拦截点） |
-| 24 | 会话投影 / 轮次大纲 | `dsh-session-projection*` | |
+| ~~24~~ | ~~会话投影 / 轮次大纲~~ | `dsh-session-projection*` | **✅ 2026-11-03**：`SessionProjector` + `TurnOutlineProjection` |
 | ~~25~~ | ~~出站代理~~ | `dsh-http-proxy` | **✅ 2026-11-03**：`OutboundHttp` |
 | ~~26~~ | ~~重复工具调用提醒~~ | `dsh-repeat-tool-reminder` | **✅ 2026-11-03**：`RepeatToolReminder` |
 | ~~27~~ | ~~权限预设~~ | `dsh-permission-presets` | **✅ 2026-11-03**：`PermissionPresets`（仅审批维） |
@@ -502,8 +502,8 @@ LSP 只在"重构找全部引用"与"重载/同名方法"两类任务上有增�
 | ~~30~~ | ~~消息级反馈（正负 + 分类，进日志不进模型）~~ | `dsh-feedback/message-feedback` | **✅ 2026-11-02**：`MessageFeedback` + `JsonlMessageFeedbackStore`（伴生文件，不碰会话日志） |
 | 31 | 远端执行（命令/文件在 SSH 主机上） | `dsh-ssh*` | |
 
-**P2 已完成 11 项 + 1 项部分 + 1 项明确不做（2026-11-03）**。各项的关键取舍与
-复核修掉的缺陷记在 `porting-differences.md` D-19 至 D-30。
+**P2 已完成 12 项 + 1 项明确不做（2026-11-03）**。各项的关键取舍与
+复核修掉的缺陷记在 `porting-differences.md` D-19 至 D-31。
 
 ### 为什么真 PTY 判为不做
 

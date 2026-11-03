@@ -126,6 +126,10 @@ public static class Program
         if (FindArg(args, "--changes") is { } changesArg)
             return await PrintChangesAsync(sessionBrowseDir, changesArg);
 
+        // 轮次大纲：从日志投影出"每一轮说了什么"，用来找到要回哪一轮。
+        if (FindArg(args, "--outline") is { } outlineArg)
+            return await PrintOutlineAsync(sessionBrowseDir, outlineArg);
+
 
         // 未知参数必须在读 provider 配置**之前**报出来。
         //
@@ -972,6 +976,7 @@ public static class Program
         Output.Line("  dougong --list               列出会话（带标题）");
         Output.Line("  dougong --search <关键词>    在会话历史里搜索");
         Output.Line("  dougong --changes <会话>     列出每轮改了哪些文件");
+        Output.Line("  dougong --outline <会话>     列出每轮说了什么（轮次大纲）");
         Output.Line("  dougong --resume <会话>      恢复会话");
         Output.Line("  dougong --branch <会话>      从某条记录分叉");
         Output.Line();
@@ -1174,6 +1179,57 @@ public static class Program
         return 0;
     }
 
+    /// <summary>
+    /// 打印轮次大纲：每一轮用户问了什么、模型答了什么。
+    /// </summary>
+    /// <remarks>
+    /// <b>输出要给"怎么跳过去"</b>：光有轮次编号没有用，
+    /// 每条都带上记录序号，可以直接拼成 <c>--resume</c>。
+    /// <para>
+    /// <b>不调用模型</b>：这是投影，只读日志。密钥过期时照样能用——
+    /// 而这正是最需要回顾会话的时候。
+    /// </para>
+    /// </remarks>
+    private static async Task<int> PrintOutlineAsync(string sessionDir, string argument)
+    {
+        var path = ResolveSessionPath(sessionDir, argument);
+        if (path is null)
+        {
+            Output.Line($"找不到会话：{argument}");
+            return 3;
+        }
+
+        var state = await SessionProjector.ProjectAsync(new TurnOutlineProjection(), path)
+            .ConfigureAwait(false);
+
+        if (state.Entries.Count == 0 && state.Draft is null)
+        {
+            Output.Line($"这个会话没有可解析的轮次：{Path.GetFileNameWithoutExtension(path)}");
+            return 1;
+        }
+
+        Output.Line($"会话 {Path.GetFileNameWithoutExtension(path)}：共 {state.Entries.Count} 轮"
+            + (state.Draft is null ? string.Empty : "（另有 1 轮未结束）"));
+        Output.Line();
+
+        foreach (var entry in state.Entries)
+        {
+            Output.Line($"  #{entry.Sequence,-5} 第 {entry.Turn} 轮  {entry.Prompt}");
+            foreach (var line in entry.Response)
+                Output.Line($"         │ {line}");
+        }
+
+        if (state.Draft is { } draft)
+        {
+            Output.Line($"  #{draft.Sequence,-5} 第 {draft.Turn} 轮  {draft.Prompt}（未结束）");
+        }
+
+        Output.Line();
+        Output.Line("跳到某一轮：dougong --resume <会话>");
+
+        return 0;
+    }
+
     /// <summary>截断到给定字符数。</summary>
     private static string Truncate(string text, int max) =>
         text.Length <= max ? text : text[..max] + "…";
@@ -1316,7 +1372,7 @@ public static class Program
 
     /// <summary>带值开关：后面那个参数是它的值，不是独立参数。</summary>
     internal static readonly string[] ValuedArguments =
-        ["--resume", "--branch", "--search", "--changes"];
+        ["--resume", "--branch", "--search", "--changes", "--outline"];
 
     private static string? FindUnknownArgument(string[] args)
     {

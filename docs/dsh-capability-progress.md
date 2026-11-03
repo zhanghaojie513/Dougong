@@ -46,7 +46,7 @@
 |---|---|---|---|---|---|---|
 | 1. Agent 循环 | 7 | 0 | 1 | 1 | 9 | 88% |
 | 2. LLM 与用量 | 5 | 2 | 2 | 0 | 9 | 56% |
-| 3. 会话与持久化 | 7 | 5 | 5 | 0 | 17 | 41% |
+| 3. 会话与持久化 | 9 | 5 | 3 | 0 | 17 | 68% |
 | 4. 工具 | 11 | 3 | 5 | 4 | 23 | 58% |
 | 5. 审批与提问 | 4 | 0 | 0 | 0 | 4 | 100% |
 | 6. 沙箱与进程 | 1 | 2 | 3 | 1 | 7 | 17% |
@@ -55,10 +55,10 @@
 | 9. 任务与调度 | 3 | 1 | 2 | 0 | 6 | 50% |
 | 10. 网络与外部 | 3 | 2 | 0 | 1 | 6 | 60% |
 | 11. 配置与凭据 | 3 | 2 | 1 | 0 | 6 | 50% |
-| **合计** | **50** | **17** | **23** | **7** | **97** | **58%** |
+| **合计** | **52** | **17** | **21** | **7** | **97** | **60%** |
 
 完成度算法：`(✅ + 🟡×0.5) / (✅+🟡+⬜)`，不含 `➖`。
-（`(50 + 8.5) / 90 = 58%`）
+（`(52 + 8.5) / 90 = 60%`）
 
 > **这张表曾长期与逐行数据不一致**（2026-11-03 复核时发现：多个领域的
 > ✅/🟡/⬜ 都在改行时漏改过，而 `capability-progress-counts-are-consistent`
@@ -143,11 +143,11 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | 🟡 | 会话恢复与分叉 | `[自有]` | — | `SessionRecovery`, `SessionBranch` | 有分叉，但无"消息树"概念 |
 | 🟡 | 提交屏障 | `[自有]` | `dsh-session-checkpoint-policy` | 提交屏障（四处落点） | 有屏障，**无显式检查点策略** |
 | 🟡 | 格式版本 | `[自有]` | `dsh-session-format*` | `SessionFormat` + `SessionFormatException` | **有版本号，只用于拒绝不做迁移**：读到更高版本明确报错而非静默读错；迁移链不做（见 `compat-policy.md` §7.1） |
-| ⬜ | 会话状态投影 | `[—]` | `dsh-session-projection*` | — | 宿主各自从日志重算 |
+| ✅ | 会话状态投影 | `[自有]` | `dsh-session-projection*` | `ISessionProjection` + `SessionProjector` | 纯同步 fold；**无关记录必须返回同一引用**（否则下游每次工具输出都重绘）；只读已提交记录、不做增量缓存；2026-11-03 |
 | 🟡 | 会话查询 seam | `[自有]` | `dsh-session-query` | `SessionBranch.List` + `SessionSearch` | 有精确读与文本过滤，**但没有 seam 接口**——`SessionSearch` 是静态类，宿主换不了后端 |
 | ✅ | 会话内容搜索 | `[自有]` | `dsh-session-query-sqlite` | `SessionSearch` + `--search` | 扫 JSONL 而非 SQLite FTS5（会话是 append-only、几十个文件、毫秒级）；只搜用户输入与模型回复，工具参数/结果不参与；带会话标识与序号可 `--resume`；2026-11-02 |
 | ✅ | 会话标题生成 | `[自有]` | `dsh-session-title` | `SessionTitle` | 只做 dsh 契约的**确定性兜底**部分（不调模型）；从首条用户输入推导，20 字符含省略号；**不写入会话日志**（加记录类型会让旧程序读不了新会话）；2026-11-02 |
-| ⬜ | 轮次大纲 | `[—]` | `dsh-session-turn-outline` | — | |
+| ✅ | 轮次大纲 | `[自有]` | `dsh-session-turn-outline` | `TurnOutlineProjection` + `--outline` | 按用户输入切轮；预览 50 字符 / 3 行 × 120；**草稿与已完成项分开**（合并会让一轮显示成两条）；被打断的轮按空回答收尾而不是丢弃；2026-11-03 |
 | ⬜ | 跨会话引用 | `[—]` | `dsh-session-reference` | — | |
 | ⬜ | 日志导出 | `[—]` | `dsh-session-log-export` | — | |
 | ⬜ | 会话遥测 | `[库]` | `dsh-session-telemetry*` | `DougongTelemetry`（仅 Meter） | 用 BCL `Meter`；无 OTel exporter |
@@ -400,7 +400,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | 28 | 文件引用 `@file` | ✅ | `file-references`（8 项） | 桌面端输入区 | 小 |
 | 29 | 会话内切换工作目录 | ✅ | `working-directory`（11 项） | 无 | 小 |
 | 30 | 消息级反馈 | ✅ | `feedback`（13 项） | 桌面端 | 小 |
-| 24 | 会话投影 / 轮次大纲 | ⬜ | — | 宿主各自从日志重算 | 中 |
+| 24 | 会话投影 / 轮次大纲 | ✅ | `session-projection`（9 项） | 宿主各自从日志重算 | 中 |
 | 26 | 重复工具调用提醒 | ✅ | `repeat-reminder`（10 项） | 无 | 小 |
 | 27 | 权限预设 | ✅ | `permission-preset`（11 项） | 无 | 小 |
 | 25 | 出站代理 | ✅ | `outbound-http`（7 项） | 企业环境 | 小 |

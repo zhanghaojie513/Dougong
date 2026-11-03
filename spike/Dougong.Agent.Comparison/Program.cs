@@ -98,6 +98,7 @@ public static class Program
         "repeat-reminder",
         "permission-preset",
         "outbound-http",
+        "session-projection",
         "workspace-lock",
     ];
 
@@ -320,6 +321,9 @@ public static class Program
 
         if (args.FirstOrDefault() == "outbound-http")
             return await OutboundHttpChecks.RunAsync();
+
+        if (args.FirstOrDefault() == "session-projection")
+            return await SessionProjectionChecks.RunAsync();
 
         // 系统提示词分节：重点验"没有该工具就不给那条纪律"。
         if (args.FirstOrDefault() == "prompt")

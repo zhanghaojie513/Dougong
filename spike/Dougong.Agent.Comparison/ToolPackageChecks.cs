@@ -779,10 +779,124 @@ public static class ToolPackageChecks
         if (claimed[4] != total)
             problems.Add($"小计总览写 {claimed[4]}，实际 {total}");
 
+        // **分领域也要校验**。
+        //
+        // 为什么单独加这一步：此前只比「合计」行，于是某个领域的 ✅/🟡
+        // 改行时漏改了，合计却因为另一处错误抵消而对得上——
+        // 2026-11-03 就发现总览表与逐行数据长期不一致，而这条检查一直绿。
+        // 合计正确不等于明细正确。
+        problems.AddRange(CheckPerDomain(text, body));
+
         return problems.Count == 0
             ? null
             : "能力清单统计不一致：" + string.Join("；", problems);
     }
+
+    /// <summary>
+    /// 逐个能力域核对总览表与逐行数据。
+    /// </summary>
+    /// <remarks>
+    /// <b>领域归属靠「### N. 标题」切分</b>：逐项清单里每个领域一个三级标题，
+    /// 标题的首个数字与总览表的行号一一对应。改名时两边都得改——
+    /// 对不上会报出来，而不是静默跳过。
+    /// </remarks>
+    private static IEnumerable<string> CheckPerDomain(string text, string body)
+    {
+        var problems = new List<string>();
+        var marks = new[] { "✅", "🟡", "⬜", "➖" };
+
+        // 逐行数据：按领域标题累计。
+        var actual = new Dictionary<int, Dictionary<string, int>>();
+        var current = -1;
+
+        foreach (var line in body.Split(NewLine))
+        {
+            if (line.StartsWith("### ", StringComparison.Ordinal))
+            {
+                // 形如 "### 6. 沙箱与进程"
+                var rest = line[4..];
+                var dot = rest.IndexOf('.');
+                current = dot > 0 && int.TryParse(rest[..dot], out var number) ? number : -1;
+                if (current > 0) actual[current] = marks.ToDictionary(m => m, _ => 0);
+                continue;
+            }
+
+            if (current <= 0) continue;
+
+            var trimmed = line.TrimStart();
+            if (!trimmed.StartsWith('|')) continue;
+
+            foreach (var mark in marks)
+            {
+                if (trimmed.StartsWith("| " + mark, StringComparison.Ordinal))
+                {
+                    actual[current][mark]++;
+                    break;
+                }
+            }
+        }
+
+        if (actual.Count == 0) return problems;
+
+        // 总览表：按行号匹配。
+        var overviewStart = text.IndexOf("## 一、进度总览", StringComparison.Ordinal);
+        if (overviewStart < 0) return problems;
+
+        var overviewEnd = text.IndexOf("## 二、", overviewStart, StringComparison.Ordinal);
+        var overview = overviewEnd > overviewStart ? text[overviewStart..overviewEnd] : text[overviewStart..];
+
+        var seen = new HashSet<int>();
+
+        foreach (var line in overview.Split(NewLine))
+        {
+            if (!line.TrimStart().StartsWith("|", StringComparison.Ordinal)) continue;
+            if (line.Contains("**合计**", StringComparison.Ordinal)) continue;
+            if (line.Contains("能力域", StringComparison.Ordinal)) continue;
+
+            var cells = line.Split('|').Select(c => c.Trim()).Where(c => c.Length > 0).ToArray();
+            if (cells.Length < 7) continue;
+
+            // 首格形如 "6. 沙箱与进程"
+            var label = cells[0];
+            var dot = label.IndexOf('.');
+            if (dot <= 0 || !int.TryParse(label[..dot], out var number)) continue;
+            if (!actual.TryGetValue(number, out var real)) continue;
+
+            seen.Add(number);
+
+            for (var i = 0; i < marks.Length; i++)
+            {
+                if (!int.TryParse(cells[i + 1], out var claimedValue)) continue;
+                if (claimedValue != real[marks[i]])
+                    problems.Add(
+                        $"领域 {number} 的 {marks[i]}（{Describe(markIndex: i)}）"
+                        + $"总览写 {claimedValue}，实际 {real[marks[i]]}");
+            }
+
+            if (int.TryParse(cells[5], out var claimedSubtotal)
+                && claimedSubtotal != real.Values.Sum())
+                problems.Add($"领域 {number} 小计写 {claimedSubtotal}，实际 {real.Values.Sum()}");
+        }
+
+        foreach (var number in actual.Keys.Where(n => !seen.Contains(n)))
+            problems.Add($"领域 {number} 在总览表里找不到对应行");
+
+        return problems;
+    }
+
+    /// <summary>状态标记的文字名，供错误消息使用。</summary>
+    /// <remarks>
+    /// <b>不能只靠 emoji</b>：控制台编码不同时它会显示成 `?`，
+    /// 于是错误消息变成"领域 7 的 ? 总览写 5"——那等于没说。
+    /// </remarks>
+    private static string Describe(int markIndex) => markIndex switch
+    {
+        0 => "已完成",
+        1 => "部分完成",
+        2 => "未实现",
+        3 => "明确不做",
+        _ => "未知",
+    };
 
     /// <summary>换行符。用常量而不是内联字面量，避免嵌套转义。</summary>
     private const char NewLine = '\n';
