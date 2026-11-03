@@ -649,6 +649,26 @@ P2 五项交付后做了一轮"声称 vs 实现"复检，用两个独立只读�
 | **验证** | `goal` 套 10 项；5 组负控见 §三。 |
 | **源码位置** | `src/Dougong.Agent/SessionGoal.cs`、`src/Dougong.Agent/GoalTools.cs`、`src/Dougong.Agent/LoopAgentRuntime.cs`（`Goal?.BeginRound()`） |
 
+### 复检（2026-11-03，第二轮）：P2 全部 14 项
+
+P2 收官后又做了一轮全量"声称 vs 实现"核对（144 项检查全绿的前提下）。
+**又抓到四个真缺陷**，其中两个方向相反。
+
+| 类型 | 发现 | 怎么修的 |
+|---|---|---|
+| 注释与实现相反 | `LoopAgentRuntime` 计划模式那段注释写"判据用工具自述的权限（DescribePermission），不在这里硬编码工具名"，而下一行就是 `PlanModePolicy.IsAllowed(toolId)`——一个硬编码 `HashSet<string>` | 注释改成如实说明"运行时拿不到工具实例（`GetToolsAsync` 只给 `ToolDescriptor`），所以只能是白名单"，并写明代价与由哪条检查兜住 |
+| 功能缺失（安全方向） | 白名单只有 7 个名字，而实际注册了 23 个工具。后加的 `skill`、`get_goal`、`subagent_list` 全是只读工具，在计划模式下一律被拒 | 补进白名单 |
+| 检查空转 | `plan-mode-whitelist-matches-real-tools` 名不副实：它只验硬编码的四个名字，而那四个恰好在白名单里——**新工具从来不在检查范围内** | 改成拿实际工具清单、按 `DescribePermission` 的判据逐个对账。改完立刻红了两项 |
+| 安全方向（不可见失败） | 技能 `ReadHead` 只读前 4 KiB。`disable-model-invocation: true` 写在之后时，`Split` 找不到闭合 `---`，返回**默认元数据**（`ModelInvocable: true`）——用户以为关掉了模型调用，实际没关。探针实测确认 | `ReadHead` 改为报告"是否完整"；不完整就**跳过该技能**并输出诊断。保守方向：判不出就不加载 |
+| 功能失效（递归不受控） | 子 agent 深度判定写的是 `_delegationDepth + 1 < MaxDepth`，而 `_delegationDepth` 是同一个 `SessionComposition` 实例的只读字段——**递归调用自己时永远是初始值**，每层算出同样结论，深度限制实际不生效 | 深度改成显式参数往下传 |
+| 检查空转（同上） | `subagent-depth-limit-stops-recursion` 只验判定式的算式，没验装配把哪个值喂进去 | 补两条：一条验真实嵌套下的语义，一条验装配用的是参数而非字段 |
+| 欠账收口 | `web_fetch` 与模型列表探测各自 `new HttpClient`，绕过代理——而 `WebFetchTool` 自己的注释就写着"自己 new 会绕过宿主代理" | 两处改走 `OutboundHttp`；补 `no-product-code-creates-bare-httpclient` 检查扫全 `src/` |
+
+**教训**：144 项检查全绿之后仍有四个真缺陷，而其中两个的模式是一致的——
+**检查验的是"算式对不对"，而缺陷在"装配喂了什么进去"**。
+计划模式和子 agent 都是这个形状：判定逻辑本身没问题，接错了输入。
+这类缺陷只能靠"扫实际清单/扫全目录"式的检查抓到，靠单个用例验不出来。
+
 ## 五、这份台账的边界
 
 **它不保证正确，只保证"声称与证据对得上"。**

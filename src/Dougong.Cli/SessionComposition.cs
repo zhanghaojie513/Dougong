@@ -573,7 +573,8 @@ public sealed class SessionComposition : IDisposable
             dispatcher.Register(new SubagentTool(
                 _subagents,
                 request => CreateSubagentRuntime(
-                    request, approver, files, readTool, writeTool, globTool, grepTool, editTool),
+                    request, _delegationDepth, approver, files,
+                    readTool, writeTool, globTool, grepTool, editTool),
                 _sessionId, "turn-1"));
         }
 
@@ -662,6 +663,7 @@ public sealed class SessionComposition : IDisposable
     /// </remarks>
     private LoopAgentRuntime CreateSubagentRuntime(
         AgentRunRequest request,
+        int depth,
         IToolApprover approver,
         LocalFileSystem files,
         params IFileResourceKeyOwner[] keyOwners)
@@ -688,11 +690,17 @@ public sealed class SessionComposition : IDisposable
 
         // 更深一层：还没到上限时允许它继续委派，共用同一个注册表
         // （所以并发上限是跨层级的总数，不是每层各四份）。
-        if (_delegationDepth + 1 < _subagents.MaxDepth)
+        // **深度必须显式传下去**。这里曾经用 `_delegationDepth + 1` 判断，
+        // 而 `_delegationDepth` 是同一个 SessionComposition 实例的只读字段——
+        // 递归调用自己时它永远是初始值，于是每一层都算出同样的结论，
+        // **深度限制实际不生效**。子 agent 自己再开子 agent，层数不受控。
+        //
+        // 检查没抓到这一条：它只验了判定式的算式，没验真实嵌套。
+        if (depth + 1 < _subagents.MaxDepth)
         {
             childDispatcher.Register(new SubagentTool(
                 _subagents,
-                r => CreateSubagentRuntime(r, approver, files, keyOwners),
+                r => CreateSubagentRuntime(r, depth + 1, approver, files, keyOwners),
                 request.SessionId, request.TurnId));
         }
 
@@ -829,7 +837,11 @@ public sealed class SessionComposition : IDisposable
 
         // 超时给 30 秒：文档页通常几秒内回来，而慢站点不该让整轮卡死。
         // 这个值与工具超时是两层保险——外层拦"完全没响应"，这里拦"太慢"。
-        return new WebFetchTool(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
+        // **必须走 OutboundHttp**：WebFetchTool 的注释自己就写着
+        // "自己 new HttpClient() 会绕过宿主代理"。它的唯一调用点曾经正是
+        // 裸 new HttpClient——于是企业环境里抓网页不走代理、单独超时，
+        // 而模型 API 那条是正常的。
+        return new WebFetchTool(OutboundHttp.Create(Log.Warning, TimeSpan.FromSeconds(30)));
     }
 
     public SpillStore? CreateSpillStore() =>

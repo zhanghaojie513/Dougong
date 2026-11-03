@@ -45,7 +45,8 @@ public static class ModelDiscovery
             uri.ToString().TrimEnd('/') + "/models",
             UriKind.Absolute);
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+        // 模型列表探测也是出站请求：企业环境里它同样要经过代理。
+        using var http = OutboundHttp.Create(Log.Warning, TimeSpan.FromSeconds(8));
         using var request = new HttpRequestMessage(HttpMethod.Get, modelsUrl);
 
         // 与 ChatClientFactory 同一来源顺序：存储优先，环境变量兜底。

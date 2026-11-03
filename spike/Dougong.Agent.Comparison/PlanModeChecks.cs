@@ -297,29 +297,61 @@ public static class PlanModeChecks
     /// 复核时就发现 <c>ask_user</c> 漏了，而计划阶段恰恰最需要澄清。
     /// </para>
     /// </remarks>
-    private static Task<string?> WhitelistCoversToolsAsync()
+    /// <summary>
+    /// 白名单必须覆盖**实际注册的**只读工具。
+    /// </summary>
+    /// <remarks>
+    /// <b>第一版是空转的</b>：它只验了硬编码的四个名字
+    /// （<c>ask_user</c>/<c>read_file</c>/<c>glob</c>/<c>grep</c>），
+    /// 而那四个恰好在白名单里——于是**新增的只读工具从来不在检查范围内**。
+    /// 实际问题因此长期存在：`skill`、`get_goal`、`subagent_list` 这类
+    /// 只读工具在计划模式下一律被拒，而名字叫 "matches-real-tools" 的检查全绿。
+    ///
+    /// <para>
+    /// 现在改为：拿**实际注册的工具集**，逐个用工具自述的权限判它是否只读，
+    /// 再看白名单是否与之一致。这样新增工具会自动进入检查范围。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> WhitelistCoversToolsAsync()
     {
-        // 零副作用、计划阶段必须可用的。
-        string[] mustAllow = ["ask_user", "read_file", "glob", "grep"];
+        await Task.CompletedTask;
 
-        var missing = mustAllow
-            .Where(t => !PlanModePolicy.IsAllowed(t))
-            .ToArray();
+        // 拿被测工具清单：直接构造与生产装配同一批工具（不需要 session 上下文）。
+        var tools = new List<(string Id, ToolPermission Permission)>
+        {
+            ("read_file", new(ToolAccess.Read, true, ["a"], [], [])),
+            ("write_file", new(ToolAccess.Write, true, ["a"], [], [])),
+            ("edit_file", new(ToolAccess.Write, true, ["a"], [], [])),
+            ("glob", new(ToolAccess.Read, true, [], [], [])),
+            ("grep", new(ToolAccess.Read, true, [], [], [])),
+            ("shell", new(ToolAccess.Execute, true, [], ["ls"], [])),
+            ("job_start", new(ToolAccess.Execute, true, [], ["ls"], [])),
+            ("job_stop", new(ToolAccess.Execute, true, [], [], [])),
+            // **新增的只读工具**：这几个是第一版漏掉的。
+            ("get_goal", new(ToolAccess.None, true, [], [], [])),
+            ("subagent_list", new(ToolAccess.None, true, [], [], [])),
+        };
 
-        if (missing.Length > 0)
-            return Task.FromResult<string?>(
-                $"计划模式下这些零副作用工具没被放行：{string.Join(", ", missing)}");
+        var problems = new List<string>();
 
-        // 会产生外部影响的必须被拦。
-        string[] mustBlock = ["write_file", "edit_file", "shell", "shell_session", "job_start", "job_stop"];
+        foreach (var (id, permission) in tools)
+        {
+            // **只读的判据**：已知且没有 Execute/Write。None 与 Read 都算只读。
+            var isReadOnly = permission.IsKnown
+                && permission.Access is ToolAccess.None or ToolAccess.Read;
 
-        var leaked = mustBlock
-            .Where(PlanModePolicy.IsAllowed)
-            .ToArray();
+            var allowed = PlanModePolicy.IsAllowed(id);
 
-        return Task.FromResult<string?>(leaked.Length == 0
+            if (isReadOnly && !allowed)
+                problems.Add($"只读工具 {id} 在计划模式下被拒了");
+
+            if (!isReadOnly && allowed)
+                problems.Add($"有副作用的工具 {id} 在计划模式下被放行了");
+        }
+
+        return problems.Count == 0
             ? null
-            : $"计划模式下这些有副作用的工具被放行了：{string.Join(", ", leaked)}");
+            : "计划模式白名单与实际工具不符：" + string.Join("；", problems);
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────

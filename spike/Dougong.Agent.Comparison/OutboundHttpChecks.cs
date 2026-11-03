@@ -25,6 +25,7 @@ public static class OutboundHttpChecks
         failures += await CheckAsync("proxy-no-proxy-is-escaped-not-raw-regex", NoProxyEscapingAsync);
         failures += await CheckAsync("proxy-absent-falls-back-to-system-default", AbsentAsync);
         failures += await CheckAsync("proxy-is-wired-into-every-client-creation", WiringAsync);
+        failures += await CheckAsync("no-product-code-creates-bare-httpclient", NoBareClientAsync);
 
         Console.WriteLine(failures == 0
             ? "OUTBOUND-HTTP: ALL PASS"
@@ -247,6 +248,67 @@ public static class OutboundHttpChecks
         return missing.Count == 0
             ? null
             : $"这些构造点没有接代理：{string.Join("、", missing)}";
+    }
+
+    /// <summary>
+    /// 产品代码里不该有裸 <c>new HttpClient</c>。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条抓的是"绕过代理"</b>：<c>WebFetchTool</c> 的注释自己写着
+    /// "自己 new HttpClient() 会绕过宿主代理、socket 也不会复用"，
+    /// 而它的唯一调用点曾经正是裸 new。症状是企业环境里抓网页不走代理、
+    /// 单独超时，而模型 API 那条正常——**只有那个功能坏**，很难归因。
+    ///
+    /// <para>
+    /// 唯一允许的例外是 <c>HttpClientChatClient</c> 的兜底构造：
+    /// 那是"调用方没注入"时的退路，生产路径全部显式注入。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> NoBareClientAsync()
+    {
+        await Task.CompletedTask;
+        var root = FindRepoRoot();
+        var src = Path.Combine(root, "src");
+        if (!Directory.Exists(src)) return $"找不到 {src}";
+
+        var offenders = new List<string>();
+
+        foreach (var file in Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories))
+        {
+            if (file.Contains(Path.Combine("bin"), StringComparison.Ordinal)
+                || file.Contains(Path.Combine("obj"), StringComparison.Ordinal))
+                continue;
+
+            var name = Path.GetFileName(file);
+
+            // 允许的例外：连接器自身的兜底、以及 OutboundHttp 自己的实现。
+            if (name is "HttpClientChatClient.cs" or "OutboundHttp.cs") continue;
+
+            var text = File.ReadAllText(file);
+            foreach (var line in text.Split(Environment.NewLine))
+            {
+                var trimmed = line.TrimStart();
+
+                // 跳过注释：注释里提到 new HttpClient 是解释，不是创建。
+                if (trimmed.StartsWith("//", StringComparison.Ordinal)
+                    || trimmed.StartsWith("///", StringComparison.Ordinal))
+                    continue;
+
+                // **匹配要精确到"创建 HttpClient 实例"**：
+                // - `new HttpClientChatClient` 是另一个类，不是出站客户端本身
+                // - `<c>new HttpClient()</c>` 这种出现在注释里的说明文字也不算
+                if (!trimmed.Contains("new HttpClient", StringComparison.Ordinal)) continue;
+                if (trimmed.Contains("new HttpClientChatClient", StringComparison.Ordinal)) continue;
+                if (trimmed.Contains("<c>", StringComparison.Ordinal)
+                    || trimmed.Contains("</c>", StringComparison.Ordinal)) continue;
+
+                offenders.Add(name);
+            }
+        }
+
+        return offenders.Count == 0
+            ? null
+            : $"这些文件直接建了 HttpClient（会绕过代理）：{string.Join("、", offenders.Distinct())}";
     }
 
     private static int CountOccurrences(string text, string needle)

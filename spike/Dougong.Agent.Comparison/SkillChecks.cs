@@ -30,6 +30,7 @@ public static class SkillChecks
         failures += await CheckAsync("skill-disable-model-invocation-hides-and-blocks", VisibilityAsync);
         failures += await CheckAsync("skill-tool-rejects-bad-and-unknown-names", ToolErrorsAsync);
         failures += await CheckAsync("skill-catalog-text-escapes-and-omits-paths", CatalogTextAsync);
+        failures += await CheckAsync("skill-oversized-frontmatter-is-rejected-not-guessed", OversizedFrontmatterAsync);
         failures += await CheckAsync("skill-is-wired-into-cli-composition", WiringAsync);
 
         Console.WriteLine(failures == 0
@@ -302,6 +303,50 @@ public static class SkillChecks
         return text.Contains("Path.Combine(workspace, \".dougong\", \"skills\")", StringComparison.Ordinal)
             ? null
             : "技能根不是按原始项目构造的";
+    }
+
+    /// <summary>
+    /// frontmatter 超过读取上限时，技能必须被**跳过**，不能当成"没有开关"。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是检查抓到的一个安全方向缺陷</b>：<c>ReadHead</c> 只读前 4 KiB，
+    /// 而 <c>Split</c> 找不到闭合的 <c>---</c> 时返回**默认元数据**
+    /// （<c>ModelInvocable: true</c>）。于是一个把
+    /// <c>disable-model-invocation: true</c> 写在 4 KiB 之后的技能
+    /// **仍然对模型可见**——用户以为关掉了，实际没关。
+    ///
+    /// <para>
+    /// 正确行为是保守方向：判不出就不加载。代价是那个技能消失，
+    /// 但那是可见的（配套诊断会说明原因），而"开关失效"是不可见的。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> OversizedFrontmatterAsync()
+    {
+        await Task.CompletedTask;
+        using var env = new Env();
+
+        // 元数据长到超过读取上限（4 KiB），开关写在后面。
+        // 用字面值而不是引用 SkillDiscovery 的 internal 常量：
+        // 检查程序集看不到 internal，而这里要验的正是"超过那个上限会怎样"。
+        var padding = new string('x', 4200);
+        env.WriteSkill(
+            "oversized", "SKILL.md",
+            "---\ndescription: " + padding
+            + "\ndisable-model-invocation: true\n---\n正文");
+
+        var skipped = new List<string>();
+        var discovery = new SkillDiscovery(
+            [new SkillRoot(100, "project-dsh", env.ProjectSkills)],
+            onSkip: skipped.Add);
+
+        var catalog = discovery.Discover();
+
+        if (catalog.Skills.Any(s => s.Name == "oversized"))
+            return "超长 frontmatter 的技能仍被加载——disable-model-invocation 会被静默忽略";
+
+        return skipped.Count > 0
+            ? null
+            : "跳过了却没有诊断输出——用户只看到技能消失，不知道为什么";
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────

@@ -63,16 +63,25 @@ public sealed class SkillDiscovery
     private readonly IReadOnlyList<SkillRoot> _roots;
     private readonly int _descriptionMaxLength;
 
+    /// <summary>跳过一个技能时的诊断出口。</summary>
+    private readonly Action<string>? _onSkip;
+
     /// <summary>构造。</summary>
     /// <param name="roots">按 rank 升序排列的根目录。</param>
     /// <param name="descriptionMaxLength">描述截断长度。</param>
+    /// <param name="onSkip">
+    /// 跳过一个技能时的诊断出口（例如 frontmatter 超长未闭合）。
+    /// null 表示丢弃——但那样用户只能看到"技能不见了"，所以装配层应当传。
+    /// </param>
     public SkillDiscovery(
         IReadOnlyList<SkillRoot> roots,
-        int descriptionMaxLength = DefaultDescriptionMaxLength)
+        int descriptionMaxLength = DefaultDescriptionMaxLength,
+        Action<string>? onSkip = null)
     {
         ArgumentNullException.ThrowIfNull(roots);
         _roots = [.. roots.OrderBy(r => r.Rank)];
         _descriptionMaxLength = descriptionMaxLength;
+        _onSkip = onSkip;
     }
 
     /// <summary>扫描全部根，返回合并后的目录。</summary>
@@ -208,12 +217,24 @@ public sealed class SkillDiscovery
     private SkillSummary? ReadSummary(SkillRoot root, string name, string file)
     {
         string head;
+        bool complete;
         try
         {
-            head = ReadHead(file, MaxFrontmatterBytes);
+            (head, complete) = ReadHead(file, MaxFrontmatterBytes);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            return null;
+        }
+
+        // **元数据没读完就当作不可用**。保守方向：宁可这个技能不出现，
+        // 也不能让一个写了 `disable-model-invocation: true` 的技能
+        // 因为超长而被当成"没有该开关"。
+        if (!complete)
+        {
+            _onSkip?.Invoke(
+                $"{file}：frontmatter 超过 {MaxFrontmatterBytes} 字节仍未闭合，已跳过"
+                + "（避免漏读 disable-model-invocation 这类开关）。");
             return null;
         }
 
@@ -241,6 +262,9 @@ public sealed class SkillDiscovery
             ShadowedBy: []);
     }
 
+    /// <summary>换行符常量。用 char 而不是字符串，避免嵌套转义。</summary>
+    private const char NewLineChar = (char)10;
+
     /// <summary>frontmatter 最多读这么多字节；超出的部分不参与元数据。</summary>
     /// <remarks>
     /// **必须有上限**：一个 10 MB 的 Markdown 若是技能，读它会卡住目录扫描，
@@ -248,13 +272,31 @@ public sealed class SkillDiscovery
     /// </remarks>
     internal const int MaxFrontmatterBytes = 4096;
 
-    private static string ReadHead(string file, int maxBytes)
+    private static (string Head, bool Complete) ReadHead(string file, int maxBytes)
     {
         using var stream = new FileStream(
             file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize: 1024);
         var buffer = new byte[Math.Min(maxBytes, (int)Math.Min(stream.Length, int.MaxValue))];
         var read = stream.Read(buffer, 0, buffer.Length);
-        return Encoding.UTF8.GetString(buffer, 0, read);
+        var text = Encoding.UTF8.GetString(buffer, 0, read);
+
+        // **要判断 frontmatter 是否完整**。只截前 N 字节而不检查完整性时，
+        // 一份元数据很长的技能会走到 `Split` 的"没有闭合 ---"分支，
+        // 那里返回默认元数据 —— 于是 `disable-model-invocation: true`
+        // 被静默忽略、技能仍对模型可见。那是安全方向的错误：
+        // 用户以为关掉了模型调用，实际没关。
+        //
+        // 判据：以 `---` 开头，且能找到第二个 `---`。
+        var normalized = text.Replace("\r\n", "\n");
+        var trimmed = normalized.TrimStart();
+        if (!trimmed.StartsWith("---", StringComparison.Ordinal))
+            return (text, Complete: true);   // 没有 frontmatter，谈不上截断
+
+        var afterOpen = normalized.IndexOf(NewLineChar);
+        var closed = afterOpen >= 0
+            && normalized.IndexOf("\n---", afterOpen, StringComparison.Ordinal) >= 0;
+
+        return (text, closed);
     }
 
     /// <summary>按字符数截断，加省略号。</summary>
@@ -359,7 +401,7 @@ public static class SkillFrontmatter
     {
         ArgumentNullException.ThrowIfNull(text);
 
-        var normalized = text.Replace("\r\n", "\n").Replace('\r', '\n');
+        var normalized = text.Replace("\r\n", "\n");
         if (!normalized.TrimStart().StartsWith("---", StringComparison.Ordinal))
             return (Defaults(), text);
 

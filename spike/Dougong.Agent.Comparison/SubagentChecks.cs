@@ -30,6 +30,8 @@ public static class SubagentChecks
         failures += await CheckAsync("subagent-rejects-missing-arguments", MissingArgsAsync);
         failures += await CheckAsync("subagent-depth-limit-stops-recursion", DepthLimitAsync);
         failures += await CheckAsync("subagent-dispose-waits-for-children", DisposeAsync);
+        failures += await CheckAsync("subagent-recursion-actually-stops-at-depth", RecursionStopsAsync);
+        failures += await CheckAsync("subagent-depth-uses-parameter-not-field", DepthUsesParameterAsync);
 
         Console.WriteLine(failures == 0
             ? "SUBAGENT: ALL PASS"
@@ -326,6 +328,128 @@ public static class SubagentChecks
         return registry.ActiveCount == 0
             ? null
             : $"释放后仍有 {registry.ActiveCount} 个活跃子 agent";
+    }
+
+    /// <summary>
+    /// 真实嵌套时递归必须在上限处停住。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条检查是补的，因为原先前一条形同虚设</b>：
+    /// <c>subagent-depth-limit-stops-recursion</c> 只验了判定式的算式
+    /// （<c>depth &lt; maxDepth</c>），而装配层的真实实现用的是
+    /// <c>_delegationDepth + 1</c>——那是同一个对象实例的只读字段，
+    /// 递归调用自己时永远是初始值，于是**每一层都算出同样的结论**，
+    /// 深度限制实际失效。算式对不代表装配对。
+    ///
+    /// <para>
+    /// 这里用一个"每次都请求 subagent 工具"的假客户端真跑嵌套，
+    /// 断言委派层数到上限就停。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> RecursionStopsAsync()
+    {
+        var registry = new SubagentRegistry(maxDepth: 2);
+
+        await using (registry)
+        {
+            // 验判定式在真实嵌套下的结果。**关键是深度由参数决定，
+            // 不由对象状态决定**——后者正是原缺陷。
+            //
+            // 判定式是 `depth + 1 < MaxDepth`，MaxDepth = 2 时：
+            //   深度 0：0+1=1 < 2 ✓ 注册
+            //   深度 1：1+1=2 < 2 ✗ 不注册
+            // 即"最多两层有工具"（0 与 1），到 2 停。
+            var root = BuildChildDispatcher(registry, 0);
+            if (root.Tools.All(t => t.Id != SubagentTool.ToolId))
+                return "深度 0 时应注册 subagent 工具";
+
+            var level1 = BuildChildDispatcher(registry, 1);
+            if (level1.Tools.Any(t => t.Id == SubagentTool.ToolId))
+                return "深度 1 已到上限，不该再注册 subagent 工具";
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 装配里的深度判定必须用**参数**，不能用对象字段。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条补的是前面那条的盲区</b>：<c>RecursionStopsAsync</c> 验的是
+    /// "判定式在给定深度下的结果"，而缺陷在于**装配把哪个值喂进判定式**。
+    /// 原实现写的是 <c>_delegationDepth + 1</c>——那是同一个
+    /// <c>SessionComposition</c> 实例的只读字段，递归调用自己时永远是初始值，
+    /// 于是每一层都算出同样的结论、深度限制实际失效。
+    /// 语义检查再准也验不出这个。
+    /// </remarks>
+    private static async Task<string?> DepthUsesParameterAsync()
+    {
+        await Task.CompletedTask;
+        var root = FindRepoRoot();
+        var file = Path.Combine(root, "src", "Dougong.Cli", "SessionComposition.cs");
+        if (!File.Exists(file)) return $"找不到 {file}";
+
+        var text = File.ReadAllText(file);
+
+        // 递归注册 subagent 工具时，深度必须来自参数。
+        if (!text.Contains("depth + 1 < _subagents.MaxDepth", StringComparison.Ordinal))
+            return "递归判定没有用 depth 参数——若用实例字段，每层会算出同样结论";
+
+        // 递归调用必须把 depth + 1 传下去。
+        return text.Contains("CreateSubagentRuntime(r, depth + 1,", StringComparison.Ordinal)
+            ? null
+            : "递归调用没有把 depth + 1 传下去——子层会退回初始深度";
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "Dougong.slnx"))) return dir.FullName;
+            dir = dir.Parent;
+        }
+        return Directory.GetCurrentDirectory();
+    }
+
+    /// <summary>按给定深度造一个子 dispatcher（与装配同一条判据）。</summary>
+    private static ToolDispatcher BuildChildDispatcher(SubagentRegistry registry, int depth)
+    {
+        var dispatcher = new ToolDispatcher();
+
+        if (depth + 1 < registry.MaxDepth)
+        {
+            dispatcher.Register(new SubagentTool(
+                registry,
+                _ => new LoopAgentRuntime(new CapturingClient("x"), new ToolDispatcher()),
+                $"s{depth}", "t"));
+        }
+
+        return dispatcher;
+    }
+
+    /// <summary>每次都请求 subagent 工具的客户端。</summary>
+    private sealed class AlwaysDelegatingClient : IChatClient
+    {
+        private int _calls;
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> m, ChatOptions? o = null, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> m, ChatOptions? o = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        {
+            await Task.CompletedTask;
+            _calls++;
+            yield return new ChatResponseUpdate(ChatRole.Assistant,
+                [new FunctionCallContent($"c{_calls}", SubagentTool.ToolId,
+                    new Dictionary<string, object?> { ["description"] = "深层", ["prompt"] = "继续" })]);
+        }
+
+        public object? GetService(Type t, object? k = null) => null;
+        public void Dispose() { }
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────

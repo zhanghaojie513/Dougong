@@ -832,8 +832,16 @@ public sealed class LoopAgentRuntime : IAgentRuntime
             // 已经没有意义了（改动已经发生）。
             //
             // 只读工具必须放行：计划要"看"才能写，禁止读会让模型只能凭猜。
-            // 判据用工具自己声明的权限（DescribePermission），不在这里硬编码
-            // 工具名——否则新增工具时要记得改两处，而漏改不会报错。
+            //
+            // **判据是白名单，不是 DescribePermission**——这一点原有注释写反了。
+            // 运行时拿不到工具实例（`IDispatcherAccessor.GetToolsAsync` 只给
+            // `ToolDescriptor`，不含权限描述），所以"按工具自述的权限判"在当前
+            // 架构下做不到。
+            //
+            // 代价是：**新增只读工具要记得登记**，而漏登记不会报错——
+            // 症状是那个工具在计划模式下一律被拒。这一条由
+            // `plan-mode-whitelist-matches-real-tools` 检查兜住（它把白名单
+            // 与 dispatcher 里实际注册的只读工具对账）。
             if (PlanMode is { IsActive: true })
             {
                 var forbidden = calls
