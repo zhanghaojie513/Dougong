@@ -125,6 +125,7 @@
 | 文件补全只给路径且排序确定 | `file-references`：`refs-returns-relative-slash-paths`、`refs-match-is-substring-and-case-insensitive`、`refs-order-is-stable`、`refs-prefers-shallow-paths`、`refs-skips-noise-directories`、`refs-reports-total-and-truncation`、`refs-does-not-read-file-contents`、`refs-empty-query-lists-all` | 去掉 `Sort` → `refs-order-is-stable` 报"zz.cs 在 aa.cs 之前"；不排除噪声目录 → `refs-skips-noise-directories` 报"候选里出现噪声目录"；总数报成返回数 → `refs-reports-total-and-truncation` 报"总数应为 6，实际 2" |
 | 每个会被显示的阶段都有文案 | `terminal`：`every-phase-has-visible-label`、`binary-is-not-stale` | 新增 `Retrying` 时若只加枚举不加文案 → `every-phase-has-visible-label` 报"阶段 Retrying 会被显示却没有文案"；改源码不重建 Release → `binary-is-not-stale` 报"跑的是旧构建" |
 | 压缩比例默认值与可配置性 | `compaction`、`wiring`、`doctor` | 把 `DefaultTriggerRatio` 改成 0.99 → `compaction` 套的触发点检查失败；给 `--doctor` 传入 `retain >= trigger` → `doctor` 套的非法规格检查失败 |
+| 底部锚定时提示符在上、状态栏贴最底 | `terminal`：`prompt-sits-above-status-bar-when-anchored`、`prompt-is-drawn-by-region-and-survives-erase` | `Repaint` 的 `usable` 改回 `_anchorBottom - 1`、`BeginPrompt` 的 `promptRow` 改回 `_anchorBottom` → 两条同时红（报"提示符在第 20 行、状态栏在第 19 行——提示符必须在上方"）。**这两条的第一版是空转的**：`RowOf` 用"往回找 `ESC[`"定位，把清行的 `ESC[2K` 当成了 CUP，返回 null，于是实现正确时检查报"从未被定位" |
 
 ---
 

@@ -35,7 +35,7 @@ public static class TerminalChecks
         // P3（底部锚定）：只有 Rich + 高度可读才锚定，其余走原路径。
         failures += Check("live-region-anchors-when-height-known", AnchorsWhenHeightKnown);
         failures += Check("live-region-does-not-anchor-without-height", NoAnchorWithoutHeight);
-        failures += Check("prompt-goes-below-status-line-when-anchored", PromptBelowStatus);
+        failures += Check("prompt-sits-above-status-bar-when-anchored", PromptAboveStatusBar);
         failures += Check("prompt-is-drawn-by-region-and-survives-erase", PromptSurvivesErase);
         failures += Check("plain-tier-has-no-decoration", PlainHasNoDecoration);
         failures += Check("plain-tier-output-is-verbatim", PlainOutputIsVerbatim);
@@ -111,6 +111,9 @@ public static class TerminalChecks
 
         // Idle status line must still show the context budget.
         failures += Check("idle-status-shows-context-capacity", IdleShowsCapacity);
+
+        // 多行状态时提示符不能压到状态行上（单行是唯一"恰好正确"的情形）。
+        failures += Check("prompt-does-not-overlap-multi-row-status", PromptNoOverlapMultiRow);
 
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
@@ -205,49 +208,109 @@ public static class TerminalChecks
     }
 
     /// <summary>
-    /// 锚定模式下，状态行在提示符**上方**。
+    /// 锚定模式下：提示符占 <c>height-1</c>，状态栏贴屏幕最后一行 <c>height</c>。
     /// </summary>
     /// <remarks>
-    /// <b>这是本次改造的核心断言</b>：Hermes 的状态行在提示符上方
-    /// （`appLayout.tsx:420` 的 StatusRulePane 在 `:424` 输入 Box 之前），
-    /// 而我们原来的布局是反的。
+    /// <b>方向是"提示符在上、状态栏最底"。</b>方案文档
+    /// <c>tui-fullscreen-hermes-parity-plan.md</c> §2.3 写的是反的
+    /// （"状态行默认在输入行上方"），照它做出来的版本被用户当场指出：
+    /// Hermes 的实际版式是 活动行 → 输入框 → 分隔线 → 状态栏（最底）。
     ///
     /// <para>
-    /// 验法是看真实输出的控制序列：状态行应该定位到 <c>height-1</c>，
-    /// 提示符落到 <c>height</c>。而不是"状态行跟着光标往下"。
+    /// <b>为什么读原始控制序列而不是回放屏幕。</b>本文件里的屏幕模拟器
+    /// 不还原 <see cref="LiveRegion"/> 的定位方式，把区域输出灌进去得到的是
+    /// 空屏——那会让这条检查**静默空转**。控制序列是能给出的最小断言：
+    /// 状态栏定位到的行号必须等于 <c>height</c>，且大于提示符的行号。
     /// </para>
     /// </remarks>
-    private static string? PromptBelowStatus()
+    private static string? PromptAboveStatusBar()
     {
-        var cap = new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: false, Height: 24);
-        using var region = LiveRegion.Create(cap);
+        var cap = new TerminalCapability(TerminalTier.Rich, 60, IsRedirected: false, Height: 20);
 
-        var original = Console.Out;
-        using var writer = new StringWriter();
-        Console.SetOut(writer);
-        try
+        var output = CaptureRegionOutput(cap, region =>
         {
-            region.SetLines(["status line"]);
-            region.BeginPrompt("> ");
-        }
-        finally
-        {
-            Console.SetOut(original);
-        }
+            region.SetLines(["STATUSBAR"]);
+            region.BeginPrompt("PROMPTMARK");
+        });
 
-        var output = writer.ToString();
+        var statusRow = RowOf(output, "STATUSBAR");
+        var promptRow = RowOf(output, "PROMPTMARK");
 
-        // 状态行应定位到 24-1+1 = 24 行的位置？不：SetLines 用 height - N + 1。
-        // 单行状态 -> 第 24 行；提示符 -> 第 24 行之后…… 但屏幕只有 24 行。
-        //
-        // 正确语义：状态行占 height-1，提示符占 height。
-        // 所以 SetLines 在"等待输入"时应把状态行放到 height-1。
-        if (!output.Contains("[23;1H", StringComparison.Ordinal))
-            return $"状态行没有定位到第 23 行（height-1）。实际：{DescribeControl(output)}";
+        if (statusRow is null) return "状态栏从未被定位：" + DescribeControl(output);
+        if (promptRow is null) return "提示符从未被定位：" + DescribeControl(output);
 
-        return output.Contains("[24;1H", StringComparison.Ordinal)
+        if (promptRow >= statusRow)
+            return $"提示符在第 {promptRow} 行、状态栏在第 {statusRow} 行——提示符必须在**上方**";
+
+        if (statusRow != cap.Height)
+            return $"状态栏必须贴在最后一行（第 {cap.Height} 行），实际第 {statusRow} 行";
+
+        return promptRow == cap.Height - 1
             ? null
-            : $"提示符没有落到第 24 行。实际：{DescribeControl(output)}";
+            : $"提示符必须在第 {cap.Height - 1} 行，实际第 {promptRow} 行";
+    }
+
+    /// <summary>
+    /// 标记文本被写到了第几行（1-based）；找不到返回 null。
+    /// </summary>
+    /// <remarks>
+    /// <b>必须真解析 CSI，不能用"往回找 <c>ESC[</c>"。</b>
+    /// 第一版就是这么写的，于是 <c>ESC[2K</c>（清行）也被当成定位序列：
+    /// 它取到参数 <c>2K</c>、找不到 <c>;</c>、返回 null。结果是状态栏
+    /// "从未被定位"——检查在**实现已经正确**的情况下报红，把人引向错误的修复方向。
+    ///
+    /// <para>
+    /// 现在按字符走：遇到 <c>ESC [</c> 就吃完整条 CSI（参数 + 终止字节），
+    /// 只把终止字节为 <c>H</c>/<c>f</c> 的当作定位，并记住当前行；
+    /// 遇到普通文本时与标记比对。<c>ESC 7</c>/<c>ESC 8</c>（DECSC/DECRC）
+    /// 与 <c>ESC[2K</c> 都不会被误认。
+    /// </para>
+    /// </remarks>
+    private static int? RowOf(string output, string marker)
+    {
+        const char Escape = '\u001b';
+        var row = 0;
+
+        for (var i = 0; i < output.Length;)
+        {
+            if (output[i] == Escape)
+            {
+                var j = i + 1;
+
+                // CSI：ESC [ 参数… 终止字节。参数里可能有 ';' 与 '?'。
+                if (j < output.Length && output[j] == '[')
+                {
+                    j++;
+                    while (j < output.Length
+                        && (char.IsAsciiDigit(output[j]) || output[j] is ';' or '?'))
+                        j++;
+
+                    if (j >= output.Length) return null;
+
+                    if (output[j] is 'H' or 'f')
+                    {
+                        var parameters = output[(i + 2)..j];
+                        var semi = parameters.IndexOf(';');
+                        var rowText = semi >= 0 ? parameters[..semi] : parameters;
+                        if (int.TryParse(rowText, out var parsed)) row = parsed;
+                    }
+
+                    i = j + 1;
+                    continue;
+                }
+
+                // 两字节转义（ESC 7 / ESC 8）：整体跳过。
+                i = Math.Min(j + 1, output.Length);
+                continue;
+            }
+
+            if (string.CompareOrdinal(output, i, marker, 0, marker.Length) == 0)
+                return row == 0 ? null : row;
+
+            i++;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -269,26 +332,51 @@ public static class TerminalChecks
     {
         var cap = new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: false, Height: 24);
 
-        // 1. 锚定时必须接管。
-        using var region = LiveRegion.Create(cap);
-        if (!region.BeginPrompt("> "))
-            return "锚定模式下 BeginPrompt 应接管提示符，实际返回 false";
+        // 1 与 2 在同一段重定向里做：区域的 **Dispose 也会写控制序列**，
+        // 必须一并被捕获，否则会泄到真实终端（第一版就是绿的检查在污染屏幕）。
 
-        // 2. **接管后 Erase 不能写提示符所在的最后一行。**
+        // 2. **接管后 Erase 不能擦提示符那一行。**
         //
         // 第一版这条检查是空转的：它只验了 BeginPrompt 的返回值，
         // 中间那段 Console.SetOut(original) 等于什么都没做。
-        // 现在真读 LiveRegion 实际吐出的控制序列，断言里面没有
-        // 定位到 height 行（提示符行）的清除动作。
-        var erased = CaptureRegionOutput(region, () =>
+        // 现在真读 LiveRegion 实际吐出的控制序列。
+        //
+        // 提示符在 height-1，状态栏在 height（Hermes 版式，状态栏最底）。
+        // 所以断言是**双向**的：提示符行不许出现定位，状态栏行必须被清。
+        // 只查"没擦提示符"是不够的——Erase 整个不工作也能通过。
+        //
+        // **必须切出 Erase 那一段再断言**：Dispose 会清提示符行，那是正确行为，
+        // 和 Erase 混在同一个字符串里就分不开了——第一版正是这么误报的。
+        // 两个哨兵夹住 `RunExclusive`，只取中间那一段。
+        const string Before = "@@BEFORE@@";
+        const string After = "@@AFTER@@";
+        var captured = CaptureRegionOutput(cap, region =>
         {
+            // 1. 锚定时必须接管。
+            if (!region.BeginPrompt("> "))
+                throw new InvalidOperationException(
+                    "锚定模式下 BeginPrompt 应接管提示符，实际返回 false");
+
             region.SetLines(["status"]);
+            Console.Write(Before);
             region.RunExclusive(() => { });
+            Console.Write(After);
         });
 
-        var promptRow = $"[{cap.Height};1H";
+        var start = captured.IndexOf(Before, StringComparison.Ordinal);
+        var end = captured.IndexOf(After, StringComparison.Ordinal);
+        if (start < 0 || end <= start)
+            return "哨兵丢失，无法切出 Erase 段：" + DescribeControl(captured);
+
+        var erased = captured[(start + Before.Length)..end];
+
+        var promptRow = $"\u001b[{cap.Height - 1};1H";
         if (erased.Contains(promptRow, StringComparison.Ordinal))
-            return $"Erase 定位到了提示符行（第 {cap.Height} 行）：{DescribeControl(erased)}";
+            return $"Erase 定位到了提示符行（第 {cap.Height - 1} 行）：{DescribeControl(erased)}";
+
+        var statusRow = $"\u001b[{cap.Height};1H";
+        if (!erased.Contains(statusRow, StringComparison.Ordinal))
+            return $"Erase 没有清状态栏行（第 {cap.Height} 行）：{DescribeControl(erased)}";
 
         // 3. 非锚定时不接管，调用方照旧写。
         var plain = new TerminalCapability(TerminalTier.Plain, 0, IsRedirected: true);
@@ -306,14 +394,22 @@ public static class TerminalChecks
     /// 那条路直接写 <see cref="Console.Out"/>。不重定向就看不到它写了什么，
     /// 检查也就验不到东西——第一版正是这个毛病。
     /// </remarks>
-    private static string CaptureRegionOutput(LiveRegion region, Action action)
+    private static string CaptureRegionOutput(
+        TerminalCapability capability, Action<LiveRegion> action)
     {
+        ArgumentNullException.ThrowIfNull(action);
+
         var original = Console.Out;
         using var writer = new StringWriter();
         Console.SetOut(writer);
         try
         {
-            action();
+            // **区域在重定向内创建、也在重定向内释放。**
+            // 第一版是在调用方 `using var region = ...`，于是 Dispose
+            // 发生在 Console.SetOut(original) **之后**——擦除序列泄进真实终端。
+            // 检查本身是绿的，却在跑检查的终端上留下一堆 ESC 序列。
+            using var region = LiveRegion.Create(capability);
+            action(region);
         }
         finally
         {
@@ -2036,6 +2132,58 @@ public static class TerminalChecks
         }
 
         return writer.ToString();
+    }
+
+    /// <summary>
+    /// 状态行有多行时，提示符不能压在其中一行上。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是布局翻转后自己发现的碰撞</b>：`BeginPrompt` 原先把提示符
+    /// 写死在 `height-1`，而状态行是贴底向上排的。单行状态时两者恰好不冲突
+    /// （那正是此前唯一验过的情形），两行时第一行状态正好落在 `height-1`，
+    /// 与提示符**画在同一行**——后画的提示符覆盖状态行。
+    ///
+    /// <para>
+    /// 正确版式：提示符紧贴状态块上方，即 `height - N`（N = 状态行数）。
+    /// 断言的正是这个关系，并同时验单行情形仍然等于 `height-1`
+    /// （防止"修两行时把单行改坏"）。
+    /// </para>
+    /// </remarks>
+    private static string? PromptNoOverlapMultiRow()
+    {
+        var cap = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false, Height: 20);
+
+        // 两行状态：提示符应为 height-2，第一行状态为 height-1。
+        var twoRows = CaptureRegionOutput(cap, region =>
+        {
+            region.SetLines(["STATUS-A", "STATUS-B"]);
+            region.BeginPrompt("PROMPTMARK");
+        });
+
+        var promptRow = RowOf(twoRows, "PROMPTMARK");
+        var firstStatus = RowOf(twoRows, "STATUS-A");
+        var lastStatus = RowOf(twoRows, "STATUS-B");
+
+        if (promptRow is null || firstStatus is null || lastStatus is null)
+            return "定位失败：" + DescribeControl(twoRows);
+
+        if (promptRow >= firstStatus)
+            return $"两行状态时提示符在第 {promptRow} 行、首行状态在第 {firstStatus} 行——会重叠";
+
+        if (lastStatus != cap.Height)
+            return $"末行状态必须贴底（第 {cap.Height} 行），实际第 {lastStatus} 行";
+
+        // 单行情形仍应是 height-1（回退保护）。
+        var oneRow = CaptureRegionOutput(cap, region =>
+        {
+            region.SetLines(["ONLY"]);
+            region.BeginPrompt("PROMPTMARK");
+        });
+
+        var onePrompt = RowOf(oneRow, "PROMPTMARK");
+        return onePrompt == cap.Height - 1
+            ? null
+            : $"单行状态时提示符应在第 {cap.Height - 1} 行，实际 {onePrompt?.ToString() ?? "null"}";
     }
 
     /// <summary>

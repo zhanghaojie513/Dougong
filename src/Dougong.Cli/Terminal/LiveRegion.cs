@@ -77,10 +77,17 @@ public sealed class LiveRegion : IDisposable
 
     /// <summary>提示符行是否由本类接管（1 = 是）。</summary>
     /// <remarks>
-    /// <b>接管后 Erase 不能碰最后一行</b>：那是提示符的位置，
-    /// 擦掉就等于把用户正在看的光标行清了。
+    /// <b>接管后 Erase 不能碰提示符那一行</b>：那是用户正在看的光标行，
+    /// 擦掉就等于把提示符清了。它由 <see cref="ErasePrompt"/> 单独清理。
     /// </remarks>
     private int _promptRows;
+
+    /// <summary>接管的提示符落在第几行（1-based）；0 表示未接管。</summary>
+    /// <remarks>
+    /// <b>必须记住实际行号，不能每次重算</b>：提示符行随状态行数变化
+    /// （紧贴状态块上方），重算会与真正画上去的位置不一致。
+    /// </remarks>
+    private int _promptRow;
     private readonly object _sync = new();
     private readonly List<string> _lines = [];
 
@@ -184,9 +191,18 @@ public sealed class LiveRegion : IDisposable
                 // 表现为提示符在下一轮输入前消失（真机实测）。
                 var builder = new System.Text.StringBuilder();
 
-                // 状态行占 height-1（可能多行，往上排），提示符占 height。
+                // 版式（自下而上）：状态栏贴 `height`，提示符紧贴状态块**上方**。
+                //
+                //     提示符        ← height - N
+                //     状态行 1..N   ← height - N + 1 .. height
+                //
+                // **提示符行不是固定的 height-1**：单行状态时它恰好是 height-1
+                // （与 Repaint 的贴底一致），但状态行有多行时会撞上。
+                // 第一版写死 height-1，两行状态时提示符与第一行状态重叠——
+                // 单行状态的检查看不出来，因为那正是它唯一正确的情形。
                 var statusRows = Math.Min(_lines.Count, Math.Max(0, _anchorBottom - 1));
-                var firstRow = Math.Max(1, (_anchorBottom - 1) - statusRows + 1);
+                var firstRow = Math.Max(1, _anchorBottom - statusRows + 1);
+                var promptRow = Math.Max(1, firstRow - 1);
 
                 for (var i = 0; i < statusRows; i++)
                 {
@@ -195,11 +211,12 @@ public sealed class LiveRegion : IDisposable
                 }
 
                 // 提示符行：清干净再写，光标停在提示符之后等输入。
-                builder.Append(CursorTo(_anchorBottom));
+                builder.Append(CursorTo(promptRow));
                 builder.Append(ClearLine).Append(Truncate(prompt, _width));
 
                 Output.Control(builder.ToString());
 
+                _promptRow = promptRow;
                 _promptRows = 1;
                 _paintedFirstRow = statusRows > 0 ? firstRow : 0;
                 _paintedRows = statusRows;
@@ -314,14 +331,22 @@ public sealed class LiveRegion : IDisposable
 
             if (_anchorBottom > 0)
             {
-                // **锚定路径**：从底部往上排，但要给提示符留最后一行。
+                // **锚定路径：状态栏贴屏幕最底一行**。
                 //
-                // 第一版让状态行贴着 `height` 行，于是它与提示符抢同一行
-                // （检查 `prompt-goes-below-status-line-when-anchored` 抓到）。
-                // 正确布局（照 Hermes）：状态行占 `height-1`，提示符占 `height`。
+                // 布局照 Hermes 的实际结构（不是方案文档里写的那个）：
                 //
-                // 也就是说可用高度是 `height - 1`（留一行给提示符）。
-                var usable = Math.Max(1, _anchorBottom - 1);
+                //     ⚠ ( ˘ ˘ ) ruminating… · 2s        ← 活动行（正文区末尾）
+                //     ❯ Type to redirect this turn      ← 输入框
+                //     ─────────────────────────────
+                //      ⚙ qfmodel · ~90.9K/1M · ~9% ...  ← 状态栏（最底）
+                //
+                // 所以：**状态栏占 height，提示符占 height-1**。
+                //
+                // 前一版把两者对调了（状态行在上、提示符贴底），
+                // 那与 Hermes 正好相反——用户指出后改正。
+                // 方案 `tui-fullscreen-hermes-parity-plan.md` §2.3 里
+                // "状态行默认在输入行上方"那句是错的。
+                var usable = Math.Max(1, _anchorBottom);
                 var firstRow = Math.Max(1, usable - _lines.Count + 1);
                 builder.Append(SaveCursor);
 
@@ -426,7 +451,8 @@ public sealed class LiveRegion : IDisposable
         try
         {
             var builder = new System.Text.StringBuilder();
-            builder.Append(CursorTo(_anchorBottom));
+            // 清的是**实际画过的**那一行。状态栏由 Erase 负责。
+            builder.Append(CursorTo(Math.Max(1, _promptRow)));
             builder.Append(ClearLine);
             Output.Control(builder.ToString());
         }
@@ -436,6 +462,7 @@ public sealed class LiveRegion : IDisposable
         }
 
         _promptRows = 0;
+        _promptRow = 0;
     }
 
     /// <summary>当前内容与将要显示的是否完全相同。</summary>
