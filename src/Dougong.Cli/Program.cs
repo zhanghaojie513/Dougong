@@ -464,6 +464,10 @@ public static class Program
         // 让所有正文输出自动与底部区域协作：写之前擦、写之后画。
         Output.LiveRegion = liveRegion;
 
+        // 启动即画出空闲状态行。否则 banner 之后到首次提问之间底部是空的
+        // （真机验证时看到的正是这个），而 Hermes 的状态行从启动第一刻就在。
+        activity.ShowIdle();
+
         try
         {
         while (true)
@@ -1070,6 +1074,9 @@ public static class Program
             Output.Line($"    策略    : 触发 {PercentText.Format(composition.TriggerRatio)}、"
                 + $"保留 {PercentText.Format(composition.RetainRatio)}（DOUGONG_COMPACT_*_RATIO 可调）");
         }
+        // 终端档位与主题必须可见：用户设了 DOUGONG_THEME 拼错时，
+        // 唯一能发现的地方就是这里——否则只会觉得"颜色怎么没变"。
+        Output.Line($"  终端      : {Output.Capability.Describe()}，主题 {Theme.CurrentName}");
         Output.Line($"  L1 记忆   : {(composition.Memory is null ? "未启用" : "已启用")}");
         Output.Line($"  MCP server: {composition.McpServers.Count} 个");
 

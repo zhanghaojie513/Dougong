@@ -71,6 +71,24 @@ public sealed class ActivityReporter : IAsyncDisposable
     /// <summary>底层状态机，供诊断与测试读取。</summary>
     public ActivityState State => _state;
 
+    /// <summary>
+    /// 立刻画一次空闲状态行。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么需要显式调用</b>：状态行只由两处触发——泵线程（轮次内每 100ms）
+    /// 与 <see cref="FinishTurnAsync"/>（轮次结束）。而**启动到第一次输入之间
+    /// 没有任何轮次**，于是那段时间底部是空的。
+    ///
+    /// 真机验证时看到的正是这个：banner 之后一大片空白，直到首次提问才出现
+    /// 状态行。而 Hermes 的空闲状态行是**从启动第一刻就在的**。
+    /// </remarks>
+    public void ShowIdle()
+    {
+        if (!_region.IsActive) return;
+
+        lock (_sync) Render();
+    }
+
     /// <summary>开始一轮：进入思考中并启动刷新循环。</summary>
     public void StartTurn()
     {

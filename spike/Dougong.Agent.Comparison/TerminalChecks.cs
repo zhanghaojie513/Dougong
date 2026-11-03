@@ -93,6 +93,15 @@ public static class TerminalChecks
         failures += Check("status-uses-vertical-bar-separator", VerticalBar);
         failures += Check("anchored-region-survives-body-scroll", RegionSurvivesScroll);
 
+        // P5: theme. Default must be monochrome -- the design doc forbids gold.
+        failures += Check("accent-is-not-gold-by-default", AccentNotGold);
+        failures += Check("semantic-colors-do-not-follow-theme", SemanticFixed);
+        failures += Check("zhugou-theme-is-red-not-gold", ZhugouIsRed);
+
+        // The idle status line must exist before the first turn, not only after one.
+        failures += Check("idle-status-line-shows-before-first-turn", IdleBeforeFirstTurn);
+        failures += Check("startup-actually-calls-show-idle", StartupCallsShowIdle);
+
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
             : $"TERMINAL: {failures} FAILURE(S)");
@@ -1709,6 +1718,181 @@ public static class TerminalChecks
         return text.Contains("body 0", StringComparison.Ordinal)
             ? null
             : "early body text was overwritten by a repaint: " + live.Dump();
+    }
+
+    /// <summary>
+    /// Default accent must NOT be gold.
+    /// </summary>
+    /// <remarks>
+    /// <b>This guards a design decision that was reversed once.</b>
+    /// <c>assets/brand/README.md</c> said "use gold in the terminal, deliberately
+    /// unrelated to the logo's black and white". The later
+    /// <c>design-principles</c> doc says the opposite: "the terminal stays
+    /// black/white/grey by default; do not introduce gold out of mythological
+    /// reference".
+    ///
+    /// Gold is recognisable by hue: red and green channels both far above blue.
+    /// </remarks>
+    private static string? AccentNotGold()
+    {
+        var before = Theme.Effective;
+        try
+        {
+            Theme.OverrideForTesting(null);   // fall back to the real default
+
+            var accent = Palette.Accent;
+            if (IsGoldish(accent))
+                return $"default accent is still gold-ish ({accent}) -- design doc forbids it";
+
+            return IsMonochrome(accent)
+                ? null
+                : $"default accent is neither grey nor clearly non-gold: {accent}";
+        }
+        finally
+        {
+            Theme.OverrideForTesting(before);
+        }
+    }
+
+    /// <summary>Ok / Warn / Error must be the same in every theme.</summary>
+    private static string? SemanticFixed()
+    {
+        var before = Theme.Effective;
+        try
+        {
+            Theme.OverrideForTesting(Theme.Mono);
+            var mono = (Ok: Palette.Ok, Warn: Palette.Warn, Error: Palette.Error);
+
+            Theme.OverrideForTesting(Theme.Zhugou);
+            var zhugou = (Ok: Palette.Ok, Warn: Palette.Warn, Error: Palette.Error);
+
+            return mono == zhugou
+                ? null
+                : "semantic colors changed with the theme -- that breaks red==error";
+        }
+        finally
+        {
+            Theme.OverrideForTesting(before);
+        }
+    }
+
+    /// <summary>The zhugou theme must be red (its name says so), not gold.</summary>
+    private static string? ZhugouIsRed()
+    {
+        var before = Theme.Effective;
+        try
+        {
+            Theme.OverrideForTesting(Theme.Zhugou);
+            var accent = Palette.Accent;
+
+            if (IsGoldish(accent))
+                return $"zhugou accent is gold-ish ({accent}) -- it should be vermilion";
+
+            var rgb = ParseHex(accent);
+            return rgb is { } c && c.R > c.G && c.R > c.B
+                ? null
+                : $"zhugou accent is not dominated by red: {accent}";
+        }
+        finally
+        {
+            Theme.OverrideForTesting(before);
+        }
+    }
+
+    /// <summary>Gold-ish: red and green both well above blue.</summary>
+    private static bool IsGoldish(string hex)
+    {
+        if (ParseHex(hex) is not { } c) return false;
+        return c.R > c.B + 60 && c.G > c.B + 60;
+    }
+
+    /// <summary>Grey: the three channels are close together.</summary>
+    private static bool IsMonochrome(string hex)
+    {
+        if (ParseHex(hex) is not { } c) return false;
+        var max = Math.Max(c.R, Math.Max(c.G, c.B));
+        var min = Math.Min(c.R, Math.Min(c.G, c.B));
+        return max - min <= 16;
+    }
+
+    private static (int R, int G, int B)? ParseHex(string hex)
+    {
+        if (hex.Length is not 7 || hex[0] != '#') return null;
+        if (!int.TryParse(hex.AsSpan(1, 2), System.Globalization.NumberStyles.HexNumber, null, out var r)) return null;
+        if (!int.TryParse(hex.AsSpan(3, 2), System.Globalization.NumberStyles.HexNumber, null, out var g)) return null;
+        if (!int.TryParse(hex.AsSpan(5, 2), System.Globalization.NumberStyles.HexNumber, null, out var b)) return null;
+        return (r, g, b);
+    }
+
+    /// <summary>
+    /// The idle status line must be painted at startup, before any turn runs.
+    /// </summary>
+    /// <remarks>
+    /// <b>This was a real regression found on a real terminal.</b> P4 made the
+    /// status line persist after a turn ends, but nothing painted it before the
+    /// first turn -- the only two triggers were the pump (inside a turn) and
+    /// <c>FinishTurnAsync</c> (after one). So between the banner and the first
+    /// question the bottom was empty, which is exactly what the user saw.
+    ///
+    /// Hermes paints its idle status line from the very first frame.
+    /// </remarks>
+    private static string? IdleBeforeFirstTurn()
+    {
+        var cap = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false, Height: 24);
+
+        var (live, _) = ReplayRegion(cap, region =>
+        {
+            // ActivityReporter is IAsyncDisposable; DisposeAsync here is a
+            // no-op while no turn is running, so blocking on it is safe.
+            var activity = new ActivityReporter(
+                region, "test-model", 1_000_000, () => 12_000);
+
+            try
+            {
+                // No StartTurn, no events -- just what happens at startup.
+                activity.ShowIdle();
+            }
+            finally
+            {
+                activity.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+        });
+
+        var text = live.Text();
+
+        if (!text.Contains("test-model", StringComparison.Ordinal))
+            return "no idle status line before the first turn: " + live.Dump();
+
+        return text.Contains("◇", StringComparison.Ordinal)
+            ? null
+            : "idle line lacks the idle marker: " + live.Dump();
+    }
+
+    /// <summary>
+    /// Startup must actually call ShowIdle, not merely have the method.
+    /// </summary>
+    /// <remarks>
+    /// The behavioural check above calls <c>ShowIdle</c> itself, so it stays
+    /// green even if <c>Program.cs</c> never invokes it -- verified by negative
+    /// control. That is the gap between "the capability exists" and "the
+    /// capability is wired". This check closes it cheaply.
+    /// </remarks>
+    private static string? StartupCallsShowIdle()
+    {
+        var root = FindRepoRoot();
+        var file = Path.Combine(root, "src", "Dougong.Cli", "Program.cs");
+        if (!File.Exists(file)) return "Program.cs not found";
+
+        var text = File.ReadAllText(file);
+
+        // Must be a real call (not inside a comment).
+        var called = text.Split(Environment.NewLine)
+            .Any(l => l.Contains("activity.ShowIdle()", StringComparison.Ordinal)
+                && !l.TrimStart().StartsWith("//", StringComparison.Ordinal));
+
+        return called
+            ? null
+            : "Program.cs never calls ShowIdle -- the bottom is empty until the first turn";
     }
 
     private static string? VtReplayPromptLine()
