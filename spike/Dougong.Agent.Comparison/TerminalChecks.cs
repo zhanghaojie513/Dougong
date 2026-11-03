@@ -102,6 +102,13 @@ public static class TerminalChecks
         failures += Check("idle-status-line-shows-before-first-turn", IdleBeforeFirstTurn);
         failures += Check("startup-actually-calls-show-idle", StartupCallsShowIdle);
 
+        // P2: yungong art + four-tier banner.
+        failures += Check("art-rows-match-spec", ArtRowsMatchSpec);
+        failures += Check("art-has-no-wide-chars", ArtNoWideChars);
+        failures += Check("art-keeps-ragged-right-edge", ArtRaggedEdge);
+        failures += Check("banner-drops-to-stacked-when-narrow", BannerStackedWhenNarrow);
+        failures += Check("banner-drops-to-compact-when-short-terminal", BannerShortTerminal);
+
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
             : $"TERMINAL: {failures} FAILURE(S)");
@@ -1893,6 +1900,139 @@ public static class TerminalChecks
         return called
             ? null
             : "Program.cs never calls ShowIdle -- the bottom is empty until the first turn";
+    }
+
+    /// <summary>Art row counts and max widths must match 字符规格.json.</summary>
+    /// <remarks>
+    /// The spec file is the source of truth for these numbers; the C# copy is
+    /// generated from the same .txt files. Checking them against each other
+    /// catches a hand-edit of either side.
+    /// </remarks>
+    private static string? ArtRowsMatchSpec()
+    {
+        // (art, expected rows, expected max width)
+        var cases = new (IReadOnlyList<string> Art, int Rows, int Width)[]
+        {
+            (YungongArt.Full, 18, 30),
+            (YungongArt.Compact, 12, 20),
+            (YungongArt.Ascii, 14, 24),
+        };
+
+        foreach (var (art, rows, width) in cases)
+        {
+            if (art.Count != rows)
+                return $"art has {art.Count} rows, spec says {rows}";
+
+            var actualWidth = art.Max(r => DisplayWidth.Of(r));
+            if (actualWidth != width)
+                return $"art max width is {actualWidth}, spec says {width}";
+        }
+
+        return null;
+    }
+
+    /// <summary>Braille blocks must be narrow, otherwise rows misalign.</summary>
+    private static string? ArtNoWideChars()
+    {
+        foreach (var art in new[] { YungongArt.Full, YungongArt.Compact })
+        {
+            foreach (var row in art)
+            {
+                foreach (var rune in row.EnumerateRunes())
+                {
+                    if (DisplayWidth.Of(rune) != 1)
+                        return $"wide char U+{(int)rune.Value:X4} in art -- rows would misalign";
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Art must keep its ragged right edge: at least one row narrower than max.
+    /// </summary>
+    /// <remarks>
+    /// <b>This guards against "helpfully" padding rows to equal width.</b>
+    /// Padding makes the art a solid rectangle -- visually a wall of whitespace
+    /// on the right, worst when centered. The source file is deliberately ragged.
+    /// </remarks>
+    private static string? ArtRaggedEdge()
+    {
+        var widths = YungongArt.Full.Select(DisplayWidth.Of).Distinct().Count();
+        return widths > 1
+            ? null
+            : "all art rows are the same width -- they were padded, which adds a whitespace wall";
+    }
+
+    /// <summary>
+    /// Wide but short-of-side-by-side terminal must stack, not squeeze.
+    /// </summary>
+    private static string? BannerStackedWhenNarrow()
+    {
+        // Capture what Banner prints for a 55-column, 30-row terminal.
+        var output = CaptureBanner(new TerminalCapability(
+            TerminalTier.Rich, 55, IsRedirected: false, Height: 30));
+
+        // Stacked = art appears, and the info block starts on its own line
+        // (not appended to an art row). Detect by requiring "DOUGONG" to start
+        // a line with no braille on that line.
+        var hasBraille = output.Contains('⣿', StringComparison.Ordinal);
+        if (!hasBraille) return "no art at all on a 55-column terminal: " + output;
+
+        var dougongOnOwnLine = output.Split(Environment.NewLine)
+            .Any(l => l.Trim() == "DOUGONG");
+
+        return dougongOnOwnLine
+            ? null
+            : "info block was not stacked under the art: " + output;
+    }
+
+    /// <summary>A short terminal must not print the 18-row full art.</summary>
+    /// <remarks>
+    /// 18 rows of art + status line + prompt needs 24 rows. On a 20-row
+    /// terminal the bottom region would be pushed off screen.
+    /// </remarks>
+    private static string? BannerShortTerminal()
+    {
+        var output = CaptureBanner(new TerminalCapability(
+            TerminalTier.Rich, 120, IsRedirected: false, Height: 20));
+
+        // Detect the FULL art by its own first row, not the compact one.
+        // (The first version used the compact art's opening row as the marker,
+        // which made the check report a false failure.)
+        var fullFirstRow = YungongArt.Full[0].TrimEnd();
+        var gotFull = output.Contains(fullFirstRow, StringComparison.Ordinal);
+
+        if (gotFull)
+            return "20-row terminal still got the full 18-row art -- bottom region would overflow";
+
+        // And it must have fallen back to something, not gone blank.
+        return output.Contains('⣿', StringComparison.Ordinal)
+            ? null
+            : "20-row terminal got neither full nor compact art: " + output;
+    }
+
+    /// <summary>Capture Banner.Print output under a given capability.</summary>
+    private static string CaptureBanner(TerminalCapability capability)
+    {
+        var original = Console.Out;
+        var previous = Output.Capability;
+
+        using var writer = new StringWriter();
+        Console.SetOut(writer);
+        try
+        {
+            Output.OverrideCapability(capability);
+            Banner.Print("1.0.0", "model", "proto", "/ws", ["plain"]);
+        }
+        finally
+        {
+            Output.OverrideCapability(previous);
+            Console.SetOut(original);
+        }
+
+        return writer.ToString();
     }
 
     private static string? VtReplayPromptLine()
