@@ -109,6 +109,9 @@ public static class TerminalChecks
         failures += Check("banner-drops-to-stacked-when-narrow", BannerStackedWhenNarrow);
         failures += Check("banner-drops-to-compact-when-short-terminal", BannerShortTerminal);
 
+        // Idle status line must still show the context budget.
+        failures += Check("idle-status-shows-context-capacity", IdleShowsCapacity);
+
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
             : $"TERMINAL: {failures} FAILURE(S)");
@@ -2033,6 +2036,30 @@ public static class TerminalChecks
         }
 
         return writer.ToString();
+    }
+
+    /// <summary>
+    /// Before any model call there is no usage data, but the budget is known.
+    /// </summary>
+    /// <remarks>
+    /// The first version skipped the whole context segment when usage was
+    /// unknown, leaving just "◇ │ model" -- the user could not see how much
+    /// room the session has, which is one of the first things they want to know.
+    ///
+    /// Reporting capacity without a percentage is deliberate: a 0% would read
+    /// as "already used a bit" when in fact nothing has been sent yet.
+    /// </remarks>
+    private static string? IdleShowsCapacity()
+    {
+        var idle = new ActivityState();
+
+        var line = StatusLine.RenderSingleLine(
+            idle, "model", tokensUsed: null, contextWindow: 1_000_000,
+            turnElapsed: TimeSpan.Zero, now: DateTimeOffset.UnixEpoch, width: 120);
+
+        return line.Contains("1.0M", StringComparison.Ordinal)
+            ? null
+            : $"idle status line hides the context budget: {line}";
     }
 
     private static string? VtReplayPromptLine()

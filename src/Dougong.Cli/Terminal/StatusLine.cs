@@ -151,12 +151,27 @@ public static class StatusLine
 
         // ── 尾部段：按优先级逐个 fits() 尝试 ────────────────
         var tail = new List<string>();
-        if (tokensUsed is { } used && contextWindow > 0)
+        if (contextWindow > 0)
         {
-            var percent = Math.Min(100, used * 100 / contextWindow);
-            tail.Add(width >= 80
-                ? $"{FormatTokens(used)}/{FormatTokens(contextWindow)} {RenderGauge(percent, 10)} {percent}%"
-                : CompactTokens(used));
+            if (tokensUsed is { } used)
+            {
+                var percent = Math.Min(100, used * 100 / contextWindow);
+                tail.Add(width >= 80
+                    ? $"{FormatTokens(used)}/{FormatTokens(contextWindow)} {RenderGauge(percent, 10)} {percent}%"
+                    : CompactTokens(used));
+            }
+            else
+            {
+                // **还没调用过模型时显示窗口容量，而不是整段消失**。
+                //
+                // 第一版在没有用量时直接跳过这一段，于是启动后状态行只剩
+                // "◇ │ 模型名"——用户看不出这个会话的上下文预算是多少，
+                // 而那正是他最想确认的事之一（"这个模型能装多少"）。
+                //
+                // 只报容量不报占用：报一个 0% 会让人以为"已经用了一点"，
+                // 而实际是一次请求都还没发。容量本身就是确定信息。
+                tail.Add($"≤{FormatTokens(contextWindow)}");
+            }
         }
 
         if (busy || turnElapsed > TimeSpan.Zero)
