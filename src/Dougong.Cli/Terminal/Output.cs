@@ -54,6 +54,50 @@ public static class Output
     /// <summary>重新探测。宿主在窗口尺寸变化后可调用。</summary>
     public static void Refresh() => _capability = TerminalCapability.Detect();
 
+    /// <summary>
+    /// 启动时清屏并把光标归位。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么是清屏而不是备用缓冲区</b>：备用缓冲区（<c>ESC[?1049h</c>）
+    /// 的代价是历史不进 scrollback、退出后整屏消失、SSH/终端复用器下更脆。
+    /// Hermes 自己承认这一点——它在 Termux 上专门关掉了全屏
+    /// （<c>config/env.ts:69-75</c> 的注释："users often background/foreground
+    /// the app, and primary-buffer rendering makes long-thread review and
+    /// copy/paste much less fragile"）。
+    ///
+    /// <para>
+    /// 而我们要的效果是"看起来像 Hermes 启动时那样"——清屏 + 从顶部开始画，
+    /// 视觉上已经等价，且 scrollback 天然保留。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>只在 Rich 且未重定向时执行</b>：重定向时打控制序列会污染输出，
+    /// 而 46 个套件全都走 Plain 档、断言逐字文本。这是硬约束。
+    /// </para>
+    /// </remarks>
+    public static void ClearScreenForStartup()
+    {
+        if (!_capability.SupportsDecoration || _capability.IsRedirected) return;
+
+        // ESC[2J 清屏；ESC[H 光标归位到左上角。
+        // 两个序列合一串发，避免中间被别的输出插入。
+        Guard(() => Console.Write("\u001B[2J\u001B[H"));
+    }
+
+    /// <summary>
+    /// 退出前补一个换行，让人回到 shell 时提示符不黏在最后一行。
+    /// </summary>
+    /// <remarks>
+    /// <b>只在 Rich/Narrow 且未重定向时</b>：与清屏同一判据。
+    /// Plain 档的输出必须与改造前逐字一致，多一个换行就是破坏。
+    /// </remarks>
+    public static void FinishForExit()
+    {
+        if (!_capability.SupportsDecoration || _capability.IsRedirected) return;
+
+        Guard(() => Console.WriteLine());
+    }
+
     // ── 输出原语 ─────────────────────────────────────────────
 
     /// <summary>输出正文，不换行。</summary>

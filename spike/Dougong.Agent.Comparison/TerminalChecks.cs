@@ -25,6 +25,18 @@ public static class TerminalChecks
         failures += Check("wide-terminal-is-rich", WideIsRich);
         failures += Check("too-narrow-falls-back-to-plain", TooNarrowIsPlain);
         failures += Check("width-read-failure-is-plain", WidthFailureIsPlain);
+
+        // P1（全屏化）：高度探测 + 启动清屏。
+        failures += Check("height-is-captured-in-rich", HeightCaptured);
+        failures += Check("height-failure-does-not-downgrade-tier", HeightFailureKeepsTier);
+        failures += Check("startup-clears-screen-only-when-rich", ClearOnlyWhenRich);
+        failures += Check("redirected-startup-emits-no-control-sequences", RedirectedEmitsNothing);
+
+        // P3（底部锚定）：只有 Rich + 高度可读才锚定，其余走原路径。
+        failures += Check("live-region-anchors-when-height-known", AnchorsWhenHeightKnown);
+        failures += Check("live-region-does-not-anchor-without-height", NoAnchorWithoutHeight);
+        failures += Check("prompt-goes-below-status-line-when-anchored", PromptBelowStatus);
+        failures += Check("prompt-is-drawn-by-region-and-survives-erase", PromptSurvivesErase);
         failures += Check("plain-tier-has-no-decoration", PlainHasNoDecoration);
         failures += Check("plain-tier-output-is-verbatim", PlainOutputIsVerbatim);
         failures += Check("tool-summary-lists-each-call", ToolSummaryListsCalls);
@@ -135,6 +147,242 @@ public static class TerminalChecks
     /// 真实场景：输出被 CI 捕获时 <c>Console.WindowWidth</c> 抛 <c>IOException</c>。
     /// 不接住的话整个 CLI 启动就会挂在探测这一步。
     /// </remarks>
+    /// <summary>Rich + 有高度时应锚定。</summary>
+    private static string? AnchorsWhenHeightKnown()
+    {
+        var cap = new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: false, Height: 30);
+        using var region = LiveRegion.Create(cap);
+
+        return region.IsAnchored
+            ? null
+            : "Rich + 高度 30 时应锚定底部，实际未锚定";
+    }
+
+    /// <summary>没高度或非 Rich 时不锚定。</summary>
+    /// <remarks>
+    /// <b>降级必须是无条件的</b>：高度未知时锚定会画到屏幕外或错位，
+    /// 而那比"位置不理想"糟得多。
+    /// </remarks>
+    private static string? NoAnchorWithoutHeight()
+    {
+        var noHeight = new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: false, Height: 0);
+        using var a = LiveRegion.Create(noHeight);
+        if (a.IsAnchored) return "高度为 0 却锚定了";
+
+        var narrow = new TerminalCapability(TerminalTier.Narrow, 70, IsRedirected: false, Height: 30);
+        using var b = LiveRegion.Create(narrow);
+        if (b.IsAnchored) return "Narrow 档不该锚定";
+
+        var redirected = new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: true, Height: 30);
+        using var c = LiveRegion.Create(redirected);
+        return c.IsAnchored ? "重定向时不该锚定" : null;
+    }
+
+    /// <summary>
+    /// 锚定模式下，状态行在提示符**上方**。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是本次改造的核心断言</b>：Hermes 的状态行在提示符上方
+    /// （`appLayout.tsx:420` 的 StatusRulePane 在 `:424` 输入 Box 之前），
+    /// 而我们原来的布局是反的。
+    ///
+    /// <para>
+    /// 验法是看真实输出的控制序列：状态行应该定位到 <c>height-1</c>，
+    /// 提示符落到 <c>height</c>。而不是"状态行跟着光标往下"。
+    /// </para>
+    /// </remarks>
+    private static string? PromptBelowStatus()
+    {
+        var cap = new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: false, Height: 24);
+        using var region = LiveRegion.Create(cap);
+
+        var original = Console.Out;
+        using var writer = new StringWriter();
+        Console.SetOut(writer);
+        try
+        {
+            region.SetLines(["status line"]);
+            region.BeginPrompt("> ");
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        var output = writer.ToString();
+
+        // 状态行应定位到 24-1+1 = 24 行的位置？不：SetLines 用 height - N + 1。
+        // 单行状态 -> 第 24 行；提示符 -> 第 24 行之后…… 但屏幕只有 24 行。
+        //
+        // 正确语义：状态行占 height-1，提示符占 height。
+        // 所以 SetLines 在"等待输入"时应把状态行放到 height-1。
+        if (!output.Contains("[23;1H", StringComparison.Ordinal))
+            return $"状态行没有定位到第 23 行（height-1）。实际：{DescribeControl(output)}";
+
+        return output.Contains("[24;1H", StringComparison.Ordinal)
+            ? null
+            : $"提示符没有落到第 24 行。实际：{DescribeControl(output)}";
+    }
+
+    /// <summary>
+    /// 提示符由区域画，且随后的正文输出不会把它擦掉。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是真机上抓到的一个缺陷</b>：第一版 `BeginPrompt` 只把光标挪到
+    /// 最后一行，提示符仍由调用方 `Output.Text("> ")` 写。而那次写会走
+    /// <c>Guard</c> → <c>RunExclusive</c> → <c>Erase</c>，把刚写上去的
+    /// 提示符擦掉——用户看到的是"没有提示符，光标孤零零停在底部"。
+    ///
+    /// <para>
+    /// 正确的划分：**提示符是底部区域的内容，由区域自己画**。
+    /// `Erase` 只清状态行，提示符那一行由 `_promptRows` 单独记账，
+    /// 只在 `Clear`/`Dispose` 时清除。
+    /// </para>
+    /// </remarks>
+    private static string? PromptSurvivesErase()
+    {
+        var cap = new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: false, Height: 24);
+
+        // 1. 锚定时必须接管。
+        using var region = LiveRegion.Create(cap);
+        if (!region.BeginPrompt("> "))
+            return "锚定模式下 BeginPrompt 应接管提示符，实际返回 false";
+
+        // 2. **接管后 Erase 不能写提示符所在的最后一行。**
+        //
+        // 第一版这条检查是空转的：它只验了 BeginPrompt 的返回值，
+        // 中间那段 Console.SetOut(original) 等于什么都没做。
+        // 现在真读 LiveRegion 实际吐出的控制序列，断言里面没有
+        // 定位到 height 行（提示符行）的清除动作。
+        var erased = CaptureRegionOutput(region, () =>
+        {
+            region.SetLines(["status"]);
+            region.RunExclusive(() => { });
+        });
+
+        var promptRow = $"[{cap.Height};1H";
+        if (erased.Contains(promptRow, StringComparison.Ordinal))
+            return $"Erase 定位到了提示符行（第 {cap.Height} 行）：{DescribeControl(erased)}";
+
+        // 3. 非锚定时不接管，调用方照旧写。
+        var plain = new TerminalCapability(TerminalTier.Plain, 0, IsRedirected: true);
+        using var plainRegion = LiveRegion.Create(plain);
+        return plainRegion.BeginPrompt("> ")
+            ? "Plain 档不该接管提示符——会破坏逐字断言"
+            : null;
+    }
+
+    /// <summary>
+    /// 捕获 <see cref="LiveRegion"/> 实际写出的控制序列。
+    /// </summary>
+    /// <remarks>
+    /// <b>必须重定向 stdout</b>：<c>LiveRegion</c> 内部走 <c>Output.Control</c>，
+    /// 那条路直接写 <see cref="Console.Out"/>。不重定向就看不到它写了什么，
+    /// 检查也就验不到东西——第一版正是这个毛病。
+    /// </remarks>
+    private static string CaptureRegionOutput(LiveRegion region, Action action)
+    {
+        var original = Console.Out;
+        using var writer = new StringWriter();
+        Console.SetOut(writer);
+        try
+        {
+            action();
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        return writer.ToString();
+    }
+
+    /// <summary>Rich 档要能读到高度。</summary>
+    private static string? HeightCaptured()
+    {
+        var cap = TerminalCapability.Detect(
+            isRedirected: false, () => 120, () => 30);
+
+        if (cap.Height != 30) return $"高度应为 30，实际 {cap.Height}";
+        if (!cap.CanAnchorBottom) return "Rich + 有高度时应能做底部锚定";
+        return null;
+    }
+
+    /// <summary>
+    /// 高度读不到**不降档**。
+    /// </summary>
+    /// <remarks>
+    /// <b>与宽度的判据不同</b>：宽度读不到说明"这不是终端"（重定向、CI 捕获），
+    /// 所以退回 Plain。而高度读不到只说明"这个终端不报高度"，
+    /// 宽度已经证明它是真终端——降成 Plain 会让颜色和边框一起丢掉，
+    /// 那是把一个排版限制放大成功能损失。
+    /// </remarks>
+    private static string? HeightFailureKeepsTier()
+    {
+        var cap = TerminalCapability.Detect(
+            isRedirected: false, () => 120,
+            readHeight: () => throw new IOException("读不到高度"));
+
+        if (cap.Tier is not TerminalTier.Rich)
+            return $"高度读不到不该降档，实际 {cap.Tier}";
+
+        if (cap.Height != 0) return $"读不到时高度应记 0，实际 {cap.Height}";
+        return cap.CanAnchorBottom ? "高度为 0 时不该声称能锚定" : null;
+    }
+
+    /// <summary>只有 Rich 档才清屏。</summary>
+    private static string? ClearOnlyWhenRich()
+    {
+        // Plain：不该清屏（46 个套件断言逐字文本）。
+        Output.OverrideCapability(new TerminalCapability(TerminalTier.Plain, 0, true));
+        if (CapturedClearScreen() is { Length: > 0 })
+            return "Plain 档清屏了——会污染被断言的输出";
+
+        // Rich：该清屏。
+        Output.OverrideCapability(new TerminalCapability(TerminalTier.Rich, 120, false, 30));
+        var rich = CapturedClearScreen();
+        if (rich.Length == 0) return "Rich 档没有清屏——banner 不会从顶部开始";
+
+        return rich.Contains("[2J", StringComparison.Ordinal)
+            && rich.Contains("[H", StringComparison.Ordinal)
+                ? null
+                : $"清屏序列不对：{DescribeControl(rich)}";
+    }
+
+    /// <summary>重定向时整条启动路径不打任何控制序列。</summary>
+    private static string? RedirectedEmitsNothing()
+    {
+        Output.OverrideCapability(
+            new TerminalCapability(TerminalTier.Plain, 0, IsRedirected: true));
+
+        if (CapturedClearScreen() is { Length: > 0 }) return "重定向时清屏了";
+        return CapturedClearScreen(exit: true) is { Length: > 0 }
+            ? "重定向时退出补了换行——会破坏逐字断言"
+            : null;
+    }
+
+    /// <summary>捕获清屏/退出方法的实际输出（重定向 Console.Out）。</summary>
+    private static string CapturedClearScreen(bool exit = false)
+    {
+        var original = Console.Out;
+        using var writer = new StringWriter();
+        Console.SetOut(writer);
+        try
+        {
+            if (exit) Output.FinishForExit();
+            else Output.ClearScreenForStartup();
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        return writer.ToString();
+    }
+
+    private static string DescribeControl(string s) =>
+        s.Replace("", "ESC", StringComparison.Ordinal).Trim();
+
     private static string? WidthFailureIsPlain()
     {
         var cap = TerminalCapability.Detect(
@@ -791,7 +1039,7 @@ public static class TerminalChecks
 
         var raw = buffer.ToString();
         // 去掉 ANSI 控制序列后检查代理对完整性。
-        var text = System.Text.RegularExpressions.Regex.Replace(raw, "\u001b\\[[0-9;]*[A-Za-z]", "");
+        var text = Escape(raw);
 
         for (var i = 0; i < text.Length; i++)
         {

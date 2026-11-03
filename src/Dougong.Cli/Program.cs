@@ -299,6 +299,10 @@ public static class Program
             ? $"；触发 {PercentText.Format(triggerRatio)} / 保留 {PercentText.Format(retainRatio)}"
             : string.Empty;
 
+        // **启动先清屏**，让 banner 从第一行开始，而不是从光标当前位置往下挤。
+        // 只在 Rich/Narrow 且未重定向时执行——Plain 档多一个控制字符就是破坏。
+        Output.ClearScreenForStartup();
+
         // 首页三档：Rich 出大字，Narrow 出单行，Plain 输出与改造前逐字一致的原文。
         // 原文由这里传入而不是 Banner 自己拼——"兼容"这件事不能靠猜。
         Banner.Print(
@@ -464,7 +468,18 @@ public static class Program
         {
         while (true)
         {
-            Output.Text("> ");
+            // **提示符交给底部区域画，不是正文**。
+            //
+            // Hermes 的状态行在提示符**上方**（`appLayout.tsx:420` 的
+            // StatusRulePane 在 `:424` 的输入 Box 之前）；而我们原来的提示符
+            // 是正文的一部分，于是状态行只能画在它下面——方向正好相反。
+            //
+            // 交给区域之后它自己画两行：状态行占 `height-1`，提示符占 `height`。
+            // 返回 false 表示没接管（Plain 档 / 窄终端 / 高度未知），
+            // 那时照旧由正文写 `> `——那条路 46 个套件与真机都验过。
+            if (!liveRegion.BeginPrompt("> "))
+                Output.Text("> ");
+
             var input = Console.ReadLine();
             if (input is null) break;                       // EOF
             if (string.IsNullOrWhiteSpace(input)) continue;
@@ -623,6 +638,11 @@ public static class Program
 
             // 后台作业最后释放：它持有子进程句柄，不释放会留下孤儿进程。
             composition.Dispose();
+
+            // **退出前补一个换行**：不然人回到 shell 后，提示符会黏在
+            // 输出的最后一行上。只在 Rich/Narrow 且未重定向时执行——
+            // Plain 档多一个换行就是破坏（46 个套件断言逐字文本）。
+            Output.FinishForExit();
         }
 
         return 0;

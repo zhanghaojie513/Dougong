@@ -46,18 +46,52 @@ public sealed class LiveRegion : IDisposable
     /// <summary>移到下一行行首（CNL）。用 <c>\n</c> 会继承当前列，必须用这个。</summary>
     private const string NextLine = "\u001b[1E";
 
+    /// <summary>移到指定行、第 1 列（CUP）。<c>ESC[{row};1H</c>。</summary>
+    /// <remarks>
+    /// <b>底部锚定用的定位原语</b>。行号是绝对行（1-based），
+    /// 与 <see cref="NextLine"/> 的相对下移互为替代：
+    /// 前者让区域固定贴底，后者让区域跟着光标走。
+    /// </remarks>
+    private static string CursorTo(int row) => $"\u001b[{row};1H";
+
     private readonly bool _enabled;
     private readonly int _width;
+
+    /// <summary>
+    /// 锚定到的屏幕行（1-based）；0 表示**不锚定**，仍画在光标下方。
+    /// </summary>
+    /// <remarks>
+    /// <b>两个模式必须分开实现，不能"尽量锚定"</b>：
+    /// 锚定要读终端高度、且与滚动的相互作用很微妙（正文写满最后一行时
+    /// 终端整体上滚，锚点跟着移）。而"画在光标下方"是这个类一直在用的方案，
+    /// 已经被 46 个套件和真机验过。
+    /// <para>
+    /// 所以只在 <see cref="TerminalCapability.CanAnchorBottom"/> 时用锚定，
+    /// 其余情况维持原路径——两条路径的切换点是纯数据，可以确定性覆盖。
+    /// </para>
+    /// </remarks>
+    private readonly int _anchorBottom;
+
+    /// <summary>已画区域占的屏幕行范围（1-based，锚定模式下有效）。</summary>
+    private int _paintedFirstRow;
+
+    /// <summary>提示符行是否由本类接管（1 = 是）。</summary>
+    /// <remarks>
+    /// <b>接管后 Erase 不能碰最后一行</b>：那是提示符的位置，
+    /// 擦掉就等于把用户正在看的光标行清了。
+    /// </remarks>
+    private int _promptRows;
     private readonly object _sync = new();
     private readonly List<string> _lines = [];
 
     private int _paintedRows;
     private bool _disposed;
 
-    private LiveRegion(bool enabled, int width)
+    private LiveRegion(bool enabled, int width, int anchorBottom)
     {
         _enabled = enabled;
         _width = width;
+        _anchorBottom = anchorBottom;
     }
 
     /// <summary>是否真的在重绘（不可用时为 false）。</summary>
@@ -78,8 +112,15 @@ public sealed class LiveRegion : IDisposable
         // 重定向时无条件关闭：这里写 ANSI 只会污染输出。
         if (capability.IsRedirected) enabled = false;
 
-        return new LiveRegion(enabled, capability.Width);
+        // 底部锚定只在 Rich 且高度可读时启用。
+        // 降级路径（Narrow / 高度未知）保持"画在光标下方"——那条路已被验过。
+        var anchor = enabled && capability.CanAnchorBottom ? capability.Height : 0;
+
+        return new LiveRegion(enabled, capability.Width, anchor);
     }
+
+    /// <summary>是否采用底部锚定（供诊断与检查断言）。</summary>
+    public bool IsAnchored => _enabled && !_disposed && _anchorBottom > 0;
 
     /// <summary>设置要显示的行。空集合表示隐藏。</summary>
     /// <remarks>
@@ -99,6 +140,76 @@ public sealed class LiveRegion : IDisposable
             _lines.Clear();
             _lines.AddRange(lines);
             Repaint();
+        }
+    }
+
+    /// <summary>
+    /// 进入"等待输入"状态：把状态行锚到底部，提示符留在它下面一行。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么提示符要由这里管</b>：Hermes 的状态行在提示符**上方**，
+    /// 而我们的提示符原本是正文的一部分——那样状态行只能画在它下面，
+    /// 方向正好相反（见方案 §2.3）。
+    ///
+    /// <para>
+    /// 锚定模式下：状态行定位到 <c>height-1</c> 行，提示符落在 <c>height</c> 行。
+    /// 非锚定模式下本方法是**空操作**，提示符照旧由调用方用
+    /// <c>Output.Text</c> 写——那条路已被 46 个套件与真机验过，不动它。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Plain 档完全无副作用</b>：它连 <c>_enabled</c> 都是 false，
+    /// 所以什么都不做，输出与改造前逐字一致。
+    /// </para>
+    /// </remarks>
+    public bool BeginPrompt(string prompt)
+    {
+        ArgumentNullException.ThrowIfNull(prompt);
+
+        // **返回 false 表示"没接管"，调用方照旧用 Output.Text 写提示符。**
+        //
+        // 第一版这里只挪光标、然后让调用方 Output.Text 写提示符——
+        // 结果是提示符被 RunExclusive 里的 Erase 擦掉了（真机看到 `>` 消失）。
+        // 根因是职责没划清：既然提示符归底部区域，就必须**由区域自己画**，
+        // 而不是"区域挪好位子、正文再写上去"。
+        if (!_enabled || _disposed || _anchorBottom <= 0) return false;
+
+        lock (_sync)
+        {
+            try
+            {
+                // **不 SaveCursor**：本方法的目的是把光标**留在**提示符末尾
+                // 等用户输入。存了之后不恢复，会污染 DECSC 栈——后续
+                // Repaint/Erase 里的 RestoreCursor 会跳到这个位置，
+                // 表现为提示符在下一轮输入前消失（真机实测）。
+                var builder = new System.Text.StringBuilder();
+
+                // 状态行占 height-1（可能多行，往上排），提示符占 height。
+                var statusRows = Math.Min(_lines.Count, Math.Max(0, _anchorBottom - 1));
+                var firstRow = Math.Max(1, (_anchorBottom - 1) - statusRows + 1);
+
+                for (var i = 0; i < statusRows; i++)
+                {
+                    builder.Append(CursorTo(firstRow + i));
+                    builder.Append(ClearLine).Append(Truncate(_lines[i], _width));
+                }
+
+                // 提示符行：清干净再写，光标停在提示符之后等输入。
+                builder.Append(CursorTo(_anchorBottom));
+                builder.Append(ClearLine).Append(Truncate(prompt, _width));
+
+                Output.Control(builder.ToString());
+
+                _promptRows = 1;
+                _paintedFirstRow = statusRows > 0 ? firstRow : 0;
+                _paintedRows = statusRows;
+                return true;
+            }
+            catch (Exception)
+            {
+                _disposed = true;
+                return false;
+            }
         }
     }
 
@@ -158,6 +269,7 @@ public sealed class LiveRegion : IDisposable
         lock (_sync)
         {
             Erase();
+            ErasePrompt();
             _lines.Clear();
         }
     }
@@ -169,6 +281,7 @@ public sealed class LiveRegion : IDisposable
         {
             if (_disposed) return;
             Erase();
+            ErasePrompt();
             _disposed = true;
         }
     }
@@ -198,15 +311,43 @@ public sealed class LiveRegion : IDisposable
         try
         {
             var builder = new System.Text.StringBuilder();
-            builder.Append(SaveCursor);
 
-            for (var i = 0; i < _lines.Count; i++)
+            if (_anchorBottom > 0)
             {
-                builder.Append(NextLine);
-                builder.Append(ClearLine).Append(Truncate(_lines[i], _width));
+                // **锚定路径**：从底部往上排，但要给提示符留最后一行。
+                //
+                // 第一版让状态行贴着 `height` 行，于是它与提示符抢同一行
+                // （检查 `prompt-goes-below-status-line-when-anchored` 抓到）。
+                // 正确布局（照 Hermes）：状态行占 `height-1`，提示符占 `height`。
+                //
+                // 也就是说可用高度是 `height - 1`（留一行给提示符）。
+                var usable = Math.Max(1, _anchorBottom - 1);
+                var firstRow = Math.Max(1, usable - _lines.Count + 1);
+                builder.Append(SaveCursor);
+
+                for (var i = 0; i < _lines.Count; i++)
+                {
+                    builder.Append(CursorTo(firstRow + i));
+                    builder.Append(ClearLine).Append(Truncate(_lines[i], _width));
+                }
+
+                builder.Append(RestoreCursor);
+                _paintedFirstRow = firstRow;
+            }
+            else
+            {
+                // **相对路径**（原方案）：从光标往下写 N 行再回来。
+                builder.Append(SaveCursor);
+
+                for (var i = 0; i < _lines.Count; i++)
+                {
+                    builder.Append(NextLine);
+                    builder.Append(ClearLine).Append(Truncate(_lines[i], _width));
+                }
+
+                builder.Append(RestoreCursor);
             }
 
-            builder.Append(RestoreCursor);
             Output.Control(builder.ToString());
             _paintedRows = _lines.Count;
         }
@@ -235,10 +376,27 @@ public sealed class LiveRegion : IDisposable
             var builder = new System.Text.StringBuilder();
             builder.Append(SaveCursor);
 
-            for (var i = 0; i < _paintedRows; i++)
+            if (_anchorBottom > 0 && _paintedFirstRow > 0)
             {
-                builder.Append(NextLine);
-                builder.Append(ClearLine);
+                // 锚定模式：按记录下的绝对行号逐行清，不依赖光标在哪。
+                //
+                // **只清状态行，不动提示符行**：`_paintedRows` 只统计状态行，
+                // 提示符那一行由 `_promptRows` 单独记账且永不在这里清除。
+                // 第一版没分开，真机上表现为提示符 `>` 消失。
+                for (var i = 0; i < _paintedRows; i++)
+                {
+                    builder.Append(CursorTo(_paintedFirstRow + i));
+                    builder.Append(ClearLine);
+                }
+            }
+            else
+            {
+                // 相对模式：区域在光标下方，往下数。
+                for (var i = 0; i < _paintedRows; i++)
+                {
+                    builder.Append(NextLine);
+                    builder.Append(ClearLine);
+                }
             }
 
             builder.Append(RestoreCursor);
@@ -250,6 +408,34 @@ public sealed class LiveRegion : IDisposable
         }
 
         _paintedRows = 0;
+        _paintedFirstRow = 0;
+        // 不重置 _promptRows：提示符那一行仍然由本类占着。
+        // 它随 Clear()/Dispose() 一起清。
+    }
+
+    /// <summary>清掉由本类接管的提示符行。</summary>
+    /// <remarks>
+    /// <b>只在真正"不要了"的时候调</b>（<see cref="Clear"/>、<see cref="Dispose"/>）。
+    /// 普通的 <see cref="Erase"/> 不能碰它——那是用户正在看的光标行。
+    /// 第一版没区分，真机上表现为提示符 `>` 在下一轮输入前就消失了。
+    /// </remarks>
+    private void ErasePrompt()
+    {
+        if (!_enabled || _promptRows == 0 || _anchorBottom <= 0) return;
+
+        try
+        {
+            var builder = new System.Text.StringBuilder();
+            builder.Append(CursorTo(_anchorBottom));
+            builder.Append(ClearLine);
+            Output.Control(builder.ToString());
+        }
+        catch (Exception)
+        {
+            _disposed = true;
+        }
+
+        _promptRows = 0;
     }
 
     /// <summary>当前内容与将要显示的是否完全相同。</summary>
