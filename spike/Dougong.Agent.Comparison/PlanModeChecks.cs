@@ -316,42 +316,98 @@ public static class PlanModeChecks
     {
         await Task.CompletedTask;
 
-        // 拿被测工具清单：直接构造与生产装配同一批工具（不需要 session 上下文）。
-        var tools = new List<(string Id, ToolPermission Permission)>
-        {
-            ("read_file", new(ToolAccess.Read, true, ["a"], [], [])),
-            ("write_file", new(ToolAccess.Write, true, ["a"], [], [])),
-            ("edit_file", new(ToolAccess.Write, true, ["a"], [], [])),
-            ("glob", new(ToolAccess.Read, true, [], [], [])),
-            ("grep", new(ToolAccess.Read, true, [], [], [])),
-            ("shell", new(ToolAccess.Execute, true, [], ["ls"], [])),
-            ("job_start", new(ToolAccess.Execute, true, [], ["ls"], [])),
-            ("job_stop", new(ToolAccess.Execute, true, [], [], [])),
-            // **新增的只读工具**：这几个是第一版漏掉的。
-            ("get_goal", new(ToolAccess.None, true, [], [], [])),
-            ("subagent_list", new(ToolAccess.None, true, [], [], [])),
-        };
+        // 扫源码自动对账，不手写清单。
+        //
+        // 这条检查前两版都是手写的：第一版只验四个固定名字（而它们恰好在
+        // 白名单里，等于空转）；第二版扩到十个，但仍然是我"想到的"——
+        // 于是 subagent_result 与 working_directory 两个纯内存工具
+        // 一直被误拒，检查全绿。
+        //
+        // 现在从每个工具的 ToolId 与 DescribePermission 声明的 Access
+        // 反推它是不是只读，再与白名单对账。新增工具会自动进入范围。
+        var root = FindRepoRoot();
+        var agentDir = Path.Combine(root, "src", "Dougong.Agent");
+        if (!Directory.Exists(agentDir)) return $"找不到 {agentDir}";
 
         var problems = new List<string>();
+        var seen = 0;
 
-        foreach (var (id, permission) in tools)
+        foreach (var file in Directory.EnumerateFiles(agentDir, "*.cs"))
         {
-            // **只读的判据**：已知且没有 Execute/Write。None 与 Read 都算只读。
-            var isReadOnly = permission.IsKnown
-                && permission.Access is ToolAccess.None or ToolAccess.Read;
+            var text = File.ReadAllText(file);
 
-            var allowed = PlanModePolicy.IsAllowed(id);
+            // 按类切块：文件里可能有多个工具类，各自权限不同。
+            foreach (var block in SplitByClass(text))
+            {
+                var idMatch = IdPattern.Match(block);
+                var permMatch = PermissionPattern.Match(block);
 
-            if (isReadOnly && !allowed)
-                problems.Add($"只读工具 {id} 在计划模式下被拒了");
+                if (!idMatch.Success || !permMatch.Success) continue;
 
-            if (!isReadOnly && allowed)
-                problems.Add($"有副作用的工具 {id} 在计划模式下被放行了");
+                var id = idMatch.Groups[1].Value;
+                var access = permMatch.Groups[1].Value;
+                seen++;
+
+                var isReadOnly = access is "None" or "Read";
+                var allowed = PlanModePolicy.IsAllowed(id);
+
+                if (isReadOnly && !allowed)
+                    problems.Add($"只读工具 {id}（{access}）被拒");
+
+                if (!isReadOnly && allowed)
+                    problems.Add($"有副作用的工具 {id}（{access}）被放行");
+            }
         }
+
+        // 前提校验：一个工具都没扫到说明正则失效，不能当成"全部通过"。
+        if (seen < 5)
+            return $"只扫到 {seen} 个工具——提取逻辑可能失效，检查不可信";
 
         return problems.Count == 0
             ? null
-            : "计划模式白名单与实际工具不符：" + string.Join("；", problems);
+            : "计划模式白名单与工具声明不符：" + string.Join("；", problems);
+    }
+
+    /// <summary>工具 ID 的提取正则。</summary>
+    private static readonly System.Text.RegularExpressions.Regex IdPattern =
+        new("public const string ToolId = \"([a-z_]+)\"", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>DescribePermission 里声明的访问级别。</summary>
+    private static readonly System.Text.RegularExpressions.Regex PermissionPattern =
+        new(@"DescribePermission\(JsonElement arguments\)[^=]*=>[^;]*?ToolAccess\.(\w+)",
+            System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.Singleline);
+
+    /// <summary>按 public class 行切块。</summary>
+    private static IEnumerable<string> SplitByClass(string text)
+    {
+        var buffer = new List<string>();
+
+        foreach (var line in text.Split(Environment.NewLine))
+        {
+            var isClassStart = line.StartsWith("public ", StringComparison.Ordinal)
+                && line.Contains("class ", StringComparison.Ordinal);
+
+            if (isClassStart && buffer.Count > 0)
+            {
+                yield return string.Join(Environment.NewLine, buffer);
+                buffer.Clear();
+            }
+
+            buffer.Add(line);
+        }
+
+        if (buffer.Count > 0) yield return string.Join(Environment.NewLine, buffer);
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "Dougong.slnx"))) return dir.FullName;
+            dir = dir.Parent;
+        }
+        return Directory.GetCurrentDirectory();
     }
 
     // ── 支撑 ─────────────────────────────────────────────────────

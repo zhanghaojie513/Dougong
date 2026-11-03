@@ -203,6 +203,19 @@ public sealed class SessionGoal
     /// <remarks>
     /// <b>只有 active 才计数</b>：暂停或阻塞时开始的轮次不该算进上限，
     /// 否则"暂停一下再继续"会白白消耗额度。
+    ///
+    /// <para>
+    /// <b>创建目标的那一轮不计入</b>：运行时在轮首调用本方法，
+    /// 而目标通常是在轮内才被创建的。所以 <see cref="GoalSnapshot.RoundsStarted"/>
+    /// 的语义是"目标存在之后被推进的轮数"（与 dsh 的
+    /// "admitted continuation rounds" 一致），<b>不含创建轮</b>。
+    /// </para>
+    /// <para>
+    /// 这条有一个连带后果：要标 <c>blocked</c> 需要
+    /// 至少 <see cref="MinRoundsBeforeBlocked"/> 轮，而第一轮是创建轮——
+    /// 也就是**最早在第 4 轮才能宣布阻塞**。这不是 bug，但排期时要算进去。
+    /// 端到端跑过一遍确认了这个行为。
+    /// </para>
     /// </remarks>
     /// <returns>本轮的序号；目标的阶段不允许计数时返回 null。</returns>
     public int? BeginRound()
