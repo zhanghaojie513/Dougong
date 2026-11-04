@@ -140,6 +140,7 @@ public static class TerminalChecks
 
         // 首页总行数不能超出终端高度——超了会把底部状态行与提示符挤出屏幕。
         failures += Check("startup-never-exceeds-terminal-height", StartupFitsHeight);
+        failures += Check("startup-without-panel-fits-height", StartupWithoutPanelFits);
 
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
@@ -2126,22 +2127,22 @@ public static class TerminalChecks
     /// </summary>
     private static string? BannerStackedWhenNarrow()
     {
-        // Capture what Banner prints for a 55-column, 30-row terminal.
+        // **给足高度**，让 stacked 一定能排下（它要 32 行 + 底部 2 行）。
+        // 原先用 30 行，而 stacked 放不下——于是正确地降到了 ascii，
+        // 检查却因为"没有盲文"报红。那是检查的期望过时，不是实现错。
         var output = CaptureBanner(new TerminalCapability(
-            TerminalTier.Rich, 55, IsRedirected: false, Height: 30));
+            TerminalTier.Rich, 55, IsRedirected: false, Height: 40));
 
-        // Stacked = art appears, and the info block starts on its own line
-        // (not appended to an art row). Detect by requiring "DOUGONG" to start
-        // a line with no braille on that line.
-        var hasBraille = output.Contains('⣿', StringComparison.Ordinal);
-        if (!hasBraille) return "no art at all on a 55-column terminal: " + output;
+        // Stacked = 形象出现，且信息区另起一行（不并排）。
+        if (!output.Contains('⣿', StringComparison.Ordinal))
+            return "55 列、40 行足够高时应能排下带形象的一档：" + output;
 
         var dougongOnOwnLine = output.Split(Environment.NewLine)
             .Any(l => l.Trim() == "DOUGONG");
 
         return dougongOnOwnLine
             ? null
-            : "info block was not stacked under the art: " + output;
+            : "信息区没有排在形象下方（窄窗口不该硬挤并排）：" + output;
     }
 
     /// <summary>A short terminal must not print the 18-row full art.</summary>
@@ -2158,15 +2159,16 @@ public static class TerminalChecks
         // (The first version used the compact art's opening row as the marker,
         // which made the check report a false failure.)
         var fullFirstRow = YungongArt.Full[0].TrimEnd();
-        var gotFull = output.Contains(fullFirstRow, StringComparison.Ordinal);
+        if (output.Contains(fullFirstRow, StringComparison.Ordinal))
+            return "20 行终端仍然画了 full 的 18 行形象——底部会溢出";
 
-        if (gotFull)
-            return "20-row terminal still got the full 18-row art -- bottom region would overflow";
-
-        // And it must have fallen back to something, not gone blank.
-        return output.Contains('⣿', StringComparison.Ordinal)
+        // **降级不必降到带形象的那一档**：20 行里 full 要 28、stacked 要 34、
+        // compact 要 31、ascii 要 21，全都放不下，于是正确落到单行 text。
+        // 第一版要求"必须有盲文"，把正确的降级判成了失败。
+        // 真正的不变量是"非空"，即没有整屏空白。
+        return output.Trim().Length > 0
             ? null
-            : "20-row terminal got neither full nor compact art: " + output;
+            : "20 行终端什么都没有输出";
     }
 
     /// <summary>Capture Banner.Print output under a given capability.</summary>
@@ -2336,19 +2338,28 @@ public static class TerminalChecks
     }
 
     /// <summary>高度不够时不画（否则会把底部区域挤出屏幕）。</summary>
+    /// <remarks>
+    /// <b><c>TryRender</c> 的 <c>height</c> 现在是"字标可用高度"</b>，
+    /// 负数才表示"读不到"。0 是"一行都放不下"这个确定结论。
+    /// 这两者混用过一次，造成 66×28 上多画 11 行。
+    /// </remarks>
     private static string? BigTextShortFallback()
     {
-        // 单行排法要 5 行字 + 1 空行 + 8 行底部余量 = 14；给 13 必须降级。
-        var single = BigText.GlyphHeight + 1 + 8;
-        if (BigText.TryRender(200, single - 1) is { Count: <= BigText.GlyphHeight + 1 })
-            return "高度不足时不该还排单行";
+        // 单行排法要 6 行（5 行字 + 1 空行）。
+        if (BigText.TryRender(200, BigText.GlyphHeight) is not null)
+            return $"{BigText.GlyphHeight} 行放不下单行排法，不该返回内容";
 
-        if (BigText.TryRender(200, BigText.GlyphHeight + 1 + 8) is null)
-            return "高度刚好够单行时应能排下";
+        if (BigText.TryRender(200, BigText.GlyphHeight + 1) is null)
+            return $"{BigText.GlyphHeight + 1} 行应刚好够单行排法";
 
-        return BigText.TryRender(200, 6) is null
+        // **0 是"没有空间"，不是"读不到"**：必须不画。
+        if (BigText.TryRender(200, 0) is not null)
+            return "可用高度为 0 时不该画字标——那会顶掉下面所有内容";
+
+        // 负数才是"读不到"，按够处理。
+        return BigText.TryRender(200, -1) is not null
             ? null
-            : "高度 6 行时不该画任何字标——会把底部区域挤出去";
+            : "高度读不到（-1）时应按够处理";
     }
 
     /// <summary>渐变首行取上端色、末行取下端色。</summary>
@@ -2689,29 +2700,82 @@ public static class TerminalChecks
 
         var summary = SampleSummary(tools: tools, mcp: mcp, skillGroups: groups, skillCount: 20);
 
-        foreach (var height in new[] { 20, 24, 30, 40 })
+        // **必须扫多档宽度**：字标在宽 ≥ 89 是 5 行、41–88 折成两段是 12 行，
+        // 而各档形象（full 18 / compact 12 / ascii 14）也不同。
+        // 第一版只测 120 宽，于是 66–80 宽上的折行溢出一项都抓不到。
+        var widths = new[] { 34, 50, 66, 70, 89, 90, 120, 160 };
+        var heights = new[] { 16, 20, 24, 26, 28, 30, 36, 40 };
+
+        foreach (var width in widths)
         {
-            Output.OverrideCapability(
-                new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: false, Height: height));
+            foreach (var height in heights)
+            {
+                Output.OverrideCapability(new TerminalCapability(
+                    TerminalTier.Rich, width, IsRedirected: false, Height: height));
 
-            var captured = CaptureStdout(() => Banner.Print(
-                version: "0.0.0-test",
-                model: "m",
-                protocol: "Chat",
-                workspace: "C:/a/b",
-                plainLines: ["plain"],
-                summary: summary));
+                var captured = CaptureStdout(() => Banner.Print(
+                    version: "0.0.0-test",
+                    model: "m",
+                    protocol: "Chat",
+                    workspace: "C:/work/myProject/dougong",
+                    plainLines: ["plain"],
+                    summary: summary));
 
-            // 去掉 ANSI 序列后按行数计。
-            var visible = captured.Replace("\u001b", string.Empty);
-            var lines = visible.Split('\n')
-                .Count(l => !string.IsNullOrWhiteSpace(l));
+                // **数总行数，不能只数非空行。**空行同样占终端的一行，
+                // 而 PrintFull/PrintStacked 的首尾空行、字标后的空行都会被漏掉——
+                // 第一版就是这么漏掉 66 宽那 6 行溢出的。
+                var visible = captured.Replace("\u001b", string.Empty);
+                var all = visible.Split('\n');
+                if (all.Length > 0 && all[^1].Length == 0) all = all[..^1];
+                var lines = all.Length;
 
-            // 底部区域（状态栏 + 提示符 + 欢迎语 + 余量）必须还留得下。
-            const int reservedBottom = 5;
-            if (lines + reservedBottom > height)
-                return $"高度 {height}：首页打出 {lines} 行 + 底部 {reservedBottom} 行 = "
-                    + $"{lines + reservedBottom}，超了 {lines + reservedBottom - height} 行";
+                // 底部区域（状态栏 + 提示符）必须还留得下。
+                const int reservedBottom = 2;
+                if (lines + reservedBottom > height)
+                    return $"{width}×{height}：首页打出 {lines} 行 + 底部 "
+                        + $"{reservedBottom} 行 = {lines + reservedBottom}，"
+                        + $"超了 {lines + reservedBottom - height} 行";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 没有运行时清单（装配失败/Plain 之外的降级）时，首页同样不许溢出。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是另一条分支</b>：<c>summary</c> 为 null 时不出面板，
+    /// 走 full/stacked/compact/ascii/text 五档之一，而那几档各有自己的高度判据。
+    /// 第一版只有 full 档判高度，实测 70×25 上 stacked 输出 32 行。
+    /// </remarks>
+    private static string? StartupWithoutPanelFits()
+    {
+        var widths = new[] { 30, 34, 50, 66, 70, 89, 90, 120, 160 };
+        var heights = new[] { 16, 20, 24, 26, 28, 30, 36, 40 };
+
+        foreach (var width in widths)
+        {
+            foreach (var height in heights)
+            {
+                Output.OverrideCapability(new TerminalCapability(
+                    TerminalTier.Rich, width, IsRedirected: false, Height: height));
+
+                var captured = CaptureStdout(() => Banner.Print(
+                    version: "0.0.0-test",
+                    model: "m",
+                    protocol: "Chat",
+                    workspace: "C:/work/myProject/dougong",
+                    plainLines: ["plain"]));
+
+                var all = captured.Replace("\u001b", string.Empty).Split('\n');
+                if (all.Length > 0 && all[^1].Length == 0) all = all[..^1];
+
+                const int reservedBottom = 2;
+                if (all.Length + reservedBottom > height)
+                    return $"{width}×{height}：无面板首页打出 {all.Length} 行 + 底部 "
+                        + $"{reservedBottom} 行，超了 {all.Length + reservedBottom - height} 行";
+            }
         }
 
         return null;

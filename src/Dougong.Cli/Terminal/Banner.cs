@@ -37,9 +37,6 @@ public static class Banner
     /// <remarks>30 列形象 + 4 列间隔 + 信息区最小宽度。实测 66 列时信息区还剩 32 列，够放路径。</remarks>
     public const int FullMinWidth = 66;
 
-    /// <summary>full 档所需最小高度：18 行形象 + 3 行信息 + 状态行 + 提示符，留两行余量。</summary>
-    public const int FullMinHeight = 24;
-
     /// <summary>compact 档：20 列形象所需宽度（含左右留白）。</summary>
     public const int CompactMinWidth = 46;
 
@@ -89,26 +86,29 @@ public static class Banner
                 if (PrintPanel(summary, width, height)) break;
                 goto case TerminalTier.Rich;
 
-            case TerminalTier.Rich when width >= FullMinWidth && Fits(height):
+            case TerminalTier.Rich when width >= FullMinWidth && FitsIn(width, height, FullMinHeight):
                 PrintFull(version, model, protocol, workspace);
                 break;
 
-            case TerminalTier.Rich when width >= CompactMinWidth && Fits(height):
+            case TerminalTier.Rich when width >= CompactMinWidth && FitsIn(width, height, StackedMinHeight):
                 // 宽够高够但排不下并排：形象在上、文字在下。
                 // 使用说明里明确要求"窄窗口将形象单独置于标题上方，不要强行并排"。
                 PrintStacked(version, model, protocol, workspace);
                 break;
 
-            case TerminalTier.Rich or TerminalTier.Narrow when width >= CompactMinWidth:
+            case TerminalTier.Rich or TerminalTier.Narrow
+                when width >= CompactMinWidth && FitsIn(width, height, CompactMinHeight):
                 PrintCompact(version, model, protocol, workspace);
                 break;
 
-            case TerminalTier.Rich or TerminalTier.Narrow when width >= AsciiMinWidth:
+            case TerminalTier.Rich or TerminalTier.Narrow
+                when width >= AsciiMinWidth && FitsIn(width, height, AsciiMinHeight):
                 PrintAscii(version, model, protocol, workspace);
                 break;
 
             case TerminalTier.Rich:
             case TerminalTier.Narrow:
+                // 连 ascii 都放不下：退回单行。它只有 4 行，任何能跑起来的终端都放得下。
                 PrintText(version, model, protocol, workspace);
                 break;
 
@@ -118,8 +118,68 @@ public static class Banner
         }
     }
 
-    /// <summary>高度是否够放完整形象；未知（0）时按够处理。</summary>
-    private static bool Fits(int height) => height <= 0 || height >= FullMinHeight;
+    /// <summary>
+    /// 该档在给定高度下能否放下（**含字标与底部**）。
+    /// </summary>
+    /// <param name="width">终端宽度（决定字标几行）。</param>
+    /// <param name="height">终端高度；0 表示读不到，一律放行。</param>
+    /// <param name="required">该档正文占的行数（不含底部）。</param>
+    /// <remarks>
+    /// <b>字标与正文必须合起来判，不能各判各的。</b>分开判的后果实测过：
+    /// 双方都说"我放得下"，加起来却超——120×28 上字标 5 行 + full 正文 26 行
+    /// = 31 行，溢出 3 行。
+    ///
+    /// <para>
+    /// <b>但字标是"可丢"的</b>：正文放得下时优先保正文，字标在剩余高度不够时
+    /// 自动不画（<see cref="PrintWordmark"/> 里判）。所以这里的判据是
+    /// "正文 + 底部" 与 "正文 + 底部 + 字标" 两档：
+    /// 前者成立才会选中该档，后者决定字标画不画。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>高度未知（0）时一律放行</b>：那说明终端不报高度，而宽度已经证明
+    /// 它是真终端；因为读不到高度就降级是白丢信息。
+    /// </para>
+    /// </remarks>
+    private static bool FitsIn(int width, int height, int required)
+    {
+        if (height <= 0) return true;
+
+        // 正文 + 底部都放得下，才选中该档。字标不参与——它是可丢的装饰。
+        return height >= required;
+    }
+
+    /// <summary>
+    /// 各档占用的总行数（**含空行**，实测值）+ 底部 2 行。
+    /// </summary>
+    /// <remarks>
+    /// <b>这些数字是从实测反推的，不是从形状推算的。</b>推算过两次都错：
+    /// <list type="number">
+    /// <item>按"18 行形象 + 3 行信息"算出 25，实测 26——信息区实际 8 行（含 2 个空行）。</item>
+    /// <item>按"1 + max(形象, 信息) + 1"算出 22，实测仍 26——并排不是取高，
+    /// 而是逐行拼接后各个 `<c>Output.Line()</c>` 都会产生一行。</item>
+    /// </list>
+    /// 两次推算都偏小，所以 24 行终端上照样溢出。现在改用实测值，
+    /// 并由 <c>startup-never-exceeds-terminal-height</c> 在多组宽高上钉住。
+    ///
+    /// <para>
+    /// <b>改动任一档的版式（加空行、改形象行数）后必须重新实测并更新这里</b>——
+    /// 否则又回到"推算与实际不符"。检查会红，那是提醒不是噪音。
+    /// </para>
+    /// </remarks>
+    private const int FullMinHeight = 26 + BottomRows;
+
+    /// <summary>stacked 档：实测 32 行 + 底部。</summary>
+    private const int StackedMinHeight = 32 + BottomRows;
+
+    /// <summary>compact 档：实测 29 行 + 底部。</summary>
+    private const int CompactMinHeight = 29 + BottomRows;
+
+    /// <summary>ascii 档：实测 19 行 + 底部。</summary>
+    private const int AsciiMinHeight = 19 + BottomRows;
+
+    /// <summary>底部区域要占的行：状态栏 1 + 提示符 1。</summary>
+    private const int BottomRows = 2;
 
     /// <summary>
     /// 面板版式：字标在上，边框盒里左形象、右清单。
@@ -156,16 +216,13 @@ public static class Banner
         // 盒子 + 末尾空行是必须占的；字标是"有位置才画"。
         var required = box.Count + 1;
 
-        // 底部区域要留的行：状态栏 1 + 提示符 1 + 欢迎语 2 + 余量 1。
-        const int reservedBottom = 5;
+        // 底部区域要留的行：状态栏 1 + 提示符 1 + 欢迎语 2。
+        const int reservedBottom = 4;
         if (height > 0 && required + reservedBottom > height) return false;
 
-        // 字标只在"画完它之后还剩得下盒子和底部"时才画。
-        var wordmarkRows = BigText.TryRender(width, height)?.Count ?? 0;
-        var canFitWordmark = height <= 0
-            || required + reservedBottom + (wordmarkRows > 0 ? wordmarkRows + 1 : 0) <= height;
-
-        if (canFitWordmark) PrintWordmark(width, height);
+        // 字标只在"画完它之后还剩得下盒子和底部"时才画——
+        // PrintWordmark 自己会按剩余高度判，这里只传要留的行数。
+        PrintWordmark(width, height, required + reservedBottom);
 
         foreach (var line in box) Output.Line(line);
 
@@ -181,10 +238,22 @@ public static class Banner
     /// <b>字标只在 Rich 档</b>：Narrow 档宽度不足 41 列时两行排法也放不下的情形
     /// 由 <see cref="BigText.TryRender"/> 自己判定，这里不再重复。
     /// Plain 档根本走不到这里——<see cref="Print"/> 的 default 分支直接输出原文。
+    ///
+    /// <para>
+    /// <b><paramref name="reservedBelow"/> 是字标之下还必须留的行数。</b>
+    /// 字标是装饰：内容放得下、字标放不下时，**丢字标而不是丢内容**。
+    /// 第一版没这个参数，于是窄终端上要么字标把内容挤出去、
+    /// 要么（判据反过来后）字标撑得整屏不画——两个方向都错。
+    /// </para>
     /// </remarks>
-    private static int PrintWordmark(int width, int height)
+    private static int PrintWordmark(int width, int height, int reservedBelow)
     {
-        var rows = BigText.TryRender(width, height);
+        // **读不到高度用 -1 传下去**，不能用 0：0 是"一行都放不下"这个确定结论。
+        // 混用会造成真实缺陷——实测 66×28 上剩余高度算出 0，
+        // 而 BigText 把 0 当"读不到"处理，于是字标照样画了 11 行，
+        // 整屏超出 6 行。
+        var available = height > 0 ? height - reservedBelow : -1;
+        var rows = BigText.TryRender(width, available, reservedRows: 0);
         if (rows is null) return 0;
 
         for (var i = 0; i < rows.Count; i++)
@@ -194,11 +263,46 @@ public static class Banner
         return rows.Count + 1;
     }
 
+    /// <summary>
+    /// 按终端宽度截断一行，**防止终端自己折行**。
+    /// </summary>
+    /// <remarks>
+    /// <b>窄终端上折行会让行数翻倍</b>，而 banner 的高度判据是按"一行一行"算的。
+    /// 实测：66 列终端上信息区里那条长路径被 Spectre 折成两行，
+    /// 于是 full 档从 26 行变成 32 行，把底部提示符挤出屏幕。
+    ///
+    /// <para>
+    /// 截断不加省略号：被切掉的是路径尾部，加 <c>…</c> 反而让人以为画的是完整路径。
+    /// 这里的目标只是"别折行"。
+    /// </para>
+    /// </remarks>
+    private static string Clip(string text)
+    {
+        var width = Output.Capability.Width;
+        if (width <= 0) return text;
+
+        // 留最后一列：写满最右列同样会触发折行。
+        var limit = width - 1;
+        if (DisplayWidth.Of(text) <= limit) return text;
+
+        var builder = new System.Text.StringBuilder(text.Length);
+        var used = 0;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            var w = DisplayWidth.Of(rune);
+            if (used + w > limit) break;
+            builder.Append(rune.ToString());
+            used += w;
+        }
+        return builder.ToString();
+    }
+
     /// <summary>full 档：字标在上，形象在左、信息在右。</summary>
     private static void PrintFull(string version, string model, string protocol, string workspace)
     {
         var capability = Output.Capability;
-        PrintWordmark(capability.Width, capability.Height);
+        // 字标之下是 full 档正文（含首尾空行）+ 底部两行。
+        PrintWordmark(capability.Width, capability.Height, FullMinHeight);
         Output.Line();
         PrintSideBySide(YungongArt.Full, InfoLines(version, model, protocol, workspace));
         Output.Line();
@@ -207,22 +311,27 @@ public static class Banner
     /// <summary>形象在上、信息在下（窄窗口的正确排法）。</summary>
     private static void PrintStacked(string version, string model, string protocol, string workspace)
     {
+        var capability = Output.Capability;
+        PrintWordmark(capability.Width, capability.Height, StackedMinHeight);
         Output.Line();
         PrintArt(YungongArt.Full);
         Output.Line();
-        foreach (var line in InfoLines(version, model, protocol, workspace)) Output.Line(line);
+        foreach (var line in InfoLines(version, model, protocol, workspace))
+            Output.Line(Clip(line));
         Output.Line();
     }
 
     /// <summary>compact 档：20×12 形象 + 下方一行信息。</summary>
     private static void PrintCompact(string version, string model, string protocol, string workspace)
     {
+        var capability = Output.Capability;
+        PrintWordmark(capability.Width, capability.Height, CompactMinHeight);
         Output.Line();
         PrintArt(YungongArt.Compact);
         Output.Line();
-        Output.Line($"  dougong {version}");
-        Output.Line($"  {model} · {protocol}");
-        Output.Muted($"  {workspace}");
+        Output.Line(Clip($"  dougong {version}"));
+        Output.Line(Clip($"  {model} · {protocol}"));
+        Output.Muted(Clip($"  {workspace}"));
         Output.Line();
     }
 
@@ -280,6 +389,14 @@ public static class Banner
     /// <b>形象宽度取自己那一档的实际最大宽度</b>，不写死 30：
     /// 写死的话，将来换一版形象（比如 26 列）代码不会跟着变，
     /// 而症状是信息区与形象之间多出一段空隙——很难看出是宽度没更新。
+    ///
+    /// <para>
+    /// <b>拼接后必须按终端宽度截断。</b>不截断时，窄终端（66–80 列）上
+    /// 信息区会被 Spectre 折行——于是 full 档从 26 行变成 32 行，
+    /// 把底部状态栏和提示符挤出屏幕。而症状是"提示符不见了"，
+    /// 看起来像 <see cref="LiveRegion"/> 的问题。实测（2026-11-05）：
+    /// 宽度 66/68/70/80 全部输出 32 行，90 以上才是 26 行。
+    /// </para>
     /// </remarks>
     private static void PrintSideBySide(
         IReadOnlyList<string> art, IReadOnlyList<string> info)
@@ -301,7 +418,7 @@ public static class Banner
 
             // 按显示宽度补到 artWidth，让信息区左边缘对齐。
             var pad = artWidth - DisplayWidth.Of(artRow) + gap;
-            Output.Accent(artRow + new string(' ', pad) + infoRow);
+            Output.Accent(Clip(artRow + new string(' ', pad) + infoRow));
         }
     }
 }

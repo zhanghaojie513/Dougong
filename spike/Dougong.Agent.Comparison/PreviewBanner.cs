@@ -31,7 +31,9 @@ internal static class PreviewBanner
             new TerminalCapability(TerminalTier.Rich, width, IsRedirected: false, Height: height));
 
         Console.WriteLine($"── 字标（{width}×{height}）──────────────");
-        var rows = BigText.TryRender(width, height);
+        // TryRender 的 height 是"字标可用高度"：这里模拟"字标占满终端"，
+        // 所以直接传终端高度。
+        var rows = BigText.TryRender(width, height, reservedRows: 0);
         if (rows is null)
         {
             Console.WriteLine("（这个尺寸放不下字标，实际会退回云拱形象）");

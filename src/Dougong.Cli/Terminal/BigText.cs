@@ -61,25 +61,30 @@ public static class BigText
     /// </summary>
     /// <param name="width">终端宽度。</param>
     /// <param name="height">
-    /// 终端高度；<b>0 表示读不到，按"够"处理</b>——宽度已经证明是真终端，
-    /// 因为高度未知就降级是白丢信息。
+    /// 字标**可用的高度**。<b>负数表示"读不到"，按"够"处理</b>——
+    /// 宽度已经证明是真终端，因为读不到高度就降级是白丢信息。
+    /// <para>
+    /// <b>必须用负数而不是 0 表示"读不到"</b>：0 是"一行都放不下"这个
+    /// 确定结论。两者混用会造成真实缺陷——调用方算出剩余高度恰好为 0 时，
+    /// 字标反而被"按够处理"画了出来，整屏超出 11 行。实测过（2026-11-05）。
+    /// </para>
     /// </param>
     /// <param name="reservedRows">
-    /// 字标之外必须留给底部区域与提示符的行数。默认 8
-    /// （状态栏 + 提示符 + 欢迎语 + 余量）。
+    /// 字标之外必须留给下方内容的行数。
     /// </param>
     public static IReadOnlyList<string>? TryRender(
-        int width, int height, int reservedRows = 8)
+        int width, int height, int reservedRows = 0)
     {
+        var unknown = height < 0;
         var singleHeight = GlyphHeight + 1;
         if (width >= SingleLineWidth
-            && (height <= 0 || height >= singleHeight + reservedRows))
+            && (unknown || height >= singleHeight + reservedRows))
             return Render(Wordmark);
 
-        // 折行：两段之间空一行，末段之后也空一行。
-        var stackedHeight = GlyphHeight * 2 + 2;
+        // 折行：两段之间空一行。
+        var stackedHeight = GlyphHeight * 2 + 1;
         if (width >= StackedLineWidth
-            && (height <= 0 || height >= stackedHeight + reservedRows))
+            && (unknown || height >= stackedHeight + reservedRows))
             return [.. Render(FirstHalf), string.Empty, .. Render(SecondHalf)];
 
         return null;
