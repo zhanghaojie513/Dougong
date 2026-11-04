@@ -173,7 +173,7 @@ public static class ChatClientFactory
     /// （例如从凭据管理器读取），不要用于把密钥写进配置文件。
     /// </summary>
     public static IChatClient Create(
-        ChatProviderConfig config, string apiKey, HttpClient? http = null)
+        ChatProviderConfig config, string apiKey, HttpClient? http = null, bool breakingProbe = false)
     {
         ArgumentNullException.ThrowIfNull(config);
 

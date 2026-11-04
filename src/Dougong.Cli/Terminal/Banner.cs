@@ -104,9 +104,32 @@ public static class Banner
     /// <summary>高度是否够放完整形象；未知（0）时按够处理。</summary>
     private static bool Fits(int height) => height <= 0 || height >= FullMinHeight;
 
-    /// <summary>full 档：形象在左、信息在右。</summary>
+    /// <summary>
+    /// 画顶部字标 `DOUGONG-HARNESS`；放不下时什么也不画。
+    /// </summary>
+    /// <returns>实际画出的行数（含末尾空行）；0 表示没画。</returns>
+    /// <remarks>
+    /// <b>字标只在 Rich 档</b>：Narrow 档宽度不足 41 列时两行排法也放不下的情形
+    /// 由 <see cref="BigText.TryRender"/> 自己判定，这里不再重复。
+    /// Plain 档根本走不到这里——<see cref="Print"/> 的 default 分支直接输出原文。
+    /// </remarks>
+    private static int PrintWordmark(int width, int height)
+    {
+        var rows = BigText.TryRender(width, height);
+        if (rows is null) return 0;
+
+        for (var i = 0; i < rows.Count; i++)
+            Output.Colored(rows[i], BigText.RowColor(i, rows.Count));
+
+        Output.Line();
+        return rows.Count + 1;
+    }
+
+    /// <summary>full 档：字标在上，形象在左、信息在右。</summary>
     private static void PrintFull(string version, string model, string protocol, string workspace)
     {
+        var capability = Output.Capability;
+        PrintWordmark(capability.Width, capability.Height);
         Output.Line();
         PrintSideBySide(YungongArt.Full, InfoLines(version, model, protocol, workspace));
         Output.Line();

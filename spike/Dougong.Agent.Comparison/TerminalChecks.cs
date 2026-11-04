@@ -115,6 +115,15 @@ public static class TerminalChecks
         // 多行状态时提示符不能压到状态行上（单行是唯一"恰好正确"的情形）。
         failures += Check("prompt-does-not-overlap-multi-row-status", PromptNoOverlapMultiRow);
 
+        // 字标 DOUGONG-HARNESS（用户 2026-11-04 要求做）。
+        failures += Check("big-text-glyphs-are-uniform", BigTextGlyphsUniform);
+        failures += Check("big-text-wordmark-covers-every-glyph", BigTextCoversWordmark);
+        failures += Check("big-text-row-width-matches-declared", BigTextWidthMatches);
+        failures += Check("big-text-falls-back-when-too-narrow", BigTextNarrowFallback);
+        failures += Check("big-text-drops-when-too-short", BigTextShortFallback);
+        failures += Check("big-text-gradient-spans-endpoints", BigTextGradient);
+        failures += Check("big-text-glyph-legibility", BigTextLegibility);
+
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
             : $"TERMINAL: {failures} FAILURE(S)");
@@ -2184,6 +2193,166 @@ public static class TerminalChecks
         return onePrompt == cap.Height - 1
             ? null
             : $"单行状态时提示符应在第 {cap.Height - 1} 行，实际 {onePrompt?.ToString() ?? "null"}";
+    }
+
+    /// <summary>
+    /// 字标的每个字形都是 5 列 × 5 行，半角。
+    /// </summary>
+    /// <remarks>
+    /// <b>这一条是字标唯一的结构前提</b>：所有排法都假设等宽，
+    /// 一个字形多出一列，后面所有字都右移，整行宽度算错——而
+    /// 症状是"最后一列被截掉"或"折行"，看起来像别的问题。
+    /// </remarks>
+    private static string? BigTextGlyphsUniform()
+    {
+        foreach (var ch in BigText.AvailableGlyphs)
+        {
+            var glyph = BigText.GlyphOf(ch);
+
+            if (glyph.Count != BigText.GlyphHeight)
+                return $"字形 {ch} 有 {glyph.Count} 行，应为 {BigText.GlyphHeight} 行";
+
+            for (var row = 0; row < glyph.Count; row++)
+            {
+                if (glyph[row].Length != BigText.GlyphWidth)
+                    return $"字形 {ch} 第 {row} 行 {glyph[row].Length} 列，应为 {BigText.GlyphWidth} 列";
+
+                // 必须是半角：块字符 U+2588 在 DisplayWidth 里算 1 格。
+                var measured = DisplayWidth.Of(glyph[row]);
+                if (measured != BigText.GlyphWidth)
+                    return $"字形 {ch} 第 {row} 行显示宽度 {measured}，应为半角的 {BigText.GlyphWidth}";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>字标正文用到的每个字符都在字形表里。</summary>
+    /// <remarks>
+    /// 漏一个字符时 <see cref="BigText.Render"/> 会抛异常——那没关系，
+    /// 但会在启动时炸。这条检查把失败提前到构建验证阶段。
+    /// </remarks>
+    private static string? BigTextCoversWordmark()
+    {
+        foreach (var ch in BigText.Wordmark)
+        {
+            if (!BigText.AvailableGlyphs.Contains(ch))
+                return $"字标里的 {ch} 没有字形";
+        }
+
+        return null;
+    }
+
+    /// <summary>渲染出的每行宽度与 <see cref="BigText.Measure"/> 一致。</summary>
+    private static string? BigTextWidthMatches()
+    {
+        foreach (var text in new[] { BigText.Wordmark, BigText.FirstHalf, BigText.SecondHalf })
+        {
+            var expected = BigText.Measure(text);
+            var rows = BigText.Render(text);
+
+            if (rows.Count != BigText.GlyphHeight)
+                return $"{text} 渲染出 {rows.Count} 行，应为 {BigText.GlyphHeight} 行";
+
+            for (var i = 0; i < rows.Count; i++)
+            {
+                // 末尾空格被 TrimEnd 掉，所以是"不超过"而非"等于"。
+                var actual = DisplayWidth.Of(rows[i]);
+                if (actual > expected)
+                    return $"{text} 第 {i} 行宽 {actual}，超过声明的 {expected}";
+            }
+        }
+
+        // 至少有一行必须是满宽——否则说明所有行都被 TrimEnd 成残的，
+        // 而那意味着字形表里没有一行画到最右列（字形本身错了）。
+        var wordmarkRows = BigText.Render(BigText.Wordmark);
+        return wordmarkRows.Any(r => DisplayWidth.Of(r) == BigText.Measure(BigText.Wordmark))
+            ? null
+            : "字标没有任何一行画满声明宽度——字形表可能整体偏窄";
+    }
+
+    /// <summary>太窄时不画字标（退回云拱形象），不画半截。</summary>
+    private static string? BigTextNarrowFallback()
+    {
+        if (BigText.TryRender(BigText.StackedLineWidth - 1, 40) is not null)
+            return $"宽度 {BigText.StackedLineWidth - 1} 时不该还能排下字标";
+
+        var stacked = BigText.TryRender(BigText.StackedLineWidth, 40);
+        if (stacked is null) return "宽度刚好够两行排法时应能排下";
+
+        // 两行排法必须是两段各 5 行 + 中间一空行。
+        var expected = BigText.GlyphHeight * 2 + 1;
+        return stacked.Count == expected
+            ? null
+            : $"两行排法应有 {expected} 行，实际 {stacked.Count} 行";
+    }
+
+    /// <summary>高度不够时不画（否则会把底部区域挤出屏幕）。</summary>
+    private static string? BigTextShortFallback()
+    {
+        // 单行排法要 5 行字 + 1 空行 + 8 行底部余量 = 14；给 13 必须降级。
+        var single = BigText.GlyphHeight + 1 + 8;
+        if (BigText.TryRender(200, single - 1) is { Count: <= BigText.GlyphHeight + 1 })
+            return "高度不足时不该还排单行";
+
+        if (BigText.TryRender(200, BigText.GlyphHeight + 1 + 8) is null)
+            return "高度刚好够单行时应能排下";
+
+        return BigText.TryRender(200, 6) is null
+            ? null
+            : "高度 6 行时不该画任何字标——会把底部区域挤出去";
+    }
+
+    /// <summary>渐变首行取上端色、末行取下端色。</summary>
+    /// <remarks>
+    /// 不只验"中间值在变"——那种断言在插值方向写反时照样成立。
+    /// 只钉端点：那是外部可核对的事实。
+    /// </remarks>
+    private static string? BigTextGradient()
+    {
+        var top = BigText.RowColor(0, 5);
+        var bottom = BigText.RowColor(4, 5);
+
+        var expectedTop = Palette.WordmarkTop.ToUpperInvariant();
+        var expectedBottom = Palette.WordmarkBottom.ToUpperInvariant();
+
+        if (!string.Equals(top, expectedTop, StringComparison.OrdinalIgnoreCase))
+            return $"首行色应为主题上端 {expectedTop}，实际 {top}";
+
+        if (!string.Equals(bottom, expectedBottom, StringComparison.OrdinalIgnoreCase))
+            return $"末行色应为主题下端 {expectedBottom}，实际 {bottom}";
+
+        // 中间行必须与两端都不同——否则是"全用一个颜色"的退化。
+        var middle = BigText.RowColor(2, 5);
+        return middle != top && middle != bottom
+            ? null
+            : $"中间行色 {middle} 与端点相同——渐变没有生效";
+    }
+
+    /// <summary>
+    /// 字形能区分开：任意两个字形不得完全相同。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是"压扁"的真实防线</b>：把 5 列压到 4 列时，D 的右上缺口消失，
+    /// D 与 O 变成同一个字形。宽度检查发现不了（它们仍然等宽），
+    /// 只有"两两不同"能发现。
+    /// </remarks>
+    private static string? BigTextLegibility()
+    {
+        var glyphs = BigText.AvailableGlyphs.ToList();
+
+        for (var i = 0; i < glyphs.Count; i++)
+        {
+            for (var j = i + 1; j < glyphs.Count; j++)
+            {
+                var a = string.Join('\n', BigText.GlyphOf(glyphs[i]));
+                var b = string.Join('\n', BigText.GlyphOf(glyphs[j]));
+                if (a == b)
+                    return $"字形 {glyphs[i]} 与 {glyphs[j]} 完全相同——无法区分";
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

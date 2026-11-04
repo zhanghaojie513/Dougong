@@ -369,6 +369,10 @@ public static class Program
             return await ToolPackageChecks.RunAsync();
 
         // 验证"我自己写的工具"：接受一个 dll 路径，走生产 dispatcher 派发一次。
+        // 开发用：把字标与首页打到标准输出，供肉眼对版式（不作为检查套件）。
+        if (args.FirstOrDefault() == "preview-banner")
+            return PreviewBanner.Run(args.Skip(1).ToArray());
+
         if (args.FirstOrDefault() == "load-tool")
             return await LoadToolCheck.RunAsync(args.Skip(1).FirstOrDefault());
 

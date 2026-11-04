@@ -62,6 +62,59 @@ public static class Palette
 
     /// <summary>提示符与用户输入的回显。</summary>
     public static string Prompt => Theme.Effective.Accent;
+
+    /// <summary>字标渐变的上端（亮）。</summary>
+    /// <remarks>
+    /// <b>字标是"默认黑白灰"这条规则的唯一例外，且是有意的。</b>
+    /// 默认主题下正文与强调都是灰阶，而启动页顶部那个 5 行实心字标
+    /// 用灰阶会糊成一堵墙，看不出是个字标。所以给它一组暖色渐变
+    /// （亮橙 → 朱红），面积局限在启动页顶部，用户滚走就看不见。
+    ///
+    /// <para>
+    /// 这**不是**把默认主题改回暖色：<see cref="Accent"/> 仍是近白，
+    /// 正文仍全走默认前景色。要整体暖色请用 <c>DOUGONG_THEME=zhugou</c>。
+    /// </para>
+    /// </remarks>
+    public static string WordmarkTop => Theme.Effective.WordmarkTop ?? "#FFB347";
+
+    /// <summary>字标渐变的下端（暖）。</summary>
+    public static string WordmarkBottom => Theme.Effective.WordmarkBottom ?? "#C0392B";
+
+    /// <summary>
+    /// 两个 <c>#RRGGBB</c> 之间按比例线性插值。
+    /// </summary>
+    /// <param name="from">起点色（<paramref name="t"/> = 0）。</param>
+    /// <param name="to">终点色（<paramref name="t"/> = 1）。</param>
+    /// <param name="t">比例，会被夹到 [0, 1]。</param>
+    /// <exception cref="FormatException">颜色不是 <c>#RRGGBB</c> 形式。</exception>
+    /// <remarks>
+    /// <b>非法色值抛异常而不是退回黑色</b>：颜色来自主题表，写错了是编码错误；
+    /// 悄悄画成黑色会把"字标不见了"变成一个难查的现象题。
+    /// </remarks>
+    public static string Lerp(string from, string to, double t)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(from);
+        ArgumentException.ThrowIfNullOrWhiteSpace(to);
+
+        t = Math.Clamp(t, 0, 1);
+        var (ar, ag, ab) = ParseRgb(from);
+        var (br, bg, bb) = ParseRgb(to);
+
+        static int Mix(int x, int y, double k) => (int)Math.Round(x + (y - x) * k);
+
+        return $"#{Mix(ar, br, t):X2}{Mix(ag, bg, t):X2}{Mix(ab, bb, t):X2}";
+    }
+
+    private static (int R, int G, int B) ParseRgb(string hex)
+    {
+        var text = hex.StartsWith('#') ? hex[1..] : hex;
+        if (text.Length != 6
+            || !int.TryParse(text, System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out var value))
+            throw new FormatException($"颜色必须是 #RRGGBB：{hex}");
+
+        return ((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF);
+    }
 }
 
 /// <summary>
@@ -69,7 +122,15 @@ public static class Palette
 /// </summary>
 /// <param name="Accent">主色。</param>
 /// <param name="Muted">次要色。</param>
-public sealed record PaletteSet(string Accent, string Muted);
+/// <param name="WordmarkTop">
+/// 字标渐变上端。null 表示用 <see cref="Palette"/> 的默认端点。
+/// </param>
+/// <param name="WordmarkBottom">字标渐变下端。null 同上。</param>
+public sealed record PaletteSet(
+    string Accent,
+    string Muted,
+    string? WordmarkTop = null,
+    string? WordmarkBottom = null);
 
 /// <summary>
 /// 终端主题：默认黑白灰，可选朱构。
@@ -98,6 +159,10 @@ public static class Theme
     /// <remarks>
     /// <b>它是默认而不是"其中一种"</b>：默认值决定了"什么都没配的人看到什么"，
     /// 而那必须是设计理念里写下的那个。
+    /// <para>
+    /// 字标渐变端点留 null，走 <see cref="Palette"/> 的默认暖色——
+    /// 那是唯一一处允许暖色的地方，理由见 <see cref="Palette.WordmarkTop"/>。
+    /// </para>
     /// </remarks>
     public static PaletteSet Mono { get; } = new(
         Accent: "#E8E8E8",   // 近白：比正文亮一档，且不是纯白（纯白在多数终端上就是正文色）
@@ -107,10 +172,15 @@ public static class Theme
     /// <remarks>
     /// 取自设计理念里"朱构"的字面色——朱红，不是金黄。
     /// <b>它不是默认</b>：需要显式设 <c>DOUGONG_THEME=zhugou</c>。
+    /// <para>
+    /// 字标跟着改成朱红系渐变：主题换了而字标还是橙色会很突兀。
+    /// </para>
     /// </remarks>
     public static PaletteSet Zhugou { get; } = new(
         Accent: "#C0392B",
-        Muted: "#7A7A7A");
+        Muted: "#7A7A7A",
+        WordmarkTop: "#E74C3C",
+        WordmarkBottom: "#8E1B10");
 
     /// <summary>当前生效的主题。进程内冻结一次。</summary>
     public static PaletteSet Current => Frozen.Value;

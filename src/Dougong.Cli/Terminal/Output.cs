@@ -121,6 +121,23 @@ public static class Output
         WriteStyled(value, Palette.Accent, decorate: true);
     }
 
+    /// <summary>
+    /// 用指定颜色输出一行。**只给字标用**——它的颜色逐行不同（渐变）。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么需要这个而不复用 <see cref="Accent"/></b>：字标的每一行
+    /// 是两个端点色的插值结果，颜色不是常量。为一行字加一个颜色参数
+    /// 比把渐变端点硬塞进 <see cref="Palette"/> 更直白。
+    /// </remarks>
+    /// <param name="value">整行文本。</param>
+    /// <param name="color"><c>#RRGGBB</c> 形式的前景色。</param>
+    public static void Colored(string value, string color)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentException.ThrowIfNullOrWhiteSpace(color);
+        WriteStyled(value, color, decorate: true);
+    }
+
     /// <summary>次要文本（路径、耗时）。</summary>
     public static void Muted(string value)
     {
@@ -324,14 +341,33 @@ public static class Output
     /// 每次输出都新建，代价是一次小对象分配；换来的是"流被替换后仍然输出到正确的流"。
     /// 静态 <c>AnsiConsole</c> 会在首次访问时记住当时的 writer，此后不再跟随
     /// <c>Console.SetOut</c>——那种行为在测试里会表现为输出凭空消失。
+    ///
+    /// <para>
+    /// <b>必须把 Profile.Width 设成真实终端宽度。</b>
+    /// Spectre 在非交互模式下默认按 **80 列** 折行（<c>Profile</c> 的兜底值），
+    /// 而超宽的一行会被它**自己**插入换行——那不是我们把文本写太长，
+    /// 而是 Spectre 在替我们重排。实测表现：89 列的 <c>DOUGONG-HARNESS</c>
+    /// 字标被切成 78 + 11 两段，看起来像"字形画错了"。
+    /// </para>
+    ///
+    /// <para>
+    /// 宽度为 0（Plain 档 / 重定向）时不设，保持 Spectre 的默认行为——
+    /// 那一档的输出必须与改造前逐字一致，而改造前就是它默认的那样。
+    /// </para>
     /// </remarks>
-    private static IAnsiConsole CreateConsole() =>
-        AnsiConsole.Create(new AnsiConsoleSettings
+    private static IAnsiConsole CreateConsole()
+    {
+        var console = AnsiConsole.Create(new AnsiConsoleSettings
         {
             Out = new AnsiConsoleOutput(Console.Out),
             ColorSystem = ColorSystemSupport.Detect,
             Interactive = InteractionSupport.No,
         });
+
+        if (_capability.Width > 0) console.Profile.Width = _capability.Width;
+
+        return console;
+    }
 
     /// <summary>
     /// 转义 Spectre markup 的特殊字符。

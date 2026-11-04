@@ -126,6 +126,7 @@
 | 每个会被显示的阶段都有文案 | `terminal`：`every-phase-has-visible-label`、`binary-is-not-stale` | 新增 `Retrying` 时若只加枚举不加文案 → `every-phase-has-visible-label` 报"阶段 Retrying 会被显示却没有文案"；改源码不重建 Release → `binary-is-not-stale` 报"跑的是旧构建" |
 | 压缩比例默认值与可配置性 | `compaction`、`wiring`、`doctor` | 把 `DefaultTriggerRatio` 改成 0.99 → `compaction` 套的触发点检查失败；给 `--doctor` 传入 `retain >= trigger` → `doctor` 套的非法规格检查失败 |
 | 底部锚定时提示符在上、状态栏贴最底 | `terminal`：`prompt-sits-above-status-bar-when-anchored`、`prompt-is-drawn-by-region-and-survives-erase` | `Repaint` 的 `usable` 改回 `_anchorBottom - 1`、`BeginPrompt` 的 `promptRow` 改回 `_anchorBottom` → 两条同时红（报"提示符在第 20 行、状态栏在第 19 行——提示符必须在上方"）。**这两条的第一版是空转的**：`RowOf` 用"往回找 `ESC[`"定位，把清行的 `ESC[2K` 当成了 CUP，返回 null，于是实现正确时检查报"从未被定位" |
+| 字标 `DOUGONG-HARNESS` 字形等宽且可区分 | `terminal`：`big-text-glyphs-are-uniform`、`big-text-wordmark-covers-every-glyph`、`big-text-row-width-matches-declared`、`big-text-falls-back-when-too-narrow`、`big-text-drops-when-too-short`、`big-text-gradient-spans-endpoints`、`big-text-glyph-legibility` | 把 `D` 压成 4 列 → `big-text-glyphs-are-uniform` 报"字形 D 第 0 行 4 列，应为 5 列"，`big-text-row-width-matches-declared` 报"没有任何一行画满声明宽度"；把 `O` 改成与 `D` 完全相同 → `big-text-glyph-legibility` 报"字形 D 与 O 完全相同——无法区分"（**宽度检查发现不了这一条**，所以必须单独有"两两不同"的断言） |
 
 ---
 
@@ -649,6 +650,18 @@ P2 五项交付后做了一轮"声称 vs 实现"复检，用两个独立只读�
 | **不落盘** | 目标状态活在进程内，重开会话就没了。持久化要么加记录类型（与 D-24 同一约束：旧程序会读不了），要么写伴生文件（像反馈与目录那样）。**先不做**——目标的寿命本来就是"这一次会话"，而"跨会话的目标"是另一件事（那更像待办清单）。这一条是明确的取舍，不是遗漏。 |
 | **验证** | `goal` 套 10 项；5 组负控见 §三。 |
 | **源码位置** | `src/Dougong.Agent/SessionGoal.cs`、`src/Dougong.Agent/GoalTools.cs`、`src/Dougong.Agent/LoopAgentRuntime.cs`（`Goal?.BeginRound()`） |
+
+### D-34 字标用暖色渐变，是"默认黑白灰"的定点例外
+
+| | |
+|---|---|
+| **哪不一样** | 设计理念要求"终端默认保持黑白灰、不因神话参照引入黄金配色"。启动字标 `DOUGONG-HARNESS` 却用了暖色渐变（`#FFB347` → `#C0392B`）。 |
+| **为什么这不是自相矛盾** | 那条约束反对的是**用暖色替代正文与强调色**——即"整个终端金灿灿"。字标是品牌件：5 行实心块字在灰阶下会糊成一堵墙，看不出是个字标，那不是"朴素"而是"不可读"。所以给它一组渐变，但**面积受限**：只在启动页顶部 5 行，滚走就没了。正文仍全走默认前景色，`Palette.Accent` 仍是近白。 |
+| **判据** | 若哪天有人把 `Accent` 也改回暖色，`accent-is-not-gold-by-default` 会红——那条检查守的是"大面积"，不是"任何地方"。字标有自己的一组端点色，两者互不覆盖。 |
+| **主题如何影响它** | `PaletteSet.WordmarkTop/Bottom` 为 null 时用默认暖色。`zhugou` 主题显式给了一组朱红系（`#E74C3C` → `#8E1B10`）——主题换了而字标还是橙色会很突兀。 |
+| **为什么是 5 行不是 12 行** | Hermes 用 12 行。我们用 5 行：24 行终端上，12 行字标 + 18 行云拱形象 + 底部两行根本放不下。5 行是"能读出字形"与"留得下内容"的折中，且有 `reservedRows = 8` 的地板——高度不够就不画。 |
+| **验证** | `terminal` 套 7 项（见 §三）；负控：把 D 压成 4 列、把 O 改成与 D 相同，各自触发对应检查。 |
+| **源码位置** | `src/Dougong.Cli/Terminal/BigText.cs`、`src/Dougong.Cli/Terminal/Palette.cs`（`WordmarkTop`/`WordmarkBottom`/`Lerp`） |
 
 ### 复检（2026-11-03，第二轮）：P2 全部 14 项
 
