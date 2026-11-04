@@ -303,23 +303,28 @@ public static class Program
         // 只在 Rich/Narrow 且未重定向时执行——Plain 档多一个控制字符就是破坏。
         Output.ClearScreenForStartup();
 
-        // 首页三档：Rich 出大字，Narrow 出单行，Plain 输出与改造前逐字一致的原文。
-        // 原文由这里传入而不是 Banner 自己拼——"兼容"这件事不能靠猜。
-        Banner.Print(
-            version: ProductInfo.Version,
-            model: config.Model,
-            protocol: config.Protocol.ToString(),
-            workspace: workspace,
-            plainLines:
-            [
-                $"dougong {ProductInfo.Version}  模型={config.Model}  协议={config.Protocol}",
-                $"工作区={workspace}",
-                $"会话={sessionPath}",
-                $"shell 工具={(shellEnabled ? "已启用" : "未启用（DOUGONG_SHELL=1 开启）")}",
-                contextWindow > 0
-                    ? $"上下文压缩=已启用（窗口 {contextWindow} tokens{policy}）"
-                    : "上下文压缩=未启用（用 dougong model 选模型，或设 DOUGONG_CONTEXT_WINDOW）",
-            ]);
+        // Plain 档的原文必须**现在**就打：它后面紧跟 durability 与 kernel 那几行，
+        // 那个顺序是 46 个套件钉住的。富终端才等装配完再出面板（见下方 PrintStartup）。
+        var plainBanner = new[]
+        {
+            $"dougong {ProductInfo.Version}  模型={config.Model}  协议={config.Protocol}",
+            $"工作区={workspace}",
+            $"会话={sessionPath}",
+            $"shell 工具={(shellEnabled ? "已启用" : "未启用（DOUGONG_SHELL=1 开启）")}",
+            contextWindow > 0
+                ? $"上下文压缩=已启用（窗口 {contextWindow} tokens{policy}）"
+                : "上下文压缩=未启用（用 dougong model 选模型，或设 DOUGONG_CONTEXT_WINDOW）",
+        };
+
+        if (Output.Capability.Tier is TerminalTier.Plain)
+        {
+            Banner.Print(
+                version: ProductInfo.Version,
+                model: config.Model,
+                protocol: config.Protocol.ToString(),
+                workspace: workspace,
+                plainLines: plainBanner);
+        }
 
         await using var store = await JsonlAgentStore.OpenAsync(sessionPath, sessionId)
             .ConfigureAwait(false);
@@ -381,6 +386,11 @@ public static class Program
         IReadOnlyList<ModelContextProtocol.Client.McpClient> mcpClients = [];
         KernelAgentHost? kernelHost = null;
 
+        // 面板要的工具清单来自这里。内核路径下由 ResolveDispatcherView 取，
+        // 直连路径下就是这里建的那个——两条路都要能报出真实清单，
+        // 否则同一个面板在两种接线下的数字会不一样。
+        IToolDispatcher? panelDispatcher = null;
+
         try
         {
             if (useKernel)
@@ -407,6 +417,7 @@ public static class Program
                     approver).ConfigureAwait(false);
 
                 runtime = kernelHost.ResolveRuntime();
+                panelDispatcher = kernelHost.ResolveDispatcherView();
                 Output.Line("kernel=enabled（运行能力由内核解析，每次回合取租约）");
             }
             else
@@ -419,6 +430,7 @@ public static class Program
                     .ConfigureAwait(false);
                 mcpRegistries = registries;
                 mcpClients = clients;
+                panelDispatcher = dispatcher;
                 runtime = composition.CreateRuntime(dispatcher, store, ledger);
             }
         }
@@ -428,8 +440,34 @@ public static class Program
             return 3;
         }
 
-        if (composition.McpServers.Count == 0)
+        // **首页在这里才打**：面板要显示真实的工具 / MCP / 技能清单，
+        // 而那些东西到这一步才齐（dispatcher 刚建完、MCP 刚连上）。
+        // 早先的版本在清屏后立刻打 banner，于是启动页只能写"我们支持什么"，
+        // 写不了"这次实际有什么"——那正是它与 Hermes 版式最大的差距。
+        //
+        // Plain 档已经在上面打过了（顺序被 46 个套件钉住），这里不重复。
+        if (Output.Capability.Tier is not TerminalTier.Plain)
+        {
+            Banner.Print(
+                version: ProductInfo.Version,
+                model: config.Model,
+                protocol: config.Protocol.ToString(),
+                workspace: workspace,
+                plainLines: plainBanner,
+                summary: BuildStartupSummary(
+                    config, composition, workspace, sessionId, panelDispatcher));
+
+            // 欢迎语与 Tip：照 Hermes 的位置（框下方、输入行上方）。
+            // **只在富终端出**——Plain 档多两行就是破坏逐字断言。
+            Output.Line("输入消息开始，或 /help 查看命令。");
+            Output.Muted("Tip: 用 /where 看当前工作目录，用 /status 看终端与模型。");
+            Output.Line();
+        }
+        else if (composition.McpServers.Count == 0)
+        {
+            // Plain 档没有面板，这句是唯一能看到 MCP 状态的地方。
             Output.Line("MCP：未配置（DOUGONG_MCP_SERVERS 开启）");
+        }
 
         var messages = new List<AgentMessage>(history);
         var turn = 0;
@@ -650,6 +688,73 @@ public static class Program
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// 汇总启动面板要显示的运行时事实。
+    /// </summary>
+    /// <param name="config">当前 provider 配置。</param>
+    /// <param name="composition">会话装配（提供 MCP 与技能目录）。</param>
+    /// <param name="workspace">工作区路径。</param>
+    /// <param name="sessionId">会话标识。</param>
+    /// <param name="dispatcher">
+    /// 已建好的 dispatcher；null 表示拿不到（接线异常），此时工具清单报"不可用"。
+    /// </param>
+    /// <remarks>
+    /// <b>这里只搬运事实，不做推断</b>：工具名从 dispatcher 的冻结描述符读，
+    /// MCP 状态从 <see cref="SessionComposition.McpOutcomes"/> 读，
+    /// 技能从同一个 <see cref="SkillCatalog"/> 读。
+    /// 任何一项拿不到就报空——<b>面板假报一个数字比不显示更糟</b>，
+    /// 用户会照着一个不存在的配置去排查。
+    /// </remarks>
+    private static StartupSummary BuildStartupSummary(
+        ChatProviderConfig config,
+        SessionComposition composition,
+        string workspace,
+        string sessionId,
+        IToolDispatcher? dispatcher)
+    {
+        var tools = dispatcher?.Tools
+            .Select(t => t.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList() ?? [];
+
+        var mcp = composition.McpServers
+            .Select(spec =>
+            {
+                var outcome = composition.McpOutcomes.GetValueOrDefault(spec.Name);
+                return new McpServerStatus(
+                    spec.Name,
+                    spec.IsHttp ? "http" : "stdio",
+                    outcome?.Connected ?? false,
+                    outcome?.ToolCount ?? 0,
+                    outcome?.Error);
+            })
+            .ToList();
+
+        var catalog = composition.SkillCatalog;
+        var skills = catalog?.Skills ?? [];
+
+        // 按来源分组；组内与组间都排序，让同一份配置每次显示的次序一致
+        // （否则"上次看到的那条不见了"会变成现象题）。
+        var groups = skills
+            .GroupBy(s => s.Source, StringComparer.Ordinal)
+            .OrderBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => new SkillSourceGroup(
+                g.Key,
+                g.Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal).ToList()))
+            .ToList();
+
+        return new StartupSummary(
+            ProductInfo.Version,
+            config.Model,
+            config.Name,
+            workspace,
+            sessionId,
+            tools,
+            mcp,
+            skills.Count,
+            groups);
     }
 
     private static bool HandleCommand(

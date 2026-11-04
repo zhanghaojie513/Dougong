@@ -57,12 +57,22 @@ public static class Banner
     /// Plain 档要输出的原文行。**由调用方传入改造前的确切文本**，
     /// 这样"兼容"这件事不依赖本类去猜。
     /// </param>
+    /// <param name="summary">
+    /// 运行时事实（工具 / MCP / 技能）；null 表示**装配还没完成**，
+    /// 此时不出面板，退回原来的无框版式。
+    /// </param>
+    /// <remarks>
+    /// <b><paramref name="summary"/> 为 null 是一种正常状态，不是错误</b>：
+    /// 装配失败时不该显示"20 个工具已就绪"，那会误导用户去查一个错误的配置。
+    /// 调用方在装配成功后才传它。
+    /// </remarks>
     public static void Print(
         string version,
         string model,
         string protocol,
         string workspace,
-        IReadOnlyList<string> plainLines)
+        IReadOnlyList<string> plainLines,
+        StartupSummary? summary = null)
     {
         ArgumentNullException.ThrowIfNull(plainLines);
 
@@ -72,6 +82,12 @@ public static class Banner
 
         switch (capability.Tier)
         {
+            case TerminalTier.Rich when summary is not null && Fits(height):
+                // 有运行时清单时优先出面板——那是启动页的主体。
+                if (PrintPanel(summary, width, height)) break;
+                PrintFull(version, model, protocol, workspace);
+                break;
+
             case TerminalTier.Rich when width >= FullMinWidth && Fits(height):
                 PrintFull(version, model, protocol, workspace);
                 break;
@@ -103,6 +119,38 @@ public static class Banner
 
     /// <summary>高度是否够放完整形象；未知（0）时按够处理。</summary>
     private static bool Fits(int height) => height <= 0 || height >= FullMinHeight;
+
+    /// <summary>
+    /// 面板版式：字标在上，边框盒里左形象、右清单。
+    /// </summary>
+    /// <returns>false 表示宽度不够画框，调用方退回无框版式。</returns>
+    /// <remarks>
+    /// <b>高度不足时不画字标，但仍出面板</b>：清单是信息，字标是识别。
+    /// 两者冲突时先保信息——用户在 20 行终端上更需要知道"有哪些工具"。
+    /// </remarks>
+    private static bool PrintPanel(StartupSummary summary, int width, int height)
+    {
+        // 先算右栏内容，才知道盒子要几行（左栏要补到同样高）。
+        const int borderAndPadding = 2 + Frame.InnerPadding * 2;
+        var rightWidth = width - borderAndPadding - Frame.LeftColumnWidth - Frame.ColumnGap;
+        if (rightWidth <= 0) return false;
+
+        var right = StartupPanel.RenderRight(summary, rightWidth);
+        var left = StartupPanel.RenderLeft(
+            summary, YungongArt.Compact, right.Count, Frame.LeftColumnWidth);
+
+        var box = Frame.TryRender(
+            $"dougong {summary.Version} · {summary.Model}",
+            left, right, width);
+        if (box is null) return false;
+
+        PrintWordmark(width, height);
+
+        foreach (var line in box) Output.Line(line);
+
+        Output.Line();
+        return true;
+    }
 
     /// <summary>
     /// 画顶部字标 `DOUGONG-HARNESS`；放不下时什么也不画。

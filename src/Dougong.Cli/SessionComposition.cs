@@ -454,6 +454,41 @@ public sealed class SessionComposition : IDisposable
     /// <summary>本次会话配置的 MCP server 列表。</summary>
     public IReadOnlyList<McpServerSpec> McpServers => _mcpServers;
 
+    /// <summary>
+    /// 每台 MCP server 的连接结局，按配置名索引。**调用过
+    /// <see cref="ConnectMcpAsync"/> 之后才有内容**；没尝试过的名字不在里面。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么用字典而不是写回 <see cref="McpServerSpec"/></b>：
+    /// 那是 record（值语义），而 <c>_mcpServers</c> 是只读列表，
+    /// 元素替换不掉。用一个旁挂的字典既保留"同一份配置"这个来源，
+    /// 又能记录运行期结果——这就是<b>伴生数据</b>而不是改配置。
+    /// </remarks>
+    public IReadOnlyDictionary<string, McpConnectOutcome> McpOutcomes => _mcpOutcomes;
+
+    private readonly Dictionary<string, McpConnectOutcome> _mcpOutcomes = [];
+
+    private void RecordOutcome(McpServerSpec spec, McpConnectOutcome outcome) =>
+        _mcpOutcomes[spec.Name] = outcome;
+
+    /// <summary>
+    /// 已发现的技能目录；未配置技能来源时为 null。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么要暴露这个</b>：启动面板要显示"实际有哪些技能"，
+    /// 而那必须与模型看到的是**同一份**——面板说 12 个、模型只看到 10 个，
+    /// 用户就会去查一个不存在的配置问题。
+    ///
+    /// <para>
+    /// <b>惰性求值且缓存</b>：<see cref="SkillDiscovery.Discover"/> 要扫三个目录，
+    /// 启动面板与后续渲染都会读它。每次都扫会让启动变慢，而技能集合
+    /// 在一次会话内不会变（<c>LoadAsync</c> 才每次都重读正文）。
+    /// </para>
+    /// </remarks>
+    public SkillCatalog? SkillCatalog => _skillCatalog ??= _skills?.Discover();
+
+    private SkillCatalog? _skillCatalog;
+
     /// <summary>L1 偏好注入器；未启用记忆时为 null。</summary>
     /// <remarks>
     /// 为 null 就是"这两条数据流关闭"的表达：运行时完全不读记忆，
@@ -956,8 +991,7 @@ public sealed class SessionComposition : IDisposable
         var clients = new List<ModelContextProtocol.Client.McpClient>();
 
         foreach (var spec in _mcpServers)
-        {
-            try
+        {            try
             {
                 ModelContextProtocol.Client.IClientTransport transport = transportFactory is not null
                     ? transportFactory(spec, log)
@@ -991,10 +1025,19 @@ public sealed class SessionComposition : IDisposable
                     dispatcher, spec.Name, client, cancellationToken).ConfigureAwait(false);
                 registries.Add(registry);
 
+                // 结局记在**配置项自己身上**：调用方拿到的 `_mcpServers` 是同一个
+                // 列表对象，于是"配置了几台、连上了几台"两件事合得起来。
+                // 只写日志的话，启动面板只能显示 configured——而用户会以为它在工作。
+                RecordOutcome(spec, new McpConnectOutcome(
+                    Connected: true, registry.ToolCount, Error: null));
+
                 log.WriteLine($"MCP '{spec.Name}'：已桥接 {registry.ToolCount} 个工具");
             }
             catch (Exception ex)
             {
+                RecordOutcome(spec, new McpConnectOutcome(
+                    Connected: false, ToolCount: 0, Error: ex.GetType().Name));
+
                 log.WriteLine($"MCP '{spec.Name}' 连接失败：{ex.GetType().Name}: {ex.Message}");
             }
         }
@@ -1246,6 +1289,22 @@ public sealed record McpServerSpec(
 {
     public bool IsHttp => Kind is McpTransportKind.Http;
 
+    /// <summary>
+    /// 最近一次连接的结局；<c>null</c> 表示还没尝试过。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么要记在这里</b>：<see cref="SessionComposition.ConnectMcpAsync"/>
+    /// 吞掉每台服务器的异常（连不上不该阻止启动），只往日志写一行。
+    /// 于是"配置了"与"真连上了"在调用方看来完全一样——启动面板只能写
+    /// <c>configured</c>，而用户会以为它在工作。
+    ///
+    /// <para>
+    /// 用 <c>init</c> 属性而不是构造参数：后者改变公开签名，ApiCompat 会报
+    /// CP0002（本仓库 6 个 SDK 包都启用了包校验）。
+    /// </para>
+    /// </remarks>
+    public McpConnectOutcome? Outcome { get; init; }
+
     /// <summary>用 stdio 形态构造。</summary>
     public static McpServerSpec Stdio(string name, string command, IReadOnlyList<string> arguments) =>
         new(name, command, arguments, null, McpTransportKind.Stdio);
@@ -1254,6 +1313,18 @@ public sealed record McpServerSpec(
     public static McpServerSpec Http(string name, Uri endpoint) =>
         new(name, null, [], endpoint, McpTransportKind.Http);
 }
+
+/// <summary>
+/// 一台 MCP server 的连接结局。
+/// </summary>
+/// <param name="Connected">是否连通。</param>
+/// <param name="ToolCount">桥接到的工具数；未连通时为 0。</param>
+/// <param name="Error">未连通时的简短原因；连通时为 null。</param>
+/// <remarks>
+/// <b>不是异常对象</b>：异常要保留栈、会拖住连接，而这个值只用于显示一行状态。
+/// 需要的只有"成没成、几个工具、为什么没成"。
+/// </remarks>
+public sealed record McpConnectOutcome(bool Connected, int ToolCount, string? Error);
 
 /// <summary>从连接器上取用于记账标签的模型名与协议名。</summary>
 /// <remarks>

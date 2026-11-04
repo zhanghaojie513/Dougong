@@ -127,6 +127,7 @@
 | 压缩比例默认值与可配置性 | `compaction`、`wiring`、`doctor` | 把 `DefaultTriggerRatio` 改成 0.99 → `compaction` 套的触发点检查失败；给 `--doctor` 传入 `retain >= trigger` → `doctor` 套的非法规格检查失败 |
 | 底部锚定时提示符在上、状态栏贴最底 | `terminal`：`prompt-sits-above-status-bar-when-anchored`、`prompt-is-drawn-by-region-and-survives-erase` | `Repaint` 的 `usable` 改回 `_anchorBottom - 1`、`BeginPrompt` 的 `promptRow` 改回 `_anchorBottom` → 两条同时红（报"提示符在第 20 行、状态栏在第 19 行——提示符必须在上方"）。**这两条的第一版是空转的**：`RowOf` 用"往回找 `ESC[`"定位，把清行的 `ESC[2K` 当成了 CUP，返回 null，于是实现正确时检查报"从未被定位" |
 | 字标 `DOUGONG-HARNESS` 字形等宽且可区分 | `terminal`：`big-text-glyphs-are-uniform`、`big-text-wordmark-covers-every-glyph`、`big-text-row-width-matches-declared`、`big-text-falls-back-when-too-narrow`、`big-text-drops-when-too-short`、`big-text-gradient-spans-endpoints`、`big-text-glyph-legibility` | 把 `D` 压成 4 列 → `big-text-glyphs-are-uniform` 报"字形 D 第 0 行 4 列，应为 5 列"，`big-text-row-width-matches-declared` 报"没有任何一行画满声明宽度"；把 `O` 改成与 `D` 完全相同 → `big-text-glyph-legibility` 报"字形 D 与 O 完全相同——无法区分"（**宽度检查发现不了这一条**，所以必须单独有"两两不同"的断言） |
+| 启动面板的框线等宽、数字来自真实清单 | `terminal`：`frame-lines-are-equal-width`、`frame-border-is-half-width`、`frame-refuses-when-too-narrow`、`frame-title-fits-inside-border`、`panel-tool-count-matches-input`、`panel-says-when-mcp-not-connected`、`panel-truncates-skills-with-count`、`panel-tool-count-follows-real-list` | `Frame.PadTo` 改用 `text.Length` 补白 → `frame-lines-are-equal-width` 报"宽度 80：第 2 行显示宽度 87，应为 80"（中文少补 7 格，正是"按字符数补白"的典型症状）；把汇总行的工具数写死成 `20 tools` → `panel-tool-count-matches-input` 报"面板没有报出 3 tools"、`panel-tool-count-follows-real-list` 报"1 个工具时面板没有报 1 tools" |
 
 ---
 
@@ -662,6 +663,21 @@ P2 五项交付后做了一轮"声称 vs 实现"复检，用两个独立只读�
 | **为什么是 5 行不是 12 行** | Hermes 用 12 行。我们用 5 行：24 行终端上，12 行字标 + 18 行云拱形象 + 底部两行根本放不下。5 行是"能读出字形"与"留得下内容"的折中，且有 `reservedRows = 8` 的地板——高度不够就不画。 |
 | **验证** | `terminal` 套 7 项（见 §三）；负控：把 D 压成 4 列、把 O 改成与 D 相同，各自触发对应检查。 |
 | **源码位置** | `src/Dougong.Cli/Terminal/BigText.cs`、`src/Dougong.Cli/Terminal/Palette.cs`（`WordmarkTop`/`WordmarkBottom`/`Lerp`） |
+
+### D-35 启动面板显示真实运行时清单，因此 banner 的打印时机被后移
+
+| | |
+|---|---|
+| **哪不一样** | Hermes 的启动页是一个带内嵌标题的边框盒，里面装工具 / MCP / 技能清单。我们照这个形态做，但**内容全部来自运行时装配结果**，而不是"我们支持这些"的说明文字。 |
+| **由此带来的结构改动** | `Banner.Print` 原先在 `Program.cs` 的清屏之后立刻调用，那时 dispatcher 还没建、MCP 还没连。要显示真实清单就必须**后移到装配之后**。代价：启动时先出现 `kernel=` / `durability=` 几行，然后才是面板。 |
+| **为什么 Plain 档不跟着移** | 那几行的先后顺序是 46 个套件钉住的逐字断言。Plain 档仍在清屏后立刻输出 banner，与改造前一致。判据是 `Output.Capability.Tier`，两条路都留了。 |
+| **为什么装配失败就不出面板** | `Banner.Print` 的 `summary` 参数为 null 时退回无框版式。**假报一个数字比不显示更糟**：面板说"20 个工具已就绪"而实际没起来，用户会照着这个线索去查一个不存在的配置问题。 |
+| **MCP 状态为什么不是 `configured`** | `ConnectMcpAsync` 吞掉每台服务器的异常（连不上不该阻止启动），只写日志。于是"配置了"与"真连上了"在调用方看来完全一样。加了 `McpServerSpec.Outcome`（`init` 属性，不改签名）记录结局，面板如实报 `connected · N tools` 或 `failed · <异常类型>`。Hermes 截图里写 `— configured`，那只是配置里有一条。 |
+| **技能为什么按"来源"分组而不是 category** | 我们的 `SkillDiscovery` 只有三个来源（project-dsh / project-agents / user-dsh），没有 category 这一层。**不为像 Hermes 而造一层假分类**——那会让用户以为技能文件里能写 category，而实际不生效。 |
+| **超量怎么办** | 每组最多 4 个技能 → `+N more`；MCP 最多 6 台；来源最多 5 组。每一处截断都**明说还有多少**，不静默丢弃。 |
+| **路径为什么显示成 `…/末两级`** | 22 列的左栏里 `C:/work/myProject/doug…` 从左往右截断恰好丢掉了最有用的一段——用户要确认的是"我在哪个项目里"，而那是路径末尾。 |
+| **验证** | `terminal` 套 8 项；负控见 §三。 |
+| **源码位置** | `src/Dougong.Cli/Terminal/Frame.cs`、`StartupPanel.cs`、`StartupSummary.cs`、`src/Dougong.Cli/Program.cs`（`BuildStartupSummary`） |
 
 ### 复检（2026-11-03，第二轮）：P2 全部 14 项
 

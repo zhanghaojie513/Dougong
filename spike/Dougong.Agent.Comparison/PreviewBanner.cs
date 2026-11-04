@@ -49,8 +49,46 @@ internal static class PreviewBanner
             model: "qfmodel",
             protocol: "Chat",
             workspace: "C:/work/myProject/dougong",
-            plainLines: ["（Plain 档原文）"]);
+            plainLines: ["（Plain 档原文）"],
+            summary: SampleSummary());
 
         return 0;
     }
+
+    /// <summary>
+    /// 一份固定的样例事实。**不用真实数据**：预览要能反映"内容很多时"的排版
+    /// （技能 20 几个、MCP 3 台），而本机实际可能一个都没有。
+    /// </summary>
+    private static StartupSummary SampleSummary() => new(
+        Version: Dougong.Cli.ProductInfo.Version,
+        Model: "qfmodel",
+        Provider: "Nous Research",
+        Workspace: "C:/work/myProject/dougong",
+        SessionId: "81bcbb68",
+        Tools:
+        [
+            "ask_user", "edit_file", "glob", "get_goal", "grep", "job_output",
+            "job_start", "job_stop", "list_files", "read_file", "search_sessions",
+            "skill", "subagent", "subagent_list", "subagent_result",
+            "todo_write", "web_fetch", "working_directory", "write_file",
+        ],
+        McpServers:
+        [
+            new McpServerStatus("ekko-studio-api", "stdio", true, 12, null),
+            new McpServerStatus("ekko-studio-browser", "stdio", true, 5, null),
+            new McpServerStatus("ekko-studio-devices", "stdio", false, 0, "IOException"),
+        ],
+        SkillCount: 27,
+        SkillSources:
+        [
+            new SkillSourceGroup("project-agents",
+                ["doc-qa-factory", "csv-pipeline", "image-ocr", "pdf", "cover-maker"]),
+            new SkillSourceGroup("project-dsh",
+                ["brand-review", "release-notes"]),
+            new SkillSourceGroup("user-dsh",
+                ["excel-processor", "skill-creator", "logo-design", "xlsx", "web-scraper",
+                 "frontend-skill", "pdf", "docx", "template-creator", "impeccable",
+                 "archify", "product-design-audit", "product-design-prototype",
+                 "product-design-get-context", "product-design-ideate"]),
+        ]);
 }

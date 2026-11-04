@@ -124,6 +124,16 @@ public static class TerminalChecks
         failures += Check("big-text-gradient-spans-endpoints", BigTextGradient);
         failures += Check("big-text-glyph-legibility", BigTextLegibility);
 
+        // 启动面板（P8/P9）：边框盒 + 运行期清单。
+        failures += Check("frame-lines-are-equal-width", FrameEqualWidth);
+        failures += Check("frame-border-is-half-width", FrameBorderHalfWidth);
+        failures += Check("frame-refuses-when-too-narrow", FrameTooNarrow);
+        failures += Check("frame-title-fits-inside-border", FrameTitleFits);
+        failures += Check("panel-tool-count-matches-input", PanelToolCount);
+        failures += Check("panel-says-when-mcp-not-connected", PanelMcpHonest);
+        failures += Check("panel-truncates-skills-with-count", PanelSkillTruncation);
+        failures += Check("panel-tool-count-follows-real-list", PanelCountsAreNotHardcoded);
+
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
             : $"TERMINAL: {failures} FAILURE(S)");
@@ -2350,6 +2360,184 @@ public static class TerminalChecks
                 if (a == b)
                     return $"字形 {glyphs[i]} 与 {glyphs[j]} 完全相同——无法区分";
             }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 边框盒每一行的显示宽度都相同。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是"框看起来是框"的唯一判据</b>：任何一行宽度不同，右边框就参差。
+    /// 而参差的原因通常是补白按字符数而不是按显示宽度算——中文占 2 格，
+    /// 按字符数补会少补一半。
+    /// </remarks>
+    private static string? FrameEqualWidth()
+    {
+        var left = new[] { "⣿⣷⣀", "", "abc" };
+        var right = new[] { "Available Tools", "中文内容占两格", "x" };
+
+        foreach (var width in new[] { 80, 100, 120 })
+        {
+            var rows = Frame.TryRender("title", left, right, width);
+            if (rows is null) return $"宽度 {width} 时应当能画框";
+
+            for (var i = 0; i < rows.Count; i++)
+            {
+                var actual = DisplayWidth.Of(rows[i]);
+                if (actual != width)
+                    return $"宽度 {width}：第 {i} 行显示宽度 {actual}，应为 {width}";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>框线是半角，每个边框字符占 1 格。</summary>
+    /// <remarks>
+    /// <b>不能用双线框</b>：<c>═║╔</c> 在部分等宽字体里按 2 格渲染，
+    /// 整框会错位，而症状是"右边框对不齐"，很难归因到字体。
+    /// </remarks>
+    private static string? FrameBorderHalfWidth()
+    {
+        foreach (var ch in "─│┌┐└┘")
+        {
+            var w = DisplayWidth.Of(new System.Text.Rune(ch));
+            if (w != 1) return $"框线字符 {ch} 占 {w} 格，应为 1 格";
+        }
+
+        return null;
+    }
+
+    /// <summary>太窄时返回 null，让调用方退回无框版式。</summary>
+    private static string? FrameTooNarrow()
+    {
+        // 最小宽度 = 2 边框 + 4 边距 + 22 左栏 + 2 间隔 + 20 右栏 = 50。
+        const int minimum = 50;
+
+        if (Frame.TryRender("t", ["a"], ["b"], minimum - 1) is not null)
+            return $"宽度 {minimum - 1} 时不该能画框——会挤坏内容";
+
+        return Frame.TryRender("t", ["a"], ["b"], minimum) is not null
+            ? null
+            : $"宽度 {minimum} 时应能画框";
+    }
+
+    /// <summary>标题比框还宽时不溢出。</summary>
+    /// <remarks>
+    /// <b>溢出会让整块框的右边缘错位</b>：标题写出去一格，右边框就对不上。
+    /// 超长标题的处置是"退回普通上边线"，不截断标题——截断会让
+    /// "这是哪个版本"这句话失去意义。
+    /// </remarks>
+    private static string? FrameTitleFits()
+    {
+        var longTitle = new string('x', 200);
+        var rows = Frame.TryRender(longTitle, ["a"], ["b"], 80);
+
+        if (rows is null) return "标题很长时不该整个画不出来";
+        return DisplayWidth.Of(rows[0]) == 80
+            ? null
+            : $"超长标题时上边线宽 {DisplayWidth.Of(rows[0])}，应为 80";
+    }
+
+    /// <summary>构建一份可控的样例事实。</summary>
+    private static StartupSummary SampleSummary(
+        IReadOnlyList<string>? tools = null,
+        IReadOnlyList<McpServerStatus>? mcp = null,
+        IReadOnlyList<SkillSourceGroup>? skillGroups = null,
+        int? skillCount = null) =>
+        new(
+            Version: "0.0.0-test",
+            Model: "m",
+            Provider: "p",
+            Workspace: "C:/a/b",
+            SessionId: "s",
+            Tools: tools ?? ["read_file", "write_file"],
+            McpServers: mcp ?? [],
+            SkillCount: skillCount ?? (skillGroups?.Sum(g => g.Names.Count) ?? 0),
+            SkillSources: skillGroups ?? []);
+
+    /// <summary>面板报的工具数与传入的清单一致。</summary>
+    private static string? PanelToolCount()
+    {
+        var summary = SampleSummary(tools: ["a", "b", "c"]);
+        var text = string.Join('\n', StartupPanel.RenderRight(summary, 200));
+
+        if (!text.Contains("3 tools", StringComparison.Ordinal))
+            return "面板没有报出 3 tools：" + text.Replace('\n', '|');
+
+        return text.Contains("a, b, c", StringComparison.Ordinal)
+            ? null
+            : "面板没有列出工具名：" + text.Replace('\n', '|');
+    }
+
+    /// <summary>
+    /// MCP 没连上时必须说 failed，不能只写 configured。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是"如实"这条底线</b>：Hermes 截图里写的是 <c>— configured</c>，
+    /// 那只是"配置里有一条"。用户看到 configured 会以为它在工作，
+    /// 而实际连不上的时候工具根本没注册——那是最难查的一类问题。
+    /// </remarks>
+    private static string? PanelMcpHonest()
+    {
+        var summary = SampleSummary(mcp:
+        [
+            new McpServerStatus("ok-server", "stdio", Connected: true, ToolCount: 7, Error: null),
+            new McpServerStatus("bad-server", "stdio", Connected: false, ToolCount: 0, Error: "IOException"),
+        ]);
+
+        var text = string.Join('\n', StartupPanel.RenderRight(summary, 200));
+
+        if (!text.Contains("connected · 7 tools", StringComparison.Ordinal))
+            return "连上的 server 没有报出工具数：" + text.Replace('\n', '|');
+
+        return text.Contains("failed · IOException", StringComparison.Ordinal)
+            ? null
+            : "连不上的 server 没有如实报失败：" + text.Replace('\n', '|');
+    }
+
+    /// <summary>技能超量时输出 <c>+N more</c>，且 N 与真实差数一致。</summary>
+    private static string? PanelSkillTruncation()
+    {
+        // 7 个技能，每组只显示 4 个 → 应该报 +3 more。
+        var names = Enumerable.Range(0, 7).Select(i => $"skill-{i}").ToList();
+        var summary = SampleSummary(
+            skillGroups: [new SkillSourceGroup("user-dsh", names)], skillCount: 7);
+
+        var text = string.Join('\n', StartupPanel.RenderRight(summary, 200));
+
+        if (!text.Contains("+3 more", StringComparison.Ordinal))
+            return "7 个技能、每组显示 4 个时应报 +3 more：" + text.Replace('\n', '|');
+
+        // 少一个就必须变成 +2——防止把数字写死。
+        var sixSummary = SampleSummary(
+            skillGroups: [new SkillSourceGroup("user-dsh", names.Take(6).ToList())], skillCount: 6);
+        var sixText = string.Join('\n', StartupPanel.RenderRight(sixSummary, 200));
+
+        return sixText.Contains("+2 more", StringComparison.Ordinal)
+            ? null
+            : "6 个技能时应报 +2 more：" + sixText.Replace('\n', '|');
+    }
+
+    /// <summary>
+    /// 面板的计数来自传入的清单，不是硬编码。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是"数字必须是真的"这条约束的直接检验</b>：如果实现里写死了
+    /// "20 tools"，那么工具清单变成 3 个时它仍然报 20——那就是假面板。
+    /// </remarks>
+    private static string? PanelCountsAreNotHardcoded()
+    {
+        foreach (var count in new[] { 1, 5, 23 })
+        {
+            var tools = Enumerable.Range(0, count).Select(i => $"t{i}").ToList();
+            var summary = SampleSummary(tools: tools);
+            var text = string.Join('\n', StartupPanel.RenderRight(summary, 400));
+
+            if (!text.Contains($"{count} tools", StringComparison.Ordinal))
+                return $"{count} 个工具时面板没有报 {count} tools";
         }
 
         return null;
