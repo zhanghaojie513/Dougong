@@ -52,8 +52,10 @@ public static class StartupPanel
         AddBlank(lines);
 
         // 汇总行：一眼看到"这个会话有什么"。
+        // 拿不到工具数时写 `? tools`，不写 `0`——0 是个确定的断言。
+        var toolText = summary.ToolsKnown ? summary.Tools.Count.ToString() : "?";
         lines.Add(Fit(
-            $"{summary.Tools.Count} tools · {summary.SkillCount} skills · {summary.Version}",
+            $"{toolText} tools · {summary.SkillCount} skills · {summary.Version}",
             width));
 
         return lines;
@@ -105,6 +107,12 @@ public static class StartupPanel
     private static void AddTools(List<string> lines, StartupSummary summary, int width)
     {
         lines.Add(Fit("Available Tools", width));
+
+        if (!summary.ToolsKnown)
+        {
+            lines.Add("（读不到工具清单——dispatcher 未就绪）");
+            return;
+        }
 
         if (summary.Tools.Count == 0)
         {

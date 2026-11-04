@@ -42,6 +42,7 @@ public static class TerminalChecks
         failures += Check("tool-summary-lists-each-call", ToolSummaryListsCalls);
         failures += Check("tool-summary-reports-failures-distinctly", ToolSummaryMarksFailures);
         failures += Check("plain-tier-has-no-summary", PlainHasNoSummary);
+        failures += Check("narrow-tier-does-not-rewrap-long-lines", NarrowDoesNotRewrap);
         failures += Check("summary-starts-on-new-line-without-tools", SummaryStartsOnNewLine);
 
         // S3：活动状态机与状态栏渲染（纯逻辑，可完整验证）
@@ -133,6 +134,12 @@ public static class TerminalChecks
         failures += Check("panel-says-when-mcp-not-connected", PanelMcpHonest);
         failures += Check("panel-truncates-skills-with-count", PanelSkillTruncation);
         failures += Check("panel-tool-count-follows-real-list", PanelCountsAreNotHardcoded);
+        failures += Check("panel-says-how-many-mcp-are-hidden", PanelMcpTruncation);
+        failures += Check("panel-says-how-many-sources-are-hidden", PanelSourceTruncation);
+        failures += Check("panel-distinguishes-unknown-from-zero", PanelUnknownNotZero);
+
+        // 首页总行数不能超出终端高度——超了会把底部状态行与提示符挤出屏幕。
+        failures += Check("startup-never-exceeds-terminal-height", StartupFitsHeight);
 
         Console.WriteLine(failures == 0
             ? "TERMINAL: ALL PASS"
@@ -716,6 +723,37 @@ public static class TerminalChecks
 
     private static ToolDispatchResult ToolDispatchResultFor(string toolId, ToolCallOutcome outcome) =>
         new($"inv-{toolId}", toolId, outcome);
+
+    /// <summary>
+    /// Narrow 档下，长行不会被 Spectre 重新折行。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是 <see cref="Output.CreateConsole"/> 设 <c>Profile.Width</c> 的副作用面</b>：
+    /// 修复前 Spectre 在非交互模式下按 80 列兜底，修复后按真实宽度。
+    /// 对 Plain 档无影响（宽度为 0，不设），但 Narrow 档（60–79 列）
+    /// 现在会设成真实宽度——若某处依赖"80 列兜底"这个行为，它会变。
+    ///
+    /// <para>
+    /// 断言的是"长度 75 的一行在 75 列终端里不被拆开"——
+    /// 修复前它恰好也不拆（75 &lt; 80），所以这条检查**不能**作为
+    /// 修复的负控；它守的是"宽度设置没有把 Narrow 档改坏"。
+    /// </para>
+    /// </remarks>
+    private static string? NarrowDoesNotRewrap()
+    {
+        const int width = 75;
+        var longLine = new string('x', width - 1);
+
+        return CaptureWithTier(TerminalTier.Narrow, width,
+            () => Output.Line(longLine),
+            captured =>
+            {
+                var lines = captured.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                return lines.Length == 1
+                    ? null
+                    : $"{width} 列终端里一行 {width - 1} 字符被拆成 {lines.Length} 行";
+            });
+    }
 
     /// <summary>在指定档位下执行一段输出并捕获文本，交给断言检查。</summary>
     private static string? CaptureWithTier(TerminalTier tier, int width, Action action, Func<string, string?> assert)
@@ -2541,6 +2579,160 @@ public static class TerminalChecks
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// MCP server 超过上限时，必须明说还有几台没列出。
+    /// </summary>
+    /// <remarks>
+    /// <b>静默少列最伤</b>：用户配了 9 台、面板只显示 6 台，他会以为
+    /// 其余 3 台没生效，然后去改一个本来就正确的配置。
+    /// 截断本身是对的（否则清单占满整屏），但**截断必须说出来**。
+    /// </remarks>
+    private static string? PanelMcpTruncation()
+    {
+        const int over = StartupPanel.MaxMcpServers + 3;
+        var servers = Enumerable.Range(0, over)
+            .Select(i => new McpServerStatus($"s{i}", "stdio", true, 1, null))
+            .ToList();
+
+        var text = string.Join('\n',
+            StartupPanel.RenderRight(SampleSummary(mcp: servers), 400));
+
+        if (!text.Contains($"还有 {over - StartupPanel.MaxMcpServers} 台未列出", StringComparison.Ordinal))
+            return $"{over} 台 MCP 时面板没有说明还藏了几台："
+                + text.Replace('\n', '|');
+
+        // 刚好等于上限时必须**不**报"还有 0 台"——那是在制造噪音。
+        var atLimit = Enumerable.Range(0, StartupPanel.MaxMcpServers)
+            .Select(i => new McpServerStatus($"s{i}", "stdio", true, 1, null))
+            .ToList();
+
+        var limitText = string.Join('\n',
+            StartupPanel.RenderRight(SampleSummary(mcp: atLimit), 400));
+
+        return limitText.Contains("未列出", StringComparison.Ordinal)
+            ? "正好等于上限时不该报未列出"
+            : null;
+    }
+
+    /// <summary>技能来源组超过上限时，同样要说还有几组没列出。</summary>
+    private static string? PanelSourceTruncation()
+    {
+        const int over = StartupPanel.MaxSkillGroups + 2;
+        var groups = Enumerable.Range(0, over)
+            .Select(i => new SkillSourceGroup($"src-{i}", [$"skill-{i}"]))
+            .ToList();
+
+        var text = string.Join('\n',
+            StartupPanel.RenderRight(
+                SampleSummary(skillGroups: groups, skillCount: over), 400));
+
+        return text.Contains(
+                $"还有 {over - StartupPanel.MaxSkillGroups} 个来源未列出", StringComparison.Ordinal)
+            ? null
+            : $"{over} 个来源时面板没有说明还藏了几组："
+                + text.Replace('\n', '|');
+    }
+
+    /// <summary>
+    /// 拿不到工具清单时，面板不能说"0 tools"。
+    /// </summary>
+    /// <remarks>
+    /// <b>0 是一个确定的断言，而"读不到"不是。</b>dispatcher 未就绪时
+    /// 若显示 <c>0 tools</c>，用户会去查工具注册配置——而问题在装配接线。
+    /// 面板的第一职责是不说错话，其次才是说得漂亮。
+    /// </remarks>
+    private static string? PanelUnknownNotZero()
+    {
+        var unknown = SampleSummary(tools: []) with { ToolsKnown = false };
+        var text = string.Join('\n', StartupPanel.RenderRight(unknown, 400));
+
+        if (text.Contains("0 tools", StringComparison.Ordinal))
+            return "拿不到工具清单时报了 0 tools——那是假断言：" + text.Replace('\n', '|');
+
+        if (!text.Contains("读不到工具清单", StringComparison.Ordinal))
+            return "拿不到工具清单时没有说明原因：" + text.Replace('\n', '|');
+
+        // 反向：真的没有工具时（ToolsKnown = true 且为空）必须说"无"。
+        var empty = SampleSummary(tools: []);
+        var emptyText = string.Join('\n', StartupPanel.RenderRight(empty, 400));
+
+        return emptyText.Contains("无已注册工具", StringComparison.Ordinal)
+            ? null
+            : "确实没有工具时应当明说：" + emptyText.Replace('\n', '|');
+    }
+
+    /// <summary>
+    /// 首页输出的总行数（含字标与底部预留）不得超过终端高度。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是真机上才会显形的缺陷形态</b>：24 行终端上第一版输出了 25 行
+    /// （字标 6 + 面板 19），于是底部状态行与提示符被挤出屏幕——
+    /// 而"提示符不见了"看起来像 LiveRegion 的问题，实际根因在 banner。
+    ///
+    /// <para>
+    /// 判据不能用固定阈值：面板高度取决于清单长度（技能/MCP 越多越长）。
+    /// 这里用"长清单 + 各种终端高度"组合去撞，任何一档溢出都算失败。
+    /// </para>
+    /// </remarks>
+    private static string? StartupFitsHeight()
+    {
+        // 一份"很长"的清单：20 个工具、6 台 MCP、5 组技能各 4 个。
+        var tools = Enumerable.Range(0, 20).Select(i => $"tool-name-{i}").ToList();
+        var mcp = Enumerable.Range(0, 6)
+            .Select(i => new McpServerStatus($"server-{i}", "stdio", true, 3, null)).ToList();
+        var groups = Enumerable.Range(0, 5)
+            .Select(i => new SkillSourceGroup($"src-{i}",
+                Enumerable.Range(0, 4).Select(j => $"skill-{i}-{j}").ToList()))
+            .ToList();
+
+        var summary = SampleSummary(tools: tools, mcp: mcp, skillGroups: groups, skillCount: 20);
+
+        foreach (var height in new[] { 20, 24, 30, 40 })
+        {
+            Output.OverrideCapability(
+                new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: false, Height: height));
+
+            var captured = CaptureStdout(() => Banner.Print(
+                version: "0.0.0-test",
+                model: "m",
+                protocol: "Chat",
+                workspace: "C:/a/b",
+                plainLines: ["plain"],
+                summary: summary));
+
+            // 去掉 ANSI 序列后按行数计。
+            var visible = captured.Replace("\u001b", string.Empty);
+            var lines = visible.Split('\n')
+                .Count(l => !string.IsNullOrWhiteSpace(l));
+
+            // 底部区域（状态栏 + 提示符 + 欢迎语 + 余量）必须还留得下。
+            const int reservedBottom = 5;
+            if (lines + reservedBottom > height)
+                return $"高度 {height}：首页打出 {lines} 行 + 底部 {reservedBottom} 行 = "
+                    + $"{lines + reservedBottom}，超了 {lines + reservedBottom - height} 行";
+        }
+
+        return null;
+    }
+
+    /// <summary>捕获一次动作写到 stdout 的全部内容。</summary>
+    private static string CaptureStdout(Action action)
+    {
+        var original = Console.Out;
+        using var writer = new StringWriter();
+        Console.SetOut(writer);
+        try
+        {
+            action();
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        return writer.ToString();
     }
 
     /// <summary>

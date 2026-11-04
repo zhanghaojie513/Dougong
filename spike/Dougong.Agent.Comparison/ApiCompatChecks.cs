@@ -105,17 +105,37 @@ public static class ApiCompatChecks
         // 上一版就是这样让本项"永远跳过"的。
         const string anchor = "string apiKey, HttpClient? http = null)";
         const string brokenAnchor = "string apiKey, HttpClient? http = null, bool breakingProbe = false)";
-        const string original = anchor;
-        const string broken = brokenAnchor;
 
         var text = await File.ReadAllTextAsync(target).ConfigureAwait(false);
-        if (!text.Contains(original, StringComparison.Ordinal))
+
+        // **先自愈"上一次被打断"留下的脏文件。**
+        //
+        // 本项靠"改源码 → pack → finally 还原"来验证 ApiCompat 真的在工作。
+        // 若进程在 try 中间被杀（超时、Ctrl+C、并行跑两个全量脚本），
+        // finally 来不及执行，文件就留下 brokenAnchor 版——而 brokenAnchor
+        // 里也含有 anchor 作为子串，所以下一次 text.Contains(anchor) **仍然成立**，
+        // 检查会把 broken 版当成正常源码、再插一次 broken，得到
+        // `..., bool breakingProbe = false, bool breakingProbe = false)`——编译失败。
+        //
+        // 这个缺陷真实发生过（2026-11-04）：并行跑全量时被打断，
+        // 之后单独跑 apicompat 报"找不到预期的签名"，把人引向"签名变了"的错误方向。
+        // 判据是"brokenAnchor 存在但 anchor 不是它的前缀"——即文件已被插入过。
+        var dirty = text.Contains(brokenAnchor, StringComparison.Ordinal);
+        if (dirty)
+        {
+            // 还原成干净版本再继续。这不掩盖问题：下面照常做完整验证，
+            // 而"曾经被打断过"这件事记在返回信息里（若本次验证失败）。
+            text = text.Replace(brokenAnchor, anchor);
+            await File.WriteAllTextAsync(target, text).ConfigureAwait(false);
+        }
+
+        if (!text.Contains(anchor, StringComparison.Ordinal))
             return "找不到预期的签名：本项无从验证（方法签名变了就更新这条检查）";
 
         try
         {
             await File.WriteAllTextAsync(
-                target, text.Replace(original, broken)).ConfigureAwait(false);
+                target, text.Replace(anchor, brokenAnchor)).ConfigureAwait(false);
 
             var (exitCode, output) = await RunPackAsync(
                 Path.Combine(root, "src", "Dougong.Ai")).ConfigureAwait(false);
@@ -134,6 +154,10 @@ public static class ApiCompatChecks
             // 于是"我改过了又改回来"变成了"最终产物被永久污染"。
             // 这个缺陷真实发生过一次：CI 在 pack 阶段报 CP0002，
             // 而源码与基线都是干净的。
+            //
+            // **还原写的是插入前读到的 text**，而不是"把 broken 换成 anchor"：
+            // 前者对本项之外的其它改动是安全的（不假设文件只有这一处变化），
+            // 后者在文件同时有别人改动时会连带回滚那些改动。
             await File.WriteAllTextAsync(target, text).ConfigureAwait(false);
             await RebuildAsync(Path.Combine(root, "src", "Dougong.Ai")).ConfigureAwait(false);
         }

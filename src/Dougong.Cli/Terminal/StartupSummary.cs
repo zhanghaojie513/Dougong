@@ -36,6 +36,21 @@ public sealed record StartupSummary(
     int SkillCount,
     IReadOnlyList<SkillSourceGroup> SkillSources)
 {
+    /// <summary>
+    /// 是否拿得到工具清单。false 表示 <see cref="Tools"/> 为空是
+    /// **"读不到"而不是"没有"**。
+    /// </summary>
+    /// <remarks>
+    /// <b>两者必须分开报</b>：dispatcher 拿不到（接线异常）时若显示
+    /// "（无已注册工具）"，用户会去查工具注册配置——而问题在装配。
+    /// 面板的第一职责是**不说错话**。
+    ///
+    /// <para>
+    /// 用 <c>init</c> 属性而不是构造参数：加参数要改所有构造点，
+    /// 而默认值 <c>true</c> 对"正常路径"是对的。
+    /// </para>
+    /// </remarks>
+    public bool ToolsKnown { get; init; } = true;
 }
 
 /// <summary>

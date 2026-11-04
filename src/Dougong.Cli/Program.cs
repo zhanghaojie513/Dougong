@@ -754,7 +754,12 @@ public static class Program
             tools,
             mcp,
             skills.Count,
-            groups);
+            groups)
+        {
+            // dispatcher 拿不到时工具清单为空，但那是"读不到"不是"没有"。
+            // 面板据此显示 `? tools` 而不是 `0 tools`——后者是个确定的断言。
+            ToolsKnown = dispatcher is not null,
+        };
     }
 
     private static bool HandleCommand(

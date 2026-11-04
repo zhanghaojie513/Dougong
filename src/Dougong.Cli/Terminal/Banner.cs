@@ -82,11 +82,12 @@ public static class Banner
 
         switch (capability.Tier)
         {
-            case TerminalTier.Rich when summary is not null && Fits(height):
+            case TerminalTier.Rich when summary is not null:
                 // 有运行时清单时优先出面板——那是启动页的主体。
+                // **不在这里判高度**：PrintPanel 自己按实际内容行数决定，
+                // 放不下就返回 false，由下面几档接手。
                 if (PrintPanel(summary, width, height)) break;
-                PrintFull(version, model, protocol, workspace);
-                break;
+                goto case TerminalTier.Rich;
 
             case TerminalTier.Rich when width >= FullMinWidth && Fits(height):
                 PrintFull(version, model, protocol, workspace);
@@ -125,8 +126,16 @@ public static class Banner
     /// </summary>
     /// <returns>false 表示宽度不够画框，调用方退回无框版式。</returns>
     /// <remarks>
-    /// <b>高度不足时不画字标，但仍出面板</b>：清单是信息，字标是识别。
-    /// 两者冲突时先保信息——用户在 20 行终端上更需要知道"有哪些工具"。
+    /// <b>按实际内容行数判断，不用固定阈值。</b>面板高度取决于清单长度：
+    /// 技能多、MCP 多的时候会长很多。第一版只看 <c>height >= 24</c>，
+    /// 于是 24 行终端上输出了 25 行（字标 6 + 面板 19），
+    /// 把底部状态行和提示符挤出屏幕——而那个下限正是按"18 行形象"算的，
+    /// 换成长清单后就不成立了。
+    ///
+    /// <para>
+    /// <b>高度不足时先丢字标，再丢面板。</b>清单是信息，字标是识别；
+    /// 两者冲突时保信息。若连面板都放不下，返回 false 让调用方退回无框版式。
+    /// </para>
     /// </remarks>
     private static bool PrintPanel(StartupSummary summary, int width, int height)
     {
@@ -144,7 +153,19 @@ public static class Banner
             left, right, width);
         if (box is null) return false;
 
-        PrintWordmark(width, height);
+        // 盒子 + 末尾空行是必须占的；字标是"有位置才画"。
+        var required = box.Count + 1;
+
+        // 底部区域要留的行：状态栏 1 + 提示符 1 + 欢迎语 2 + 余量 1。
+        const int reservedBottom = 5;
+        if (height > 0 && required + reservedBottom > height) return false;
+
+        // 字标只在"画完它之后还剩得下盒子和底部"时才画。
+        var wordmarkRows = BigText.TryRender(width, height)?.Count ?? 0;
+        var canFitWordmark = height <= 0
+            || required + reservedBottom + (wordmarkRows > 0 ? wordmarkRows + 1 : 0) <= height;
+
+        if (canFitWordmark) PrintWordmark(width, height);
 
         foreach (var line in box) Output.Line(line);
 
