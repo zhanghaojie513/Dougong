@@ -76,13 +76,19 @@ public static class BigText
         int width, int height, int reservedRows = 0)
     {
         var unknown = height < 0;
+
+        // **两个排法都要把"末尾那个空行"算进去。**
+        // PrintWordmark 画完字标后会补一个 Output.Line()，那一行同样占屏幕。
+        // 单行排法 5 + 1 = 6；折行排法 5 + 1(中间空行) + 5 + 1(末尾空行) = 12。
+        //
+        // 第一版把折行写成 11（漏了末尾空行），于是 available=11 时字标被画出，
+        // 实际占 12 行——溢出 1 行。单行那条恰好对，所以这个错法不容易被发现。
         var singleHeight = GlyphHeight + 1;
         if (width >= SingleLineWidth
             && (unknown || height >= singleHeight + reservedRows))
             return Render(Wordmark);
 
-        // 折行：两段之间空一行。
-        var stackedHeight = GlyphHeight * 2 + 1;
+        var stackedHeight = GlyphHeight * 2 + 2;
         if (width >= StackedLineWidth
             && (unknown || height >= stackedHeight + reservedRows))
             return [.. Render(FirstHalf), string.Empty, .. Render(SecondHalf)];

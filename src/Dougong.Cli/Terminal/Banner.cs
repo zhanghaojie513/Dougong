@@ -86,23 +86,23 @@ public static class Banner
                 if (PrintPanel(summary, width, height)) break;
                 goto case TerminalTier.Rich;
 
-            case TerminalTier.Rich when width >= FullMinWidth && FitsIn(width, height, FullMinHeight):
+            case TerminalTier.Rich when width >= FullMinWidth && FitsIn(height, FullMinHeight):
                 PrintFull(version, model, protocol, workspace);
                 break;
 
-            case TerminalTier.Rich when width >= CompactMinWidth && FitsIn(width, height, StackedMinHeight):
+            case TerminalTier.Rich when width >= CompactMinWidth && FitsIn(height, StackedMinHeight):
                 // 宽够高够但排不下并排：形象在上、文字在下。
                 // 使用说明里明确要求"窄窗口将形象单独置于标题上方，不要强行并排"。
                 PrintStacked(version, model, protocol, workspace);
                 break;
 
             case TerminalTier.Rich or TerminalTier.Narrow
-                when width >= CompactMinWidth && FitsIn(width, height, CompactMinHeight):
+                when width >= CompactMinWidth && FitsIn(height, CompactMinHeight):
                 PrintCompact(version, model, protocol, workspace);
                 break;
 
             case TerminalTier.Rich or TerminalTier.Narrow
-                when width >= AsciiMinWidth && FitsIn(width, height, AsciiMinHeight):
+                when width >= AsciiMinWidth && FitsIn(height, AsciiMinHeight):
                 PrintAscii(version, model, protocol, workspace);
                 break;
 
@@ -119,33 +119,32 @@ public static class Banner
     }
 
     /// <summary>
-    /// 该档在给定高度下能否放下（**含字标与底部**）。
+    /// 该档的正文放得下吗（**不含字标**）。
     /// </summary>
-    /// <param name="width">终端宽度（决定字标几行）。</param>
-    /// <param name="height">终端高度；0 表示读不到，一律放行。</param>
-    /// <param name="required">该档正文占的行数（不含底部）。</param>
+    /// <param name="height">终端高度；0 或负数表示读不到，一律放行。</param>
+    /// <param name="required">
+    /// 该档正文占的行数，<b>已含底部两行</b>（见 <see cref="FullMinHeight"/> 等常量）。
+    /// </param>
     /// <remarks>
-    /// <b>字标与正文必须合起来判，不能各判各的。</b>分开判的后果实测过：
-    /// 双方都说"我放得下"，加起来却超——120×28 上字标 5 行 + full 正文 26 行
-    /// = 31 行，溢出 3 行。
+    /// <b>字标不参与这个判据，因为它"可丢"。</b>正文放得下就选中该档；
+    /// 字标在剩余高度不够时自己选择不画（<see cref="PrintWordmark"/>）。
+    /// 若把字标也算进来，55 列终端上字标折行要 12 行 + compact 要 31 行，
+    /// 判据一律不通过 → 五档全部跳过 → **屏幕一片空白**。那比没有字标糟得多。
     ///
     /// <para>
-    /// <b>但字标是"可丢"的</b>：正文放得下时优先保正文，字标在剩余高度不够时
-    /// 自动不画（<see cref="PrintWordmark"/> 里判）。所以这里的判据是
-    /// "正文 + 底部" 与 "正文 + 底部 + 字标" 两档：
-    /// 前者成立才会选中该档，后者决定字标画不画。
+    /// <b>但它们必须用同一套行数口径。</b>"字标不判"指的是"字标不在
+    /// required 里"，不是"字标可以超出去"——<see cref="PrintWordmark"/>
+    /// 收到的剩余高度就是 <c>height - required</c>，它据此刻自己画不画。
     /// </para>
     ///
     /// <para>
-    /// <b>高度未知（0）时一律放行</b>：那说明终端不报高度，而宽度已经证明
+    /// <b>高度未知时一律放行</b>：那说明终端不报高度，而宽度已经证明
     /// 它是真终端；因为读不到高度就降级是白丢信息。
     /// </para>
     /// </remarks>
-    private static bool FitsIn(int width, int height, int required)
+    private static bool FitsIn(int height, int required)
     {
         if (height <= 0) return true;
-
-        // 正文 + 底部都放得下，才选中该档。字标不参与——它是可丢的装饰。
         return height >= required;
     }
 

@@ -109,6 +109,7 @@ public static class TerminalChecks
         failures += Check("art-keeps-ragged-right-edge", ArtRaggedEdge);
         failures += Check("banner-drops-to-stacked-when-narrow", BannerStackedWhenNarrow);
         failures += Check("banner-drops-to-compact-when-short-terminal", BannerShortTerminal);
+        failures += Check("banner-picks-compact-when-there-is-room", BannerPicksCompactWhenRoom);
 
         // Idle status line must still show the context budget.
         failures += Check("idle-status-shows-context-capacity", IdleShowsCapacity);
@@ -2164,11 +2165,51 @@ public static class TerminalChecks
 
         // **降级不必降到带形象的那一档**：20 行里 full 要 28、stacked 要 34、
         // compact 要 31、ascii 要 21，全都放不下，于是正确落到单行 text。
-        // 第一版要求"必须有盲文"，把正确的降级判成了失败。
-        // 真正的不变量是"非空"，即没有整屏空白。
-        return output.Trim().Length > 0
+        // 断言"非空"太弱（几乎恒真），改成验降级后的那一档**确实带信息**：
+        // 版本号与工作区必须在，否则就是降级成了一句空话。
+        if (!output.Contains("dougong", StringComparison.Ordinal))
+            return "20 行终端的降级输出里没有版本行：" + output;
+
+        return output.Contains("/ws", StringComparison.Ordinal)
             ? null
-            : "20 行终端什么都没有输出";
+            : "20 行终端的降级输出里没有工作区路径：" + output;
+    }
+
+    /// <summary>
+    /// 降级不降过头：放得下 full 就选 full，放不下才降，且降级后仍有内容。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是高度判据的"两侧守卫"。</b>判据修得偏保守时所有档位都会被跳过、
+    /// 屏幕只剩一行标题——那看起来像"能用"，其实丢了全部形象；
+    /// 修得偏宽松时又会在矮终端上溢出。两个方向都要钉。
+    ///
+    /// <para>
+    /// 阈值：full 要 28 行、compact 要 31、stacked 要 34、ascii 要 21。
+    /// 原先这条检查用 34 行却断言"不该选 full"——那写反了：
+    /// 34 ≥ 28，**本来就该选 full**。现在的判据与常量一致。
+    /// </para>
+    /// </remarks>
+    private static string? BannerPicksCompactWhenRoom()
+    {
+        var fullFirstRow = YungongArt.Full[0].TrimEnd();
+
+        // 31 行：full(28) 放得下 → 必须选 full。
+        var at31 = CaptureBanner(new TerminalCapability(
+            TerminalTier.Rich, 120, IsRedirected: false, Height: 31));
+
+        if (!at31.Contains(fullFirstRow, StringComparison.Ordinal))
+            return "31 行放得下 full（28 行），却没选 full：" + at31;
+
+        // 24 行：full(28) 放不下 → 必须降级，且降级结果非空。
+        var at24 = CaptureBanner(new TerminalCapability(
+            TerminalTier.Rich, 120, IsRedirected: false, Height: 24));
+
+        if (at24.Contains(fullFirstRow, StringComparison.Ordinal))
+            return "24 行放不下 full（需要 28 行），却选了 full：" + at24;
+
+        return at24.Contains("dougong", StringComparison.Ordinal)
+            ? null
+            : "24 行既没选 full 也没降级出内容：" + at24;
     }
 
     /// <summary>Capture Banner.Print output under a given capability.</summary>
