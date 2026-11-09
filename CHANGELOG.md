@@ -19,6 +19,43 @@
 
 ---
 
+## [Unreleased]
+
+**回应桌面端 2026-11-10 的三个问题：真功能验证 + 定位澄清。**
+
+### Added
+
+- **两条"真功能 vs 假控件"检查**（`host-protocol-server` 套）：
+  - `permission-switch-affects-real-approval`：建真实审批链
+    （`PermissionPolicyApprover(PresetApprover(inner, presets))`）、
+    真派发一次带副作用的工具调用，数内层审批器被问几次。
+    **只查 `presets.Current` 不够**——那只能证明"对象改了"，
+    证不了"引擎读的是它"。
+  - `subagent-list-sees-real-registry`：比对工具实际持有的注册表
+    与协议层返回的列表，证明同源。两份注册表会让
+    `subagent/list` 永远为空而引擎在跑——"界面零个、额度在烧"。
+
+- **两条"判别器真的上线了"检查**（`host-protocol` 套）：
+  `every-command-serializes-its-method` / `every-event-serializes-its-method`。
+  原有的 `all-derived-types-register-discriminator` 只查特性登记，
+  而"登记了"不等于"序列化出来了"——同名属性撞掉判别字段、
+  自定义 converter 绕过多态、基类被改成非抽象，这三种都会**静默**
+  丢 `method`（不抛异常，对端当未知消息丢弃，界面"点了没反应"而日志空白）。
+  所以判据改成看**输出文本**，不看反射。
+
+### Changed
+
+- **`HostProtocolServer` 的定位写清楚了**：最小参考实现，
+  **不是给宿主复用的框架**。类 sealed、分发点是私有 switch，
+  即使去掉 sealed 也没用——分发逻辑不认识宿主的命令。
+  宿主有自己的协议命令时，正确做法是保留自己的服务端循环，
+  只复用契约类型与 `ProtocolMapping`。（桌面端实测：744 行 IpcServer
+  承载 `fs/*`、`models/*` 等命令，用不上本类。）
+- **`IHostSessionProvider` 的两个方法补了装配约束**：
+  `Permissions` 必须返回引擎审批真正在读的那一份，
+  `Subagents` 必须是构造三个工具时传进去的同一个实例。
+  接错会让 C5/C8 变成空转的开关。
+
 ## [0.1.19-alpha.1] — 2026-11-09
 
 **两件事：底部改为三行固定块；宿主契约补上权限预设与子 agent（C5 / C8）。**

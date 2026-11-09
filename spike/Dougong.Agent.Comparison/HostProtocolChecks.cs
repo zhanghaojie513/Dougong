@@ -34,6 +34,8 @@ public static class HostProtocolChecks
         failures += await CheckAsync("event-roundtrip-keeps-sequence", EventRoundTripAsync);
         failures += await CheckAsync("item-roundtrip-keeps-kind", ItemRoundTripAsync);
         failures += await CheckAsync("all-derived-types-register-discriminator", AllRegisteredAsync);
+        failures += await CheckAsync("every-command-serializes-its-method", CommandsCarryMethodAsync);
+        failures += await CheckAsync("every-event-serializes-its-method", EventsCarryMethodAsync);
         failures += await CheckAsync("unknown-method-is-explicitly-handled", UnknownMethodAsync);
         failures += await CheckAsync("shared-json-options-are-correct", SharedOptionsAsync);
 
@@ -347,6 +349,168 @@ public static class HostProtocolChecks
         return Task.FromResult(problems.Count == 0
             ? null
             : $"这些类型没有在基类上登记 [JsonDerivedType]：{string.Join("、", problems)}");
+    }
+
+    /// <summary>
+    /// **每条命令序列化出来的文本里必须真的有 <c>method</c> 字段。**
+    /// </summary>
+    /// <remarks>
+    /// <b>这条比"特性登记了没"更严，而且补的是一个真实盲区。</b>
+    /// 原来的 <c>all-derived-types-register-discriminator</c> 只查了
+    /// <c>[JsonDerivedType]</c> 特性存不存在——但"登记了"不等于
+    /// "真的序列化出来了"。中间还有一整类会静默失效的情形：
+    ///
+    /// <list type="bullet">
+    /// <item>派生类型上有个同名属性撞掉了判别字段
+    /// （<c>CommandFailedEvent.Method</c> 就撞过一次，
+    /// 那次是抛异常，属于运气好）；</item>
+    /// <item>某个类型被加了自定义 converter，绕开了多态的写入逻辑；</item>
+    /// <item>基类被改成非抽象，多态配置整体失效。</item>
+    /// </list>
+    ///
+    /// <para>
+    /// 这几种的**共同失败形态是静默的**：序列化不抛异常，只是不带
+    /// <c>method</c>。对端按"不认识的判别器"丢弃，界面上表现为
+    /// "点了没反应"而日志一片空白——最难查的那一类。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>所以判据必须是"看输出文本"，不能看反射。</b>
+    /// 反射看到的是意图，文本才是对端真正收到的东西。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> CommandsCarryMethodAsync() =>
+        EveryConcreteTypeCarriesMethodAsync(typeof(ClientCommand), typeof(ServerEvent));
+
+    /// <inheritdoc cref="CommandsCarryMethodAsync"/>
+    private static Task<string?> EventsCarryMethodAsync() =>
+        EveryConcreteTypeCarriesMethodAsync(typeof(ServerEvent), typeof(ClientCommand));
+
+    /// <summary>
+    /// 逐个具体类型构造实例、序列化成文本，断言文本里有正确的判别器。
+    /// </summary>
+    /// <param name="root">要验的多态根。</param>
+    /// <param name="otherRoot">另一个根（构造时用作排除）。</param>
+    private static Task<string?> EveryConcreteTypeCarriesMethodAsync(Type root, Type otherRoot)
+    {
+        var assembly = typeof(HostProtocolContract).Assembly;
+        var problems = new List<string>();
+
+        foreach (var type in assembly.GetExportedTypes())
+        {
+            if (type.IsAbstract || type.IsEnum) continue;
+
+            // 只验属于本根、且不属于另一个根的类型。
+            if (!root.IsAssignableFrom(type) || otherRoot.IsAssignableFrom(type)) continue;
+
+            var expected = DiscriminatorFor(root, type);
+            if (expected is null) continue;   // 由 all-derived-types 那条负责报
+
+            object? instance;
+            try
+            {
+                instance = BuildSample(type);
+            }
+            catch (Exception ex)
+            {
+                problems.Add($"{type.Name}（无法构造样本：{ex.GetType().Name}）");
+                continue;
+            }
+
+            if (instance is null)
+            {
+                problems.Add($"{type.Name}（无法构造样本）");
+                continue;
+            }
+
+            string json;
+            try
+            {
+                json = JsonSerializer.Serialize(instance, root, HostProtocolContract.Json);
+            }
+            catch (Exception ex)
+            {
+                problems.Add($"{type.Name}（序列化抛异常：{ex.Message}）");
+                continue;
+            }
+
+            // **必须有 method 字段，且值等于登记的判别器。**
+            if (!json.Contains($"\"method\":\"{expected}\"", StringComparison.Ordinal))
+                problems.Add($"{type.Name}（输出里没有 method=\"{expected}\"）→ {json}");
+        }
+
+        return Task.FromResult(problems.Count == 0
+            ? null
+            : "这些类型的线上文本缺判别器（对端会静默丢弃）：\n  "
+                + string.Join("\n  ", problems));
+    }
+
+    /// <summary>
+    /// 构造一个够用的样本实例。
+    /// </summary>
+    /// <remarks>
+    /// <b>用反射填必填属性，而不是手写 N 个构造</b>：这里的目标不是验业务语义，
+    /// 是"让它能序列化"。手写会让新增类型时这条检查自己漏掉——而漏掉
+    /// 恰恰是它要防的事。
+    ///
+    /// <para>
+    /// 填不出来的必填属性（例如某个自定义类型）会让序列化抛异常，
+    /// 那条也会被记成问题——**宁可报"无法构造"，不要静默跳过**。
+    /// </para>
+    /// </remarks>
+    private static object? BuildSample(Type type)
+    {
+        var instance = Activator.CreateInstance(type);
+        if (instance is null) return null;
+
+        foreach (var prop in type.GetProperties(
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+        {
+            if (!prop.CanWrite) continue;
+            if (prop.GetValue(instance) is not null) continue;   // 初始值够用
+
+            prop.SetValue(instance, SampleValue(prop.PropertyType));
+        }
+
+        return instance;
+    }
+
+    /// <summary>给一个类型造个不会导致序列化失败的占位值。</summary>
+    private static object? SampleValue(Type type)
+    {
+        if (type == typeof(string)) return "x";
+        if (type == typeof(bool)) return true;
+        if (type == typeof(int)) return 1;
+        if (type == typeof(long)) return 1L;
+        if (type == typeof(DateTimeOffset)) return FixedAt;
+
+        var underlying = Nullable.GetUnderlyingType(type);
+        if (underlying is not null) return null;
+
+        if (type.IsEnum) return Enum.GetValues(type).GetValue(0);
+
+        if (type.IsArray) return Array.CreateInstance(type.GetElementType()!, 0);
+
+        // 集合类：造空集合。
+        if (type.IsGenericType)
+        {
+            var def = type.GetGenericTypeDefinition();
+            if (def == typeof(IReadOnlyList<>) || def == typeof(List<>)
+                || def == typeof(IList<>))
+            {
+                return Activator.CreateInstance(typeof(List<>).MakeGenericType(
+                    type.GetGenericArguments()[0]));
+            }
+        }
+
+        // 嵌套的契约记录：递归造一个。
+        if (type.IsClass)
+        {
+            try { return BuildSample(type); }
+            catch (Exception) { return null; }
+        }
+
+        return null;
     }
 
     /// <summary>从基类的多态配置里查某个具体类型的判别器。</summary>

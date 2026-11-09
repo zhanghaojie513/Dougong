@@ -11,18 +11,39 @@ namespace Dougong.Hosting;
 /// 向输出流写 <see cref="ServerEvent"/>。**按行分帧的 JSON**。
 /// </summary>
 /// <remarks>
-/// <b>它不绑定任何具体宿主。</b>三条约束与 <c>Dougong.Acp</c> 的先例一致：
-/// <list type="number">
-/// <item><b>传输不绑</b>：入参是裸 <see cref="Stream"/>。stdio、socket、
-/// 进程内管道都能喂进来。</item>
-/// <item><b>实现不绑</b>：会话能力由 <see cref="IHostSessionProvider"/>
-/// 委托提供，服务端只认接口。桌面端、CLI、第三方各给各的。</item>
-/// <item><b>不引用具体宿主工程</b>：本文件只依赖 Agent（引擎接口）与
-/// HostProtocol（消息形状），不碰 Cli / Acp。</item>
-/// </list>
+/// <b>⚠️ 定位：最小参考实现，不是给宿主复用的框架。不要继承、不要指望扩展点。</b>
 ///
 /// <para>
-/// <b>首版只实现能跑通的能力，其余明确回 <see cref="CommandFailureReason.Unsupported"/></b>：
+/// <b>它封闭是有意的，而且封闭在两层</b>：类本身 <c>sealed</c>，
+/// 分发点 <see cref="ExecuteAsync"/> 是私有的 <c>switch</c>。
+/// 即使去掉 <c>sealed</c> 也没用——分发逻辑不认识宿主的命令，
+/// 那些命令会一律落到 <see cref="CommandFailureReason.Unsupported"/>。
+/// </para>
+///
+/// <para>
+/// <b>宿主有自己的协议命令时，正确做法是保留自己的服务端循环</b>：
+/// 只复用本包的两样东西——<c>Dougong.HostProtocol</c> 的契约类型，
+/// 以及 <see cref="ProtocolMapping"/> 的映射。本类的价值是
+/// "一个能跑通 5 条命令的最小完整例子"，照着抄即可。
+/// </para>
+///
+/// <para>
+/// <b>为什么不提供扩展点</b>：加一个命令注册点，就要同时回答
+/// "宿主命令怎么和内置命令共享状态（会话表、事件序号、订阅）"——
+/// 那是设计问题，不是一个 <c>delegate</c> 能解决的。而当前只有一个宿主
+/// 提出该需求，现在抽等于为单个场景设计框架。（2026-11-10 桌面端实测后
+/// 确认：他们有 744 行的 IpcServer，承载 <c>fs/*</c>、<c>models/*</c> 等
+/// 自家命令，用不上本类。）
+/// </para>
+///
+/// <para>
+/// <b>它不绑定任何具体宿主</b>：传输是裸 <see cref="Stream"/>（stdio、socket、
+/// 进程内管道都能喂）；会话能力由 <see cref="IHostSessionProvider"/> 注入；
+/// 本文件只依赖 Agent（引擎接口）与 HostProtocol（消息形状），不碰 Cli / Acp。
+/// </para>
+///
+/// <para>
+/// <b>只实现能跑通的能力，其余明确回 <see cref="CommandFailureReason.Unsupported"/></b>：
 /// 照 <c>AcpAgentHost</c> 的判据——"声明不支持"远好于"实现了但走不通"。
 /// 静默不响应是最坏的，客户端只能等到超时，用户永远看不到原因。
 /// </para>
@@ -783,11 +804,37 @@ public sealed class HostProtocolServer : IAsyncDisposable
 /// </remarks>
 public interface IHostSessionProvider
 {
-    /// <summary>取某个会话的权限预设；null 表示没有这个能力。</summary>
+    /// <summary>
+    /// 取某个会话的权限预设；null 表示没有这个能力。
+    /// </summary>
+    /// <remarks>
+    /// <b>⚠️ 必须返回"引擎审批真正在读的那一份"，否则 C5 是假控件。</b>
+    /// 服务端只是把 <c>permission/switch</c> 转成
+    /// <see cref="PermissionPresets.SwitchAsync"/>——它改的是**这个实例**。
+    /// 若引擎的审批链没有用同一个实例（见
+    /// <see cref="PresetApprover"/> 的装饰方式），界面会切成功、
+    /// 服务端也回成功，而工具该问的还是照问。
+    ///
+    /// <para>
+    /// 正确接法：宿主建**一个** <see cref="PermissionPresets"/>，
+    /// 既包进 <c>new PresetApprover(innerApprover, presets)</c> 交给
+    /// dispatcher，也从这里返回。
+    /// </para>
+    /// </remarks>
     /// <param name="sessionId">会话标识；null 表示全局默认。</param>
     PermissionPresets? Permissions(string? sessionId);
 
-    /// <summary>取某个会话的子 agent 注册表；null 表示没有这个能力。</summary>
+    /// <summary>
+    /// 取某个会话的子 agent 注册表；null 表示没有这个能力。
+    /// </summary>
+    /// <remarks>
+    /// <b>⚠️ 必须是构造 <c>SubagentTool</c> / <c>SubagentListTool</c> /
+    /// <c>SubagentResultTool</c> 时传进去的同一个实例。</b>
+    /// 引擎**不自己创建注册表**——它只是把宿主给的那份转交给工具。
+    /// 若这里返回另一个 <c>new SubagentRegistry()</c>，
+    /// <c>subagent/list</c> 会永远返回空列表，而引擎实际在跑子 agent：
+    /// "界面显示零个、额度却在烧"，这是最难排查的一致性问题。
+    /// </remarks>
     /// <param name="sessionId">会话标识。</param>
     SubagentRegistry? Subagents(string sessionId);
 }

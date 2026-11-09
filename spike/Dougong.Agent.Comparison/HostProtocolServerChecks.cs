@@ -43,6 +43,11 @@ public static class HostProtocolServerChecks
         failures += await CheckAsync("permission-not-broadcast-by-default", PermissionNoBroadcastAsync);
         failures += await CheckAsync("permission-broadcast-after-watch", PermissionBroadcastAsync);
 
+        // **这两条验的是"真功能 vs 假控件"**：服务端回成功不算数，
+        // 要真的影响引擎裁决与列表。
+        failures += await CheckAsync("permission-switch-affects-real-approval", PermissionAffectsApprovalAsync);
+        failures += await CheckAsync("subagent-list-sees-real-registry", SubagentListSeesRealRegistryAsync);
+
         Console.WriteLine(failures == 0
             ? "HOST-PROTOCOL-SERVER: ALL PASS"
             : $"HOST-PROTOCOL-SERVER: {failures} FAILURE(S)");
@@ -479,6 +484,114 @@ public static class HostProtocolServerChecks
             : $"广播里的状态不对：{b.State.CurrentKey}";
     }
 
+    /// <summary>
+    /// **切换预设必须真的改变引擎的审批裁决。**
+    /// </summary>
+    /// <remarks>
+    /// <b>这条防的是"C5 是假控件"</b>：界面上能切、服务端也回成功，
+    /// 但引擎实际行为不变。桌面端明确说过，那比不做更糟。
+    ///
+    /// <para>
+    /// <b>验法要端到端</b>：建一条真实的审批链
+    /// （<c>PermissionPolicyApprover(PresetApprover(inner, presets))</c>）、
+    /// 真的经 dispatcher 派发一个带副作用的工具调用，
+    /// 数内层审批器被问了几次。只查 <c>presets.Current</c> 是不够的
+    /// ——那只能证明"对象改了"，证不了"引擎读的是它"。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> PermissionAffectsApprovalAsync()
+    {
+        var counter = new CountingApprover();
+        var presets = PermissionPresets.CreateDefault(ApprovalPolicy.AskOnRisk);
+
+        // 与 CLI 相同的装饰顺序（Preset 在内层）。
+        var approver = new PermissionPolicyApprover(new PresetApprover(counter, presets));
+
+        using var gate = new ToolResourceGate();
+        var dispatcher = new ToolDispatcher(
+            approver, gate, "s1", "t1", "/tmp",
+            TimeSpan.FromMinutes(1), new WorkspacePathGuard("/tmp"), store: null);
+
+        dispatcher.Register(new SideEffectTool());
+
+        var args = JsonDocument.Parse(
+            """{"path":"/tmp/a.txt","content":"x"}""").RootElement.Clone();
+
+        // 1. AskOnRisk：应当问。
+        counter.Reset();
+        var first = await dispatcher.DispatchAsync(new ToolInvocation("i1", "probe_write", args));
+        if (counter.Asked == 0)
+            return $"AskOnRisk 下应当询问审批，但内层审批器一次都没被调用（{first.Outcome}）";
+
+        // 2. 经**协议命令**切到 unattended。
+        var (events, _) = await RunAsync(
+            new TestProvider(presets),
+            """{"method":"permission/switch","requestId":"r1","key":"unattended"}""");
+
+        if (events.OfType<PermissionPresetListedEvent>().FirstOrDefault() is not { } listed)
+            return "切换命令没有回状态：" + Describe(events);
+
+        if (listed.State.CurrentKey != "unattended")
+            return $"回的状态不对：{listed.State.CurrentKey}";
+
+        // 3. 同样的调用：不该再问。
+        counter.Reset();
+        var second = await dispatcher.DispatchAsync(new ToolInvocation("i2", "probe_write", args));
+
+        return counter.Asked == 0
+            ? null
+            : $"切到 unattended 之后内层审批器仍被问了 {counter.Asked} 次"
+                + $"（{second.Outcome}）——界面切了但引擎行为没变，这就是假控件";
+    }
+
+    /// <summary>
+    /// **协议层看到的子 agent 列表，必须是引擎实际在跑的那一份。**
+    /// </summary>
+    /// <remarks>
+    /// <b>这条防的是"两份注册表"</b>：宿主若在构造工具时 new 一个、
+    /// 在提供给协议层时又 new 一个，<c>subagent/list</c> 会永远返回空，
+    /// 而引擎实际在跑子 agent——"界面显示零个、额度却在烧"。
+    ///
+    /// <para>
+    /// 验法：从**工具实际持有的**那份注册表里读，与协议层返回的列表比。
+    /// 只查协议层自己返回什么是不够的——那证明不了它和引擎同源。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> SubagentListSeesRealRegistryAsync()
+    {
+        var provider = new TestProvider();
+
+        // 造一个工具，它持有的注册表就是 provider 会交出去的那份。
+        var registry = provider.Subagents("s1")!;
+        var tool = new SubagentListTool(registry);
+
+        // 往工具持有的注册表里放一个子 agent。
+        var handle = provider.CreateSubagent("sub-real", "引擎在跑", "turn-1");
+
+        var (events, _) = await RunAsync(provider,
+            """{"method":"subagent/list","requestId":"r1","sessionId":"s1"}""");
+
+        if (events.OfType<SubagentsListedEvent>().FirstOrDefault() is not { } listed)
+            return "没有回列表：" + Describe(events);
+
+        if (listed.Agents.All(a => a.Id != "sub-real"))
+            return "协议层返回的列表里没有引擎实际在跑的那个子 agent"
+                + "（说明宿主提供了两份不同的注册表）";
+
+        // 工具侧也应当看到同一个——这条是"同源"的直接证据。
+        var viaTool = await tool.ExecuteAsync(
+            new ToolInvocation("t1", SubagentListTool.ToolId,
+                JsonDocument.Parse("""{}""").RootElement.Clone()),
+            CancellationToken.None);
+
+        var text = viaTool.Content.GetRawText();
+        _ = handle;
+
+        return text.Contains("sub-real", StringComparison.Ordinal)
+            ? null
+            : "工具侧看不到同一个子 agent——工具与协议层用的不是同一份注册表";
+    }
+
     // ── 驱动 ──────────────────────────────────────────────────
 
     /// <summary>喂一串命令进去，收集服务端回的所有事件。</summary>
@@ -753,11 +866,49 @@ public static class HostProtocolServerChecks
         }
     }
 
+    /// <summary>数内层审批器被问了几次——验"预设切换真的影响裁决"用它。</summary>
+    private sealed class CountingApprover : IToolApprover
+    {
+        public int Asked { get; private set; }
+
+        public void Reset() => Asked = 0;
+
+        public ValueTask<ToolApprovalDecision> RequestApprovalAsync(
+            ToolApprovalRequest request, CancellationToken cancellationToken = default)
+        {
+            Asked++;
+            return ValueTask.FromResult(ToolApprovalDecision.Allow("检查用：一律批准。"));
+        }
+    }
+
+    /// <summary>一个有副作用的工具——审批链只对这类走完整判断。</summary>
+    private sealed class SideEffectTool : IAgentTool
+    {
+        public ToolDescriptor Descriptor { get; } = new(
+            "probe_write", "probe_write", "1.0.0", "检查用的写工具",
+            JsonDocument.Parse("""{"type":"object"}""").RootElement.Clone());
+
+        public ToolPermission DescribePermission(JsonElement arguments) =>
+            new(ToolAccess.Write, IsKnown: true,
+                Paths: ["/tmp/a.txt"], Commands: [], Domains: []);
+
+        public ToolExecutionPlan DescribeExecution(JsonElement arguments) =>
+            new(ToolConcurrency.Serial);
+
+        public ValueTask<AgentToolResult> ExecuteAsync(
+            ToolInvocation invocation, CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(new AgentToolResult(
+                JsonDocument.Parse("""{"ok":true}""").RootElement.Clone()));
+    }
+
     /// <summary>一个最小可用的会话能力提供方。</summary>
     private sealed class TestProvider : IHostSessionProvider
     {
-        private readonly PermissionPresets _presets =
-            PermissionPresets.CreateDefault(ApprovalPolicy.AskOnRisk);
+        /// <summary>可以注入宿主自己那份——验"协议层与引擎同源"时必须这样用。</summary>
+        private readonly PermissionPresets _presets;
+
+        public TestProvider(PermissionPresets? presets = null) =>
+            _presets = presets ?? PermissionPresets.CreateDefault(ApprovalPolicy.AskOnRisk);
 
         private readonly SubagentRegistry _subagents = new(maxDepth: 2, maxConcurrent: 4);
 
