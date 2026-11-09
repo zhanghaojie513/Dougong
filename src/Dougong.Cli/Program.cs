@@ -506,18 +506,64 @@ public static class Program
         // （真机验证时看到的正是这个），而 Hermes 的状态行从启动第一刻就在。
         activity.ShowIdle();
 
+        // **终止令牌**：Ctrl+C 与 `/exit` 都要能取消正在跑的回合。
+        //
+        // 在此之前 `runtime.RunAsync(request)` 没传令牌，而且**没有任何东西
+        // 订阅 Ctrl+C**——也就是说一轮跑起来之后，终端对键盘完全无响应。
+        // 实测（2026-11-09）：重试期间按 Ctrl+C，进程继续重试 30 多次不退出。
+        // 用户唯一的出路是杀进程。
+        //
+        // 为什么 Ctrl+C 不能只靠 Console.ReadLine 自己处理：回合是用
+        // `await foreach` 同步消费的，那段时间根本不回到 ReadLine，
+        // 所以按键没人读。必须先接住 Ctrl+C。
+        // **每轮换一个新令牌，而不是复用一个再 TryReset。**
+        //
+        // `CancellationTokenSource.TryReset()` 在已取消的源上**会失败**
+        // （返回 false，令牌仍是取消态），而这里没人检查返回值——
+        // 实测后果是：Ctrl+C 取消一轮之后，用户下一句话立刻失败。
+        // 换新实例没有这个陷阱，代价是一次分配。
+        CancellationTokenSource? abortCts = null;
+
+        // **第一阶段按 Ctrl+C = 取消当前回合**（而不是退出程序）。
+        //
+        // 这与用户直觉一致：转圈时按 Ctrl+C 的意思是"别干了"，不是"关掉"。
+        // 取消之后回到提示符，用户可以接着说话。
+        // 连按两次才退出：第二次时那一轮已经被取消过，`abortCts` 仍是
+        // 取消态，于是走 CancelKeyPress 的默认行为——终止进程。
+        ConsoleCancelEventHandler onCancelKey = (_, e) =>
+        {
+            var current = abortCts;
+
+            if (current is null || current.IsCancellationRequested)
+            {
+                // 已经在取消中（或没有令牌）：让默认行为接管（终止进程）。
+                // 这是"按两次才退出"的逃生阀。
+                return;
+            }
+
+            e.Cancel = true;    // 不让运行时直接杀进程
+            current.Cancel();
+
+            Output.Line();
+            Output.Muted("  已请求取消（再按一次 Ctrl+C 退出）");
+        };
+
+        Console.CancelKeyPress += onCancelKey;
+
         try
         {
         while (true)
         {
             // **提示符交给底部区域画，不是正文**。
             //
-            // Hermes 的状态行在提示符**上方**（`appLayout.tsx:420` 的
-            // StatusRulePane 在 `:424` 的输入 Box 之前）；而我们原来的提示符
-            // 是正文的一部分，于是状态行只能画在它下面——方向正好相反。
+            // 版式（用户 2026-11-05 要求）：
             //
-            // 交给区域之后它自己画两行：状态行占 `height-1`，提示符占 `height`。
-            // 返回 false 表示没接管（Plain 档 / 窄终端 / 高度未知），
+            //     活动行   ← 忙时才有内容，在输入行上方
+            //     > 输入行 ← 常驻
+            //     状态栏   ← 常驻，贴屏幕最底
+            //
+            // 交给区域之后，正文只在上半屏的滚动区里滚，底部三行不被波及。
+            // 返回 false 表示没接管（Plain 档 / 窄终端 / 高度不够），
             // 那时照旧由正文写 `> `——那条路 46 个套件与真机都验过。
             if (!liveRegion.BeginPrompt("> "))
                 Output.Text("> ");
@@ -526,12 +572,28 @@ public static class Program
             if (input is null) break;                       // EOF
             if (string.IsNullOrWhiteSpace(input)) continue;
 
+            // **把这一行写进正文转录**：输入行在底部块里，终端的回声留在
+            // 那一行上，下一轮重画就被覆盖了。用户看不见自己问过什么。
+            // 由区域把它重新写进正文区，并清空输入行。
+            liveRegion.CommitPrompt(input);
+
             if (input.StartsWith('/'))
             {
                 if (!HandleCommand(
                         input, messages, sessionPath, ledger, sessionId, composition,
                         swappable, models, ref activeProvider))
                 {
+                    // **先取消在跑的回合，再退出。**
+                    //
+                    // 顺序有讲究：下面是 break，会走到 finally 里的
+                    // `composition.Dispose()` → `kernelHost.DisposeAsync()`，
+                    // 那条路径要排空在途回合。不先取消就卡在那里等它自然结束
+                    // ——重试退避时最长十几秒，用户看到的是"按了退出没反应"。
+                    //
+                    // 取消之后那一轮立刻收到 OperationCanceledException，
+                    // 排空随即完成。
+                    abortCts?.Cancel();
+
                     // **不在分支里就地清理**：清理逻辑必须两条退出路径共用
                     // （`/exit` 与 EOF/Ctrl+D）。此前只有 `/exit` 清理，
                     // 而 Ctrl+D 直接 break 出去，MCP 客户端与内核宿主都被漏掉。
@@ -543,6 +605,11 @@ public static class Program
             turn++;
             // 只记长度不记内容：用户输入原文可能含敏感信息。
             Log.Debug($"turn-{turn} 开始，历史 {messages.Count} 条，输入 {input.Length} 字符");
+            // **每轮换一个新令牌**：上一轮被 Ctrl+C 取消过之后那个源
+            // 已处于取消态且不可复用（TryReset 会失败），换新的才干净。
+            abortCts?.Dispose();
+            abortCts = new CancellationTokenSource();
+
             var request = new AgentRunRequest(sessionId, $"turn-{turn}", messages, input);
             var assistantText = new StringBuilder();
             var reasoningText = new StringBuilder();
@@ -564,7 +631,7 @@ public static class Program
                 // 轮初沿用上一轮的值；SDK 的 ContextUsageReported 到达后覆盖。
                 activity.StartTurn();
 
-                await foreach (var evt in runtime.RunAsync(request))
+                await foreach (var evt in runtime.RunAsync(request, abortCts!.Token))
                 {
                     activity.OnEvent(evt);
 

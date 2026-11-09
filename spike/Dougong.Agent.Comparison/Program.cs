@@ -40,6 +40,8 @@ public static class Program
         "fileversion",
         "host-protocol",
         "host-protocol-extension",
+        "protocol-mapping",
+        "host-protocol-server",
         "prompt",
         "kernel-path",
         "kernel-process",
@@ -245,6 +247,14 @@ public static class Program
         // 宿主扩展多态类型：注册口、冻结检查、不丢 SDK 登记。
         if (args.FirstOrDefault() == "host-protocol-extension")
             return await HostProtocolExtensionChecks.RunAsync();
+
+        // 协议映射：引擎类型 → 契约形状。防"枚举加值、映射没跟上"的静默错。
+        if (args.FirstOrDefault() == "protocol-mapping")
+            return await ProtocolMappingChecks.RunAsync();
+
+        // 协议服务端端到端：真发 JSON 行、真读回来。防"契约有了、没人应答"。
+        if (args.FirstOrDefault() == "host-protocol-server")
+            return await HostProtocolServerChecks.RunAsync();
 
         // 用户偏好与安全开关：偏好进配置，安全开关在进程内冻结。
         if (args.FirstOrDefault() == "preference")

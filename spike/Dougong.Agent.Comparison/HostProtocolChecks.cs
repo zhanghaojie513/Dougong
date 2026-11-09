@@ -49,10 +49,193 @@ public static class HostProtocolChecks
         // 对象往返验证的是"我们写的序列化配置"，构造时漏填它抓不到。
         failures += await CheckAsync("models-listed-parses-from-wire-text", ModelsParsesFromWireAsync);
 
+        // C5 / C8：权限预设与子 agent 的契约（桌面端要的东西）。
+        // 这两条缺口曾经是"能力在引擎里、契约没暴露"，于是桌面端只能
+        // 自己引用 Dougong.Agent 再实现一遍——那会绕过唯一契约。
+        failures += await CheckAsync("permission-presets-wire-roundtrip", PermissionRoundTripAsync);
+        failures += await CheckAsync("permission-custom-preset-is-not-selectable", PermissionCustomAsync);
+        failures += await CheckAsync("subagents-wire-roundtrip", SubagentRoundTripAsync);
+        failures += await CheckAsync("subagent-outcome-is-carried-once", SubagentOutcomeOnceAsync);
+
         Console.WriteLine(failures == 0
             ? "HOST-PROTOCOL: ALL PASS"
             : $"HOST-PROTOCOL: {failures} FAILURE(S)");
         return failures;
+    }
+
+    /// <summary>权限预设状态必须能从线文本还原，包括"不可选的自定义档"。</summary>
+    /// <remarks>
+    /// <b>重点验 <c>Selectable</c> 这个布尔能过线</b>：它决定界面给不给点。
+    /// 序列化时被忽略掉的话，客户端会拿到默认 <c>false</c>，
+    /// 于是所有档位都变成不可点——而 JSON 本身看起来完全正常。
+    /// </remarks>
+    private static Task<string?> PermissionRoundTripAsync()
+    {
+        var original = new PermissionPresetListedEvent
+        {
+            Sequence = 7,
+            SessionId = "s1",
+            State = new PermissionPresetState(
+                "interactive", "交互式",
+                [
+                    new PermissionPresetInfo("interactive", "交互式", "写操作要确认", true),
+                    new PermissionPresetInfo("unattended", "无人值守", null, true),
+                ]),
+        };
+
+        var json = JsonSerializer.Serialize<ServerEvent>(original, HostProtocolContract.Json);
+        if (!json.Contains("\"method\":\"permission/listed\"", StringComparison.Ordinal))
+            return Task.FromResult<string?>($"判别器不对：{json}");
+
+        var back = JsonSerializer.Deserialize<ServerEvent>(json, HostProtocolContract.Json)
+            as PermissionPresetListedEvent;
+
+        if (back is null) return Task.FromResult<string?>("反序列化得到 null 或错类型");
+        if (back.State.CurrentKey != "interactive") return Task.FromResult<string?>("当前键丢失");
+        if (back.State.CurrentName != "交互式") return Task.FromResult<string?>("当前显示名丢失");
+        if (back.State.Options.Count != 2) return Task.FromResult<string?>($"选项数不对：{back.State.Options.Count}");
+        if (!back.State.Options[0].Selectable) return Task.FromResult<string?>("Selectable=true 丢失");
+        if (back.State.Options[1].Description is not null)
+            return Task.FromResult<string?>("null 的 Description 不该变成空串");
+
+        // 命令方向也要过。
+        var switchJson = JsonSerializer.Serialize<ClientCommand>(
+            new SwitchPermissionPresetCommand { RequestId = "r", SessionId = "s1", Key = "unattended" },
+            HostProtocolContract.Json);
+
+        var switchBack = JsonSerializer.Deserialize<ClientCommand>(switchJson, HostProtocolContract.Json)
+            as SwitchPermissionPresetCommand;
+
+        return Task.FromResult(switchBack?.Key == "unattended"
+            ? null
+            : $"切换命令往返失败：{switchJson}");
+    }
+
+    /// <summary>
+    /// 派生的 <c>custom</c> 档必须是**不可选**的。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条防的是一个会让界面抛异常的细节</b>：<c>custom</c> 是"当前值不匹配任何
+    /// 具名预设"时的派生显示值，不是切换目标。若把它当可选项发给客户端，
+    /// 用户点下去会得到"未知预设"——而他明明是从界面上点来的。
+    /// </remarks>
+    private static Task<string?> PermissionCustomAsync()
+    {
+        // 构造一个"当前策略不匹配任何预设"的状态，模拟引擎的 Options() 输出。
+        var state = new PermissionPresetState(
+            "custom", "自定义",
+            [
+                new PermissionPresetInfo("interactive", "交互式", null, true),
+                new PermissionPresetInfo("custom", "自定义", "由宿主直接设置", false),
+            ]);
+
+        var json = JsonSerializer.Serialize<ServerEvent>(
+            new PermissionPresetListedEvent { Sequence = 1, State = state },
+            HostProtocolContract.Json);
+
+        var back = JsonSerializer.Deserialize<ServerEvent>(json, HostProtocolContract.Json)
+            as PermissionPresetListedEvent;
+
+        if (back is null) return Task.FromResult<string?>("反序列化失败");
+
+        var custom = back.State.Options.FirstOrDefault(o => o.Key == "custom");
+        if (custom is null) return Task.FromResult<string?>("custom 档没上线——界面无法显示'当前是自定义'");
+
+        return Task.FromResult(custom.Selectable
+            ? "custom 被标成可选——用户点下去会得到'未知预设'"
+            : null);
+    }
+
+    /// <summary>子 agent 列表必须能从线文本还原，状态枚举按名字而非序号。</summary>
+    private static Task<string?> SubagentRoundTripAsync()
+    {
+        var original = new SubagentsListedEvent
+        {
+            Sequence = 3,
+            SessionId = "s1",
+            Agents =
+            [
+                new SubagentInfo(
+                    "sub-abc", "查调用链", SubagentRunState.Running,
+                    FixedAt, "turn-1", ToolRounds: 2),
+                new SubagentInfo(
+                    "sub-def", "收重复实现", SubagentRunState.Completed,
+                    FixedAt, ParentTurnId: null, ToolRounds: 5),
+            ],
+        };
+
+        var json = JsonSerializer.Serialize<ServerEvent>(original, HostProtocolContract.Json);
+        if (!json.Contains("\"method\":\"subagent/listed\"", StringComparison.Ordinal))
+            return Task.FromResult<string?>($"判别器不对：{json}");
+
+        // **必须是名字而不是数字**：枚举按序号传时，两侧枚举加值的顺序
+        // 一旦不同，同一个数字在两端就表示不同的状态——静默错。
+        if (!json.Contains("\"running\"", StringComparison.Ordinal))
+            return Task.FromResult<string?>($"状态没有按名字序列化：{json}");
+
+        var back = JsonSerializer.Deserialize<ServerEvent>(json, HostProtocolContract.Json)
+            as SubagentsListedEvent;
+
+        if (back is null) return Task.FromResult<string?>("反序列化失败");
+        if (back.Agents.Count != 2) return Task.FromResult<string?>($"条目数不对：{back.Agents.Count}");
+        if (back.Agents[0].State != SubagentRunState.Running)
+            return Task.FromResult<string?>($"状态错：{back.Agents[0].State}");
+        if (back.Agents[0].ParentTurnId != "turn-1")
+            return Task.FromResult<string?>("ParentTurnId 丢失——界面无法把子 agent 归到对应回合");
+        if (back.Agents[0].StartedAt != FixedAt)
+            return Task.FromResult<string?>("StartedAt 丢失——界面无法显示'跑了多久'");
+        if (back.Agents[1].ToolRounds != 5)
+            return Task.FromResult<string?>("ToolRounds 丢失");
+
+        return Task.FromResult<string?>(null);
+    }
+
+    /// <summary>取结果的响应必须带 outcome，且"还没好"时明确为 null。</summary>
+    /// <remarks>
+    /// <b>"还没好"不能靠"缺字段"表达</b>：<c>DefaultIgnoreCondition.WhenWritingNull</c>
+    /// 会让 null 字段整个消失。客户端必须能区分"这个字段没有"与"这次没有结果"——
+    /// 所以检查直接验：反序列化出来是 null（缺字段与显式 null 在语义上一致），
+    /// 但 <see cref="SubagentsListedEvent.Agents"/> 必须仍然完整，
+    /// 客户端据此知道"它在跑，还没结果"。
+    /// </remarks>
+    private static Task<string?> SubagentOutcomeOnceAsync()
+    {
+        var withOutcome = new SubagentsListedEvent
+        {
+            Sequence = 4,
+            SessionId = "s1",
+            Agents = [],
+            Outcome = new SubagentOutcome("sub-abc", SubagentRunState.Completed, "结论正文", null, 3),
+        };
+
+        var json = JsonSerializer.Serialize<ServerEvent>(withOutcome, HostProtocolContract.Json);
+        var back = JsonSerializer.Deserialize<ServerEvent>(json, HostProtocolContract.Json)
+            as SubagentsListedEvent;
+
+        if (back?.Outcome is null) return Task.FromResult<string?>("Outcome 丢失");
+        if (back.Outcome.Text != "结论正文") return Task.FromResult<string?>("结果正文丢失");
+        if (back.Outcome.State != SubagentRunState.Completed)
+            return Task.FromResult<string?>($"结果状态错：{back.Outcome.State}");
+
+        // 没有结果时：Outcome 必须是 null，而 Agents 仍然给出（含 Running 那条）。
+        var stillRunning = new SubagentsListedEvent
+        {
+            Sequence = 5,
+            SessionId = "s1",
+            Agents = [new SubagentInfo("sub-x", "还在跑", SubagentRunState.Running, FixedAt, "t", null)],
+            Outcome = null,
+        };
+
+        var json2 = JsonSerializer.Serialize<ServerEvent>(stillRunning, HostProtocolContract.Json);
+        var back2 = JsonSerializer.Deserialize<ServerEvent>(json2, HostProtocolContract.Json)
+            as SubagentsListedEvent;
+
+        if (back2 is null) return Task.FromResult<string?>("第二轮反序列化失败");
+        if (back2.Outcome is not null) return Task.FromResult<string?>("没有结果时 Outcome 不该有值");
+
+        return Task.FromResult(back2.Agents.Count == 1 && back2.Agents[0].State == SubagentRunState.Running
+            ? null
+            : "没跑完时状态必须是 Running，且该 agent 仍要在列表里");
     }
 
     /// <summary>命令往返后判别字段必须保留，否则服务端分不出是哪种命令。</summary>

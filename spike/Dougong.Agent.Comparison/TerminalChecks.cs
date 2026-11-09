@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Dougong.Agent;
 using Dougong.Cli.Terminal;
 
@@ -72,6 +73,7 @@ public static class TerminalChecks
         failures += Check("tui-switch-disables-region", TuiSwitchDisables);
         failures += Check("live-region-write-is-atomic", LiveRegionAtomic);
         failures += Check("vt-replay-shows-activity-then-clean", VtReplayActivity);
+        failures += Check("anchored-region-clears-on-dispose", AnchoredClearsOnDispose);
         failures += Check("vt-replay-body-not-overwritten", VtReplayBodyIntact);
         failures += Check("vt-replay-shrink-leaves-no-ghost", VtReplayShrink);
         failures += Check("vt-replay-streaming-keeps-prompt-line", VtReplayPromptLine);
@@ -87,12 +89,21 @@ public static class TerminalChecks
         failures += Check("reasoning-does-not-downgrade-streaming", ReasoningKeepsStreaming);
         failures += Check("agent-phase-tracker-is-usable-standalone", TrackerStandalone);
 
-        // P4：单行状态行（忙闲共用槽位）+ 渐进披露。
+        // P4：两槽位（活动行 / 状态栏）+ 渐进披露。
+        // 注：检查名沿用旧名，避免外部脚本与文档引用失效；
+        // 断言已改为"两行必须是两行"，见各方法上的注释。
         failures += Check("status-is-single-line-when-busy", SingleLineBusy);
         failures += Check("status-persists-when-idle", StatusPersistsIdle);
         failures += Check("status-drops-whole-tail-segments-not-truncates", TailDroppedWhole);
         failures += Check("status-uses-vertical-bar-separator", VerticalBar);
         failures += Check("anchored-region-survives-body-scroll", RegionSurvivesScroll);
+
+        // 三行版式（用户 2026-11-05 的版式要求）。
+        // 上面那条验证"块不被正文推走"，下面两条验证"块内部的行序正确"：
+        // 一条查真实渲染出来的行相对次序，一条查三行分别落在哪个绝对行。
+        failures += Check("activity-line-sits-above-input-line", ActivityAboveInput);
+        failures += Check("bottom-block-rows-are-stable", BlockRowsStable);
+        failures += Check("turn-elapsed-is-shown-exactly-once", ElapsedShownOnce);
 
         // P5: theme. Default must be monochrome -- the design doc forbids gold.
         failures += Check("accent-is-not-gold-by-default", AccentNotGold);
@@ -102,6 +113,8 @@ public static class TerminalChecks
         // The idle status line must exist before the first turn, not only after one.
         failures += Check("idle-status-line-shows-before-first-turn", IdleBeforeFirstTurn);
         failures += Check("startup-actually-calls-show-idle", StartupCallsShowIdle);
+        failures += Check("turn-runs-with-a-cancellable-token", TurnAcceptsCancellation);
+        failures += Check("ctrl-c-aborts-turn-not-process", CtrlCBindsAbortToken);
 
         // P2: yungong art + four-tier banner.
         failures += Check("art-rows-match-spec", ArtRowsMatchSpec);
@@ -236,19 +249,18 @@ public static class TerminalChecks
     }
 
     /// <summary>
-    /// 锚定模式下：提示符占 <c>height-1</c>，状态栏贴屏幕最后一行 <c>height</c>。
+    /// 锚定模式下三行块的位置：活动行 <c>height-2</c>、输入行 <c>height-1</c>、
+    /// 状态栏贴屏幕最后一行 <c>height</c>。
     /// </summary>
     /// <remarks>
-    /// <b>方向是"提示符在上、状态栏最底"。</b>方案文档
-    /// <c>tui-fullscreen-hermes-parity-plan.md</c> §2.3 写的是反的
-    /// （"状态行默认在输入行上方"），照它做出来的版本被用户当场指出：
-    /// Hermes 的实际版式是 活动行 → 输入框 → 分隔线 → 状态栏（最底）。
+    /// <b>版式是用户 2026-11-05 指定的</b>：活动行（正在发生什么）在输入行**上方**，
+    /// 状态栏（常驻参考）贴最底。P4 阶段把活动行与状态栏合并成一行贴底，
+    /// 于是"正在忙"跑到了比输入行更低的位置——用户当场指出。
     ///
     /// <para>
-    /// <b>为什么读原始控制序列而不是回放屏幕。</b>本文件里的屏幕模拟器
-    /// 不还原 <see cref="LiveRegion"/> 的定位方式，把区域输出灌进去得到的是
-    /// 空屏——那会让这条检查**静默空转**。控制序列是能给出的最小断言：
-    /// 状态栏定位到的行号必须等于 <c>height</c>，且大于提示符的行号。
+    /// <b>为什么读原始控制序列而不是回放屏幕。</b>这条要看的是"块被定位到哪一行"，
+    /// 而回放屏幕会把后来的重画覆盖到同一格上，看不出定位意图。
+    /// 控制序列是能给出的最小断言：三行的行号必须严格递增且贴底。
     /// </para>
     /// </remarks>
     private static string? PromptAboveStatusBar()
@@ -257,25 +269,36 @@ public static class TerminalChecks
 
         var output = CaptureRegionOutput(cap, region =>
         {
-            region.SetLines(["STATUSBAR"]);
+            region.SetActivity("ACTIVITYMARK");
+            region.SetStatus("STATUSBARMARK");
             region.BeginPrompt("PROMPTMARK");
         });
 
-        var statusRow = RowOf(output, "STATUSBAR");
+        var activityRow = RowOf(output, "ACTIVITYMARK");
+        var statusRow = RowOf(output, "STATUSBARMARK");
         var promptRow = RowOf(output, "PROMPTMARK");
 
+        if (activityRow is null) return "活动行从未被定位：" + DescribeControl(output);
         if (statusRow is null) return "状态栏从未被定位：" + DescribeControl(output);
         if (promptRow is null) return "提示符从未被定位：" + DescribeControl(output);
 
+        // **核心断言**：活动行必须在提示符上方。这正是用户报的那个缺陷。
+        if (activityRow >= promptRow)
+            return $"活动行在第 {activityRow} 行、提示符在第 {promptRow} 行——"
+                + "活动行必须在**输入行上方**";
+
         if (promptRow >= statusRow)
-            return $"提示符在第 {promptRow} 行、状态栏在第 {statusRow} 行——提示符必须在**上方**";
+            return $"提示符在第 {promptRow} 行、状态栏在第 {statusRow} 行——提示符必须在状态栏上方";
 
         if (statusRow != cap.Height)
             return $"状态栏必须贴在最后一行（第 {cap.Height} 行），实际第 {statusRow} 行";
 
-        return promptRow == cap.Height - 1
+        if (promptRow != cap.Height - 1)
+            return $"提示符必须在第 {cap.Height - 1} 行，实际第 {promptRow} 行";
+
+        return activityRow == cap.Height - 2
             ? null
-            : $"提示符必须在第 {cap.Height - 1} 行，实际第 {promptRow} 行";
+            : $"活动行必须在第 {cap.Height - 2} 行，实际第 {activityRow} 行";
     }
 
     /// <summary>
@@ -351,62 +374,50 @@ public static class TerminalChecks
     /// 提示符擦掉——用户看到的是"没有提示符，光标孤零零停在底部"。
     ///
     /// <para>
-    /// 正确的划分：**提示符是底部区域的内容，由区域自己画**。
-    /// `Erase` 只清状态行，提示符那一行由 `_promptRows` 单独记账，
-    /// 只在 `Clear`/`Dispose` 时清除。
+    /// 正确的划分：**提示符是底部区域的内容，由区域自己画**；
+    /// 输入期间任何写正文的调用都必须先把光标交还正文区，
+    /// 绝不能糊在输入行上。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>断言用 VT 回放而不是查控制序列</b>：新版布局里正文不再擦除重画
+    /// （正文被滚动区限制，碰不到底部三行），所以"有没有擦提示符"
+    /// 已经不是一个有意义的问法。真正要证明的是**最终屏幕上提示符还在、
+    /// 正文落在它上方**——那正是用户能看到的东西。
     /// </para>
     /// </remarks>
     private static string? PromptSurvivesErase()
     {
         var cap = new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: false, Height: 24);
 
-        // 1 与 2 在同一段重定向里做：区域的 **Dispose 也会写控制序列**，
-        // 必须一并被捕获，否则会泄到真实终端（第一版就是绿的检查在污染屏幕）。
-
-        // 2. **接管后 Erase 不能擦提示符那一行。**
-        //
-        // 第一版这条检查是空转的：它只验了 BeginPrompt 的返回值，
-        // 中间那段 Console.SetOut(original) 等于什么都没做。
-        // 现在真读 LiveRegion 实际吐出的控制序列。
-        //
-        // 提示符在 height-1，状态栏在 height（Hermes 版式，状态栏最底）。
-        // 所以断言是**双向**的：提示符行不许出现定位，状态栏行必须被清。
-        // 只查"没擦提示符"是不够的——Erase 整个不工作也能通过。
-        //
-        // **必须切出 Erase 那一段再断言**：Dispose 会清提示符行，那是正确行为，
-        // 和 Erase 混在同一个字符串里就分不开了——第一版正是这么误报的。
-        // 两个哨兵夹住 `RunExclusive`，只取中间那一段。
-        const string Before = "@@BEFORE@@";
-        const string After = "@@AFTER@@";
-        var captured = CaptureRegionOutput(cap, region =>
+        var (live, _) = ReplayRegion(cap, region =>
         {
-            // 1. 锚定时必须接管。
-            if (!region.BeginPrompt("> "))
+            if (!region.BeginPrompt("PROMPTMARK"))
                 throw new InvalidOperationException(
                     "锚定模式下 BeginPrompt 应接管提示符，实际返回 false");
 
-            region.SetLines(["status"]);
-            Console.Write(Before);
-            region.RunExclusive(() => { });
-            Console.Write(After);
+            // 输入期间写正文（例如后台任务打印）：必须回到正文区，不能糊在输入行。
+            region.RunExclusive(() => Output.Control("正文一\n"));
+            region.RunExclusive(() => Output.Control("正文二\n"));
         });
 
-        var start = captured.IndexOf(Before, StringComparison.Ordinal);
-        var end = captured.IndexOf(After, StringComparison.Ordinal);
-        if (start < 0 || end <= start)
-            return "哨兵丢失，无法切出 Erase 段：" + DescribeControl(captured);
+        var lines = live.Text().Split('\n');
 
-        var erased = captured[(start + Before.Length)..end];
+        var promptIndex = Array.FindIndex(lines, l => l.Contains("PROMPTMARK", StringComparison.Ordinal));
+        if (promptIndex < 0) return "输入期间写正文之后提示符消失了：\n" + live.Dump();
 
-        var promptRow = $"\u001b[{cap.Height - 1};1H";
-        if (erased.Contains(promptRow, StringComparison.Ordinal))
-            return $"Erase 定位到了提示符行（第 {cap.Height - 1} 行）：{DescribeControl(erased)}";
+        var bodyIndex = Array.FindIndex(lines, l => l.Contains("正文二", StringComparison.Ordinal));
+        if (bodyIndex < 0) return "正文没写出来：\n" + live.Dump();
 
-        var statusRow = $"\u001b[{cap.Height};1H";
-        if (!erased.Contains(statusRow, StringComparison.Ordinal))
-            return $"Erase 没有清状态栏行（第 {cap.Height} 行）：{DescribeControl(erased)}";
+        if (bodyIndex >= promptIndex)
+            return $"正文写到了第 {bodyIndex} 行、提示符在第 {promptIndex} 行——正文必须在上方：\n"
+                + live.Dump();
 
-        // 3. 非锚定时不接管，调用方照旧写。
+        if (promptIndex != cap.Height - 2)
+            return $"提示符应停在第 {cap.Height - 1} 行（0-based {cap.Height - 2}），实际 {promptIndex}：\n"
+                + live.Dump();
+
+        // 非锚定时不接管，调用方照旧写。
         var plain = new TerminalCapability(TerminalTier.Plain, 0, IsRedirected: true);
         using var plainRegion = LiveRegion.Create(plain);
         return plainRegion.BeginPrompt("> ")
@@ -1045,13 +1056,13 @@ public static class TerminalChecks
         return null;
     }
 
-    /// <summary>状态栏同样不能溢出（模型名 + 中文 + 进度条 + 耗时四段拼起来更长）。</summary>
+    /// <summary>状态栏同样不能溢出（模型名 + 中文 + 进度条拼起来更长）。</summary>
     private static string? StatusAccountsWideChars()
     {
         foreach (var width in new[] { 40, 60, 80, 120 })
         {
-            var line = StatusLine.RenderStatus("深度求索-很强的模型名字", 120_000, 200_000,
-                TimeSpan.FromSeconds(90), width);
+            var line = StatusLine.RenderStatus(
+                "深度求索-很强的模型名字", 120_000, 200_000, width);
 
             var display = DisplayWidthOf(line);
             if (display > width)
@@ -1211,7 +1222,7 @@ public static class TerminalChecks
         {
             Console.SetOut(buffer);
             using var region = Dougong.Cli.Terminal.LiveRegion.Create(capability, force: true);
-            region.SetLines(["a\U0001F600b"]);
+            region.SetActivity("a\U0001F600b");
         }
         finally
         {
@@ -1301,7 +1312,7 @@ public static class TerminalChecks
                     return $"能力 {capability} 不应激活区域";
 
                 region.SetActivity("  思考中…");
-                region.SetLines(["一行", "两行"]);
+                region.SetStatus("  模型 · 1s");
                 region.RunExclusive(() => { });
                 region.Clear();
             }
@@ -1330,14 +1341,16 @@ public static class TerminalChecks
     /// 重写擦除算法（改用 save/restore 光标）之后它立刻误报。
     /// 改成 VT 回放断言屏幕内容：不管用什么序列，清完就该是空的。
     /// 与 <c>vt-replay-shrink-leaves-no-ghost</c> 的区别是这里走 2 → 0
-    /// （整块清空），那条走 2 → 1（缩行）。
+    /// （整块清空），那条走 2 → 1（少画一行）。
     /// </remarks>
     private static string? LiveRegionClears()
     {
         var (live, _) = ReplayRegion(rich =>
         {
-            rich.SetLines(["  思考中…", "  模型 · 1s"]);
-            rich.SetLines([]);
+            rich.SetActivity("  思考中…");
+            rich.SetStatus("  模型 · 1s");
+            rich.SetActivity(null);
+            rich.SetStatus(null);
         });
 
         var text = live.Text();
@@ -1453,64 +1466,122 @@ public static class TerminalChecks
     }
 
     /// <summary>
-    /// 正文写入不能被区域覆盖——这是底部固定区域最容易出的问题。
+    /// **锚定模式下 Dispose 必须把底部三行擦干净。**
     /// </summary>
     /// <remarks>
-    /// <b>这条不再要求"写入后活动行仍可见"</b>：写入路径现在是"擦→写"，
-    /// 由刷新循环在下一个 tick 重画到新位置（写完后立刻在旧位置重画，
-    /// 会因为光标已被正文推走而留下残影——真机实测过）。
-    /// 所以这里只验证两件事：正文完整、没有区域压在正文上。
-    /// 区域自身的可见性由 <c>vt-replay-shows-activity-then-clean</c> 负责。
+    /// <b>这条抓的是一个真实缺陷</b>：<c>Clear()</c> 原先只调相对模式的擦除，
+    /// 而那个方法在锚定模式下直接返回。于是退出时底部三行原样留在屏幕上——
+    /// 用户回到 shell 之后还能看到「重试中…」。
+    ///
+    /// <para>
+    /// <b>为什么原有的 <c>vt-replay-shows-activity-then-clean</c> 没抓到</b>：
+    /// 它用默认能力（不带高度）建区域，走的是**相对模式**——那条路径的擦除
+    /// 一直是好的。锚定路径完全不同，需要单独的检查。
+    /// </para>
+    ///
+    /// <para>
+    /// 判据是**三行都为空**，不只是"活动行没了"：状态栏与输入行同样会残留，
+    /// 而只查活动行会让"少清一行"通过。
+    /// </para>
+    /// </remarks>
+    private static string? AnchoredClearsOnDispose()
+    {
+        var cap = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false, Height: 16);
+
+        var (_, afterDispose) = ReplayRegion(cap, rich =>
+        {
+            rich.SetActivity("ACTIVITYMARK");
+            rich.SetStatus("STATUSMARK");
+            rich.BeginPrompt("PROMPTMARK");
+        });
+
+        var lines = afterDispose.Text().Split('\n');
+
+        var waste = new List<string>();
+        foreach (var marker in new[] { "ACTIVITYMARK", "STATUSMARK", "PROMPTMARK" })
+        {
+            if (afterDispose.Text().Contains(marker, StringComparison.Ordinal)) waste.Add(marker);
+        }
+
+        return waste.Count == 0
+            ? null
+            : $"退出后底部块仍留在屏幕上（{string.Join("、", waste)}）：\n" + afterDispose.Dump();
+    }
+
+    /// <summary>
+    /// 正文写入不能被区块覆盖，且必须落在活动行**上方**。
+    /// </summary>
+    /// <remarks>
+    /// <b>判据变了，因为结构变了</b>：旧实现是"擦→写→下一 tick 重画"，
+    /// 所以只能验"正文完整"。新实现里正文被 DECSTBM 限制在 <c>1..height-3</c>，
+    /// 块在区外，两者根本碰不到——于是可以断言更强的性质：
+    /// <b>正文的每一行都在活动行上方</b>。
     /// </remarks>
     private static string? VtReplayBodyIntact()
     {
-        var (live, _) = ReplayRegion(rich =>
+        // **必须用锚定能力**：相对模式（高度未知）下块画在光标下方，
+        // 每次写正文前都要把它擦掉让位，所以写完正文时块本来就不在。
+        // 真实富终端走的是锚定路径，检查必须验那条。
+        var cap = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false, Height: 16);
+
+        var (live, _) = ReplayRegion(cap, rich =>
         {
-            rich.SetActivity("  思考中…");
+            rich.SetActivity("ACTIVITYMARK");
             rich.RunExclusive(() => Output.Control("正文第一行\n"));
-            rich.RunExclusive(() => Output.Control("正文第二行"));
+            rich.RunExclusive(() => Output.Control("正文第二行\n"));
         });
 
-        var text = live.Text();
+        var lines = live.Text().Split('\n');
 
-        if (!text.Contains("正文第一行", StringComparison.Ordinal))
+        if (!live.Text().Contains("正文第一行", StringComparison.Ordinal))
             return "正文第一行丢失：\n" + live.Dump();
 
-        if (!text.Contains("正文第二行", StringComparison.Ordinal))
+        if (!live.Text().Contains("正文第二行", StringComparison.Ordinal))
             return "正文第二行丢失：\n" + live.Dump();
 
-        // 区域若还可见，绝不能压在正文行上。
-        var firstLine = text.Split('\n')[0];
-        if (firstLine.Contains("思考中", StringComparison.Ordinal))
-            return "活动行覆盖了第一行正文：\n" + live.Dump();
+        var activityIndex = Array.FindIndex(lines, l => l.Contains("ACTIVITYMARK", StringComparison.Ordinal));
+        if (activityIndex < 0) return "活动行不见了：\n" + live.Dump();
+
+        var secondBody = Array.FindIndex(lines, l => l.Contains("正文第二行", StringComparison.Ordinal));
+        if (secondBody >= activityIndex)
+            return $"正文写到了第 {secondBody} 行、活动行在第 {activityIndex} 行——正文必须在活动行上方：\n"
+                + live.Dump();
 
         return null;
     }
 
     /// <summary>
-    /// 区域从两行缩到一行时，第二行必须真的消失。
+    /// 活动行从有到无时，那一行必须真的消失而不是留下鬼影。
     /// </summary>
     /// <remarks>
-    /// 这是 LiveRegion 里最难写对的一处：只写新内容不清旧行，
-    /// 第一行会被覆盖而第二行会留着。VT 回放能直接看到那行鬼影。
+    /// 这是 LiveRegion 里最难写对的一处：只画新内容、不清旧行，
+    /// 旧的一行会留在屏幕上。VT 回放能直接看到那行鬼影。
+    /// <para>
+    /// <b>状态栏此时必须留着</b>：它是常驻参考信息，不随忙闲变化。
+    /// 只验"活动的没了"会让"顺手把状态栏也擦了"通过——那条同样是缺陷。
+    /// </para>
     /// </remarks>
     private static string? VtReplayShrink()
     {
-        var (live, _) = ReplayRegion(rich =>
+        var cap = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false, Height: 16);
+
+        // 相对模式下"收起"会把整块擦掉，状态栏当然也不在——那条路本来就
+        // 不该常驻。要验"活动行消失但状态栏留下"，只能在锚定模式里验。
+        var (live, _) = ReplayRegion(cap, rich =>
         {
-            rich.SetLines(["  第一行内容", "  第二行内容"]);
-            rich.SetLines(["  第一行内容"]);
+            rich.SetActivity("  活动行内容");
+            rich.SetStatus("  状态栏内容");
+            rich.SetActivity(null);
         });
 
         var text = live.Text();
 
-        if (!text.Contains("第一行内容", StringComparison.Ordinal))
-            return "第一行丢失：\n" + live.Dump();
+        if (text.Contains("活动行内容", StringComparison.Ordinal))
+            return "活动行消失后仍在屏幕上（鬼影）：\n" + live.Dump();
 
-        if (text.Contains("第二行内容", StringComparison.Ordinal))
-            return "缩行后第二行仍在屏幕上（鬼影）：\n" + live.Dump();
-
-        return null;
+        return text.Contains("状态栏内容", StringComparison.Ordinal)
+            ? null
+            : "活动行收起时状态栏被一起擦掉了（它是常驻的）：\n" + live.Dump();
     }
 
     /// <summary>
@@ -1570,9 +1641,10 @@ public static class TerminalChecks
     /// 极简 VT 模拟器：只实现本产品实际用到的序列。
     /// </summary>
     /// <remarks>
-    /// <b>为什么自己写而不是引第三方</b>：需要的语义只有四种（换行、回车、
-    /// 清行、上移），引一个完整终端模拟器进来反而要花更多时间确认它的行为。
-    /// 未识别的序列一律丢弃——那本身就是被测代码不该产生的东西。
+    /// <b>为什么自己写而不是引第三方</b>：需要的语义不多（换行、回车、
+    /// 清行、定位、滚动区），引一个完整终端模拟器进来反而要花更多时间
+    /// 确认它的行为。未识别的序列一律抛异常——静默跳过会让
+    /// "被测代码用了模拟器不支持的序列"伪装成 PASS。
     /// </remarks>
     private sealed class VtScreen(int columns, int rows)
     {
@@ -1584,13 +1656,44 @@ public static class TerminalChecks
         private int _savedRow;
         private int _savedColumn;
 
-        /// <summary>Scroll the whole screen up one row; last row becomes blank.</summary>
+        /// <summary>滚动区上界（0-based，含）。</summary>
+        private int _scrollTop;
+
+        /// <summary>滚动区下界（0-based，含）。</summary>
+        private int _scrollBottom = rows - 1;
+
+        /// <summary>
+        /// Scroll the region up one row; its last row becomes blank.
+        /// </summary>
+        /// <remarks>
+        /// <b>必须按滚动区滚，不是按整屏。</b>底部固定块靠 DECSTBM 把正文
+        /// 限制在上半屏；模拟器若按整屏滚，被限制住的块会跟着正文往上跑，
+        /// 于是"块有没有被正文推走"这条检查永远看不出来——它恰恰是要证明的事。
+        /// </remarks>
         private void ScrollUp()
         {
-            for (var r = 0; r < rows - 1; r++)
+            for (var r = _scrollTop; r < _scrollBottom; r++)
                 Array.Copy(_grid[r + 1], _grid[r], columns);
 
-            Array.Fill(_grid[rows - 1], ' ');
+            Array.Fill(_grid[_scrollBottom], ' ');
+        }
+
+        /// <summary>换行：移到下一行，必要时滚动。</summary>
+        /// <remarks>
+        /// <b>光标在滚动区下界时滚区</b>；不在区里时按整屏滚。
+        /// 早期版本把光标夹在最后一行不滚，于是"底部块被长正文推走"这类
+        /// 缺陷在模拟器里完全不可见。
+        /// </remarks>
+        private void LineFeed()
+        {
+            if (_row == _scrollBottom)
+            {
+                ScrollUp();
+                return;
+            }
+
+            if (_row >= rows - 1) ScrollUp();
+            else _row++;
         }
 
         public void Feed(string text)
@@ -1615,13 +1718,15 @@ public static class TerminalChecks
                 switch (c)
                 {
                     case '\n':
-                        // Real scrolling, not clamping the cursor to the last row.
-                        // A real terminal scrolls the screen up when newline is
-                        // issued on the last row. The earlier version used
-                        // Math.Min(rows - 1, _row + 1), so the region being pushed
-                        // off by long body output was invisible to this simulator.
-                        if (_row >= rows - 1) ScrollUp();
-                        else _row++;
+                        // **ONLCR**：真实 tty 在输出 `\n` 时把它转成 `\r\n`
+                        // （`stty onlcr` 是 POSIX 的默认），所以换行后列归零。
+                        //
+                        // 模拟器早先只下移行、保留列，于是被测代码写
+                        // `"body 0\n"` 这类不带 `\r` 的正文时，每行都比上一行
+                        // 右移一段——那是模拟器的错，不是产品的错。
+                        // 这个差异会把"正文写满滚动区"的检查带偏。
+                        LineFeed();
+                        _column = 0;
                         break;
                     case '\r': _column = 0; break;
                     default:
@@ -1675,6 +1780,45 @@ public static class TerminalChecks
                     // 清行：2 = 整行清空。
                     Array.Fill(_grid[_row], ' ');
                     break;
+
+                case 'r':
+                {
+                    // DECSTBM：设滚动区，参数是 "上界;下界"（1-based，含两端）。
+                    //
+                    // **无参即复原整屏**，这是退出时还原的写法。
+                    // 两个参数都缺省时 CSI 参数串是空串，必须当成整屏。
+                    //
+                    // 光标会被移到滚动区左上角——这是真实终端的行为，
+                    // 不是模拟器的近似。被测代码因此必须自己 save/restore，
+                    // 模拟器"体贴地"保留光标就验不出那个缺陷。
+                    var parts = parameter.Split(';');
+                    var top = parts.Length > 0 ? ParseOrOne(parts[0]) : 1;
+                    var bottom = parts.Length > 1 ? ParseOrOne(parts[1]) : rows;
+
+                    if (parameter.Length == 0)
+                    {
+                        top = 1;
+                        bottom = rows;
+                    }
+
+                    top = Math.Clamp(top, 1, rows);
+                    bottom = Math.Clamp(bottom, 1, rows);
+
+                    // 下界小于上界是非法参数，终端会忽略整条序列。
+                    if (bottom <= top)
+                    {
+                        _row = 0;
+                        _column = 0;
+                        break;
+                    }
+
+                    _scrollTop = top - 1;
+                    _scrollBottom = bottom - 1;
+
+                    _row = _scrollTop;
+                    _column = 0;
+                    break;
+                }
 
                 case 'H':
                 {
@@ -1740,49 +1884,73 @@ public static class TerminalChecks
     /// 区域被收起（擦除）→ 紧接着写正文。此时光标列必须回到原来的位置。
     /// </para>
     /// </remarks>
-    /// <summary>忙时状态行是**一行**，且含指示符与模型名。</summary>
+    /// <summary>
+    /// 忙时活动行是**独立的一行**，含 spinner 与阶段文案；状态栏是另一行，
+    /// 含模型名。两者不许合并。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条检查的由来说明问题</b>：它原来是 <c>status-is-single-line-when-busy</c>，
+    /// 断言"忙时只有一行、既在动又有模型名"。那是 P4 对 Hermes 版式的误读，
+    /// 也是用户报的缺陷的根源——活动行因此在输入行下方。现在两者是两行，
+    /// 断言随之反过来：<b>把它们合并回去必须变红</b>。
+    /// </remarks>
     private static string? SingleLineBusy()
     {
         var state = new ActivityState();
         state.OnRunStarted(DateTimeOffset.UnixEpoch);
 
-        var line = StatusLine.RenderSingleLine(
-            state, "mimo-v2.6-flash", 12_000, 1_000_000,
-            TimeSpan.FromSeconds(3), DateTimeOffset.UnixEpoch, 120);
+        var activity = StatusLine.RenderActivity(
+            state, DateTimeOffset.UnixEpoch.AddSeconds(3), 120);
 
-        if (line.Contains(NewLineChar)) return "状态行含换行——应该是单行";
+        var status = StatusLine.RenderStatus(
+            "mimo-v2.6-flash", 12_000, 1_000_000, 120);
 
-        if (!line.Contains("mimo-v2.6-flash", StringComparison.Ordinal))
-            return $"状态行没有模型名：{line}";
+        if (activity is null) return "忙时应有活动行";
 
-        // 忙时应有 spinner 或面孔，不该是空闲符号。
-        return line.TrimStart().StartsWith('◇') ? "忙时显示了空闲符号" : null;
+        if (activity.Contains(NewLineChar)) return "活动行含换行——应该是单行";
+        if (status.Contains(NewLineChar)) return "状态栏含换行——应该是单行";
+
+        if (!activity.Contains("思考中", StringComparison.Ordinal))
+            return $"活动行缺少阶段文案：{activity}";
+
+        if (!status.Contains("mimo-v2.6-flash", StringComparison.Ordinal))
+            return $"状态栏缺少模型名：{status}";
+
+        // **模型名不许出现在活动行里**：那是"环境"不是"事件"，
+        // 混进来就说明两个槽位又被合并了。
+        return activity.Contains("mimo-v2.6-flash", StringComparison.Ordinal)
+            ? $"活动行里出现了模型名（两个槽位被合并了）：{activity}"
+            : null;
     }
 
     /// <summary>
-    /// 空闲时状态行**仍然在**（P4 的核心收益）。
+    /// 空闲时**状态栏仍然在**，而活动行让位。
     /// </summary>
     /// <remarks>
-    /// 原来轮次结束就 <c>Clear()</c> 整块收起，用户看到"底部空荡"。
-    /// Hermes 的空闲状态行是常驻的。
+    /// 轮次结束就整块收起的话，用户看到"底部空荡"——Hermes 的空闲状态栏是常驻的。
+    /// <para>
+    /// 但<b>活动行不能常驻</b>：空闲时它显示一个转动的 spinner 会让人以为还在跑。
+    /// 这两个方向都必须钉住，只验一个方向会让另一个方向的回归通过。
+    /// </para>
     /// </remarks>
     private static string? StatusPersistsIdle()
     {
         var idle = new ActivityState();   // 初始就是 Idle
 
-        var line = StatusLine.RenderSingleLine(
-            idle, "mimo-v2.6-flash", 12_000, 1_000_000,
-            TimeSpan.FromSeconds(6.6), DateTimeOffset.UnixEpoch, 120);
+        var status = StatusLine.RenderStatus(
+            "mimo-v2.6-flash", 12_000, 1_000_000, 120);
 
-        if (string.IsNullOrWhiteSpace(line)) return "空闲时状态行是空的——底部会显得空荡";
+        if (string.IsNullOrWhiteSpace(status)) return "空闲时状态栏是空的——底部会显得空荡";
 
-        if (!line.Contains("mimo-v2.6-flash", StringComparison.Ordinal))
-            return $"空闲状态行没有模型名：{line}";
+        if (!status.Contains("mimo-v2.6-flash", StringComparison.Ordinal))
+            return $"空闲状态栏没有模型名：{status}";
 
-        // 空闲不该有转动的 spinner（会让用户以为还在跑）。
-        return line.TrimStart().StartsWith('◇')
+        var activity = StatusLine.RenderActivity(
+            idle, DateTimeOffset.UnixEpoch.AddSeconds(6), 120);
+
+        return activity is null
             ? null
-            : $"空闲时应显示静态符号而非 spinner：{line}";
+            : $"空闲时不该有活动行（会让人以为还在跑）：{activity}";
     }
 
     /// <summary>
@@ -1795,44 +1963,33 @@ public static class TerminalChecks
     /// </remarks>
     private static string? TailDroppedWhole()
     {
-        var idle = new ActivityState();
-
-        var wide = StatusLine.RenderSingleLine(
-            idle, "model", 12_000, 1_000_000,
-            TimeSpan.FromSeconds(3), DateTimeOffset.UnixEpoch, 200);
-
-        var narrow = StatusLine.RenderSingleLine(
-            idle, "model", 12_000, 1_000_000,
-            TimeSpan.FromSeconds(3), DateTimeOffset.UnixEpoch, 45);
+        var wide = StatusLine.RenderStatus("model", 12_000, 1_000_000, 200);
+        var narrow = StatusLine.RenderStatus("model", 12_000, 1_000_000, 45);
 
         if (!wide.Contains('%')) return $"宽终端应显示百分比：{wide}";
         if (narrow.Contains('%')) return $"窄终端不该显示百分比（应压成 12K tok）：{narrow}";
         if (!narrow.Contains("tok", StringComparison.Ordinal))
             return $"窄终端应压成 compact 形式：{narrow}";
 
-        // 极窄：只剩指示符。
-        var tiny = StatusLine.RenderSingleLine(
-            idle, "model", 12_000, 1_000_000,
-            TimeSpan.FromSeconds(3), DateTimeOffset.UnixEpoch, 20);
+        // 极窄：尾部段全部丢弃，只剩模型名。
+        var tiny = StatusLine.RenderStatus("model", 12_000, 1_000_000, 15);
 
-        return tiny.Contains("model", StringComparison.Ordinal)
-            ? $"极窄终端不该有模型名：{tiny}"
+        if (!tiny.Contains("model", StringComparison.Ordinal))
+            return $"极窄终端仍应显示模型名（它不可压缩）：{tiny}";
+
+        return tiny.Contains("tok", StringComparison.Ordinal)
+            ? $"极窄终端不该有上下文段：{tiny}"
             : null;
     }
 
     /// <summary>段分隔符是 <c>│</c> 不是 <c>·</c>。</summary>
     private static string? VerticalBar()
     {
-        var state = new ActivityState();
-        state.OnRunStarted(DateTimeOffset.UnixEpoch);
-
-        var line = StatusLine.RenderSingleLine(
-            state, "mimo", 12_000, 1_000_000,
-            TimeSpan.FromSeconds(3), DateTimeOffset.UnixEpoch, 120);
+        var line = StatusLine.RenderStatus("mimo", 12_000, 1_000_000, 120);
 
         return line.Contains('│')
             ? null
-            : $"状态行没有用 │ 分隔：{line}";
+            : $"状态栏没有用 │ 分隔：{line}";
     }
 
     /// <summary>换行符常量，避免字符字面量在编辑流程里被转义成真换行。</summary>
@@ -1848,18 +2005,240 @@ public static class TerminalChecks
     /// follows the body and is therefore never pushed off. Only the three
     /// anchoring-specific checks go red in that case.
     ///
+    /// <summary>
+    /// **用户报的那个缺陷本身**：忙时活动行必须渲染在输入行上方。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是整个三槽位改造的验收点</b>（用户 2026-11-05 的截图：
+    /// 重试提示与活动行全在 `&gt; 你好` 下面）。
+    ///
     /// <para>
-    /// So the honest claim is narrower: <b>"after body text fills the screen,
-    /// the region content is still readable and the body was not overwritten"</b>.
-    /// That is the exact failure the P3 debt would produce -- a repaint that
-    /// still targets the pre-scroll absolute row writes to the wrong place,
-    /// or the region scrolls out of view entirely.
+    /// <b>必须验渲染后的屏幕，不能只验控制序列里的行号</b>：
+    /// 行号正确但被后续写入覆盖、或光标定位被滚动打乱，屏幕上的次序
+    /// 仍然可能是错的——而用户看到的就是屏幕。所以这里跑完整的
+    /// "提问 → 正文 → 忙起来"流程，再按屏幕行号比较。
     /// </para>
     ///
     /// <para>
-    /// The VT simulator used to clamp the cursor at the last row instead of
-    /// scrolling, which made this whole class of defect invisible. It now
-    /// scrolls for real.
+    /// <b>同时要有反向对照</b>：空闲时活动行那一行必须是空的。
+    /// 只验"忙时在上方"会让"活动行常驻"通过，而常驻的 spinner
+    /// 会让用户以为它一直在跑。
+    /// </para>
+    /// </remarks>
+    private static string? ActivityAboveInput()
+    {
+        var cap = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false, Height: 16);
+
+        var (busy, idle) = ReplayRegion(cap, rich =>
+        {
+            // 用户提了两次问，中间有一轮正文。
+            rich.BeginPrompt("> ");
+            rich.CommitPrompt("你好");
+            rich.RunExclusive(() => Output.Control("回答一\n"));
+
+            rich.BeginPrompt("> ");
+            rich.CommitPrompt("再说一次");
+            rich.RunExclusive(() => Output.Control("回答二\n"));
+
+            // 第二次提问之后忙起来（这正是用户截图里的时刻）。
+            rich.SetActivity("ACTIVITYMARK");
+            rich.SetStatus("STATUSMARK");
+        });
+
+        var lines = busy.Text().Split('\n');
+
+        var activityIndex = Array.FindIndex(lines, l => l.Contains("ACTIVITYMARK", StringComparison.Ordinal));
+
+        if (activityIndex < 0) return "忙时活动行不在屏幕上：\n" + busy.Dump();
+
+        // **输入行按槽位判定，不能按文本找 `> `**：
+        // 转录里提交过的 `> 你好` 也含 `> `，按文本找会命中正文的第一行
+        // ——第一版就这么写的，于是检查报"输入行在第 0 行"。
+        // 底部块的输入行恒在倒数第二行。
+        if (!lines[cap.Height - 2].StartsWith('>'))
+            return $"输入行必须停在第 {cap.Height - 1} 行（倒数第二行），实际是「{lines[cap.Height - 2].Trim()}」：\n"
+                + busy.Dump();
+
+        if (activityIndex >= cap.Height - 2)
+            return $"活动行在第 {activityIndex} 行、输入行在第 {cap.Height - 2} 行"
+                + "——活动行必须在**输入行上方**（这正是用户报的缺陷）：\n" + busy.Dump();
+
+        // 提交过的输入必须都留在转录里，且都在活动行上方。
+        foreach (var asked in new[] { "> 你好", "> 再说一次" })
+        {
+            var idx = Array.FindIndex(lines, l => l.Contains(asked, StringComparison.Ordinal));
+            if (idx < 0) return $"提交的输入「{asked}」没进正文转录：\n" + busy.Dump();
+            if (idx >= activityIndex)
+                return $"提交的输入「{asked}」在第 {idx} 行，落在活动行下方：\n" + busy.Dump();
+        }
+
+        // 活动行与状态栏必须仍是两行不同的内容（没有合并回去）。
+        var statusIndex = Array.FindIndex(lines, l => l.Contains("STATUSMARK", StringComparison.Ordinal));
+        if (statusIndex < 0) return "状态栏不在屏幕上：\n" + busy.Dump();
+
+        if (statusIndex != cap.Height - 1)
+            return $"状态栏必须贴最后一行（0-based {cap.Height - 1}），实际 {statusIndex}：\n" + busy.Dump();
+
+        return null;
+    }
+
+    /// <summary>
+    /// 本轮耗时**恰好出现在一个地方**：忙时在活动行，闲时在状态栏。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条防的是"信息丢失"与"信息重复"两种回归，两者都真实发生过：</b>
+    /// 拆分槽位时状态栏一度不再带耗时，而活动行在轮次结束后就消失——
+    /// 于是本轮跑了多久在任何地方都查不到。反过来，两处都显示会让用户
+    /// 看到两个相近但不同的秒数（一个是阶段、一个是整轮），以为是 bug。
+    ///
+    /// <para>
+    /// <b>必须走 <see cref="ActivityReporter"/>，不能只调两个渲染函数</b>：
+    /// 第一版就是那样写的，于是把"状态栏永远带耗时"改坏之后检查仍然全绿
+    /// ——它验的是纯函数，而缺陷在接线处。这类"查了个没坏的地方"
+    /// 在本项目已经出现过一次（见 <c>spinner-follows-frame-interval</c> 的注释）。
+    /// 现在从区域捕获真实渲染出的两行。
+    /// </para>
+    /// </remarks>
+    private static string? ElapsedShownOnce()
+    {
+        // ── 忙：活动行报时间，状态栏不报 ──────────────────
+        var busyScreen = RenderThroughReporter(startTurn: true, endTurn: false);
+        var busyActivity = busyScreen.Activity;
+        var busyStatus = busyScreen.Status;
+
+        if (busyActivity is null) return "忙时应有活动行：" + busyScreen.Dump;
+
+        // 活动行的时间用"阶段耗时"，刚起一轮是 0s；这里只断言它带秒数后缀。
+        if (!busyActivity.Contains('s', StringComparison.Ordinal))
+            return $"忙时活动行应带耗时：{busyActivity}";
+
+        if (ContainsDuration(busyStatus))
+            return $"忙时状态栏不该重复报耗时：{busyStatus}";
+
+        // ── 闲：活动行消失，状态栏接过来 ──────────────────
+        var idleScreen = RenderThroughReporter(startTurn: true, endTurn: true);
+
+        if (idleScreen.Activity is not null)
+            return $"空闲时不该有活动行：{idleScreen.Activity}";
+
+        return ContainsDuration(idleScreen.Status)
+            ? null
+            : $"空闲时状态栏应显示上一轮耗时：{idleScreen.Status}";
+    }
+
+    /// <summary>文本里是否有一个"时长"样式的段（<c>3s</c> / <c>1m05s</c>）。</summary>
+    private static bool ContainsDuration(string? text) =>
+        text is not null && Regex.IsMatch(text, @"\d+s\b");
+
+    /// <summary>经 <see cref="ActivityReporter"/> 渲染，读出底部两行的实际内容。</summary>
+    private static (string? Activity, string? Status, string Dump) RenderThroughReporter(
+        bool startTurn, bool endTurn)
+    {
+        var cap = new TerminalCapability(TerminalTier.Rich, 120, IsRedirected: false, Height: 20);
+        var captured = new StringWriter();
+        var originalOut = Console.Out;
+
+        Console.SetOut(captured);
+        string whileLive;
+        try
+        {
+            using var region = LiveRegion.Create(cap);
+            var reporter = new ActivityReporter(
+                region, "model", 1_000_000, () => 12_000);
+
+            try
+            {
+                if (startTurn) reporter.StartTurn();
+                if (endTurn) reporter.FinishTurnAsync().GetAwaiter().GetResult();
+                else reporter.ShowIdle();
+
+                // 让泵线程至少跑一拍（它每 100ms 一次）。
+                if (startTurn && !endTurn) Thread.Sleep(250);
+
+                // **必须在 Dispose 之前取快照**：Dispose 会调 Clear 把块擦净
+                // （那是对的——退出时不该留着「重试中…」），
+                // 那之后再读屏幕永远是空的。ReplayRegion 里踩过同一个坑。
+                whileLive = captured.ToString();
+            }
+            finally
+            {
+                reporter.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        var screen = new VtScreen(columns: 120, rows: 20);
+        screen.Feed(whileLive);
+
+        var lines = screen.Text().Split('\n');
+        var activity = lines[cap.Height - 3].Trim();
+        var status = lines[cap.Height - 1].Trim();
+
+        return (
+            activity.Length > 0 ? activity : null,
+            status.Length > 0 ? status : null,
+            screen.Dump());
+    }
+
+    /// <summary>
+    /// 空闲时活动行那一行必须为空，而状态栏仍在。
+    /// </summary>
+    /// <remarks>
+    /// 与 <c>activity-line-sits-above-input-line</c> 配对：那条保证忙时在上方，
+    /// 这条保证闲时那块地方是空的。两条一起才钉住"活动行只在忙时出现"。
+    /// </remarks>
+    private static string? BlockRowsStable()
+    {
+        var cap = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false, Height: 16);
+
+        var (idle, _) = ReplayRegion(cap, rich =>
+        {
+            // 空闲：只有状态栏，没有活动行。
+            rich.SetStatus("STATUSMARK");
+            rich.BeginPrompt("> ");
+        });
+
+        var lines = idle.Text().Split('\n');
+
+        var statusIndex = Array.FindIndex(lines, l => l.Contains("STATUSMARK", StringComparison.Ordinal));
+        if (statusIndex < 0) return "空闲时状态栏不在屏幕上：\n" + idle.Dump();
+
+        if (statusIndex != cap.Height - 1)
+            return $"状态栏必须贴最后一行（0-based {cap.Height - 1}），实际 {statusIndex}：\n" + idle.Dump();
+
+        // 倒数第三行（活动行槽位）必须是空的。
+        var activityRow = lines[cap.Height - 3];
+        if (activityRow.Trim().Length != 0)
+            return $"空闲时活动行槽位不该有内容：第 {cap.Height - 3} 行是「{activityRow.Trim()}」：\n"
+                + idle.Dump();
+
+        // 提示符仍在（清活动行不能顺手把它清掉）。
+        // **不能用 Contains("> ") 查**：`Text()` 会 TrimEnd，
+        // "> " 到了屏幕上只剩 ">"。按行首判断才稳。
+        return lines[cap.Height - 2].StartsWith('>')
+            ? null
+            : $"空闲时提示符必须在第 {cap.Height - 1} 行，实际是「{lines[cap.Height - 2].Trim()}」：\n" + idle.Dump();
+    }
+
+    /// <summary>
+    /// Body output that overflows the body area must not push the bottom block away.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the user-facing requirement</b> (2026-11-05): the activity line
+    /// must stay directly above the input line no matter how much body text scrolls
+    /// past. Under the old "absolute row repaint" approach the block only stayed
+    /// put until the body scrolled — then the whole block moved up with the text
+    /// and the activity line ended up *below* the input line.
+    ///
+    /// <para>
+    /// With the body confined to <c>1..height-3</c> by DECSTBM the block cannot be
+    /// touched by scrolling at all, so this check asserts three things at once:
+    /// the block is still there, the body really did scroll (otherwise the check
+    /// is vacuous on a screen tall enough to hold everything), and the block sits
+    /// exactly on the last three rows.
     /// </para>
     /// </remarks>
     private static string? RegionSurvivesScroll()
@@ -1868,21 +2247,37 @@ public static class TerminalChecks
 
         var (live, _) = ReplayRegion(cap, rich =>
         {
-            // Fill most of the screen with body text.
-            for (var i = 0; i < 6; i++)
-                rich.RunExclusive(() => Output.Control("body " + i));
+            // More body lines than the body area can hold: forces real scrolling.
+            for (var i = 0; i < 20; i++)
+                rich.RunExclusive(() => Output.Control("body " + i + "\n"));
 
-            rich.SetLines(["STATUSLINE"]);
+            rich.SetActivity("ACTIVITYLINE");
+            rich.SetStatus("STATUSLINE");
         });
 
-        var text = live.Text();
+        var lines = live.Text().Split('\n');
 
-        if (!text.Contains("STATUSLINE", StringComparison.Ordinal))
-            return "region content is not visible after body output: " + live.Dump();
+        var activityIndex = Array.FindIndex(lines, l => l.Contains("ACTIVITYLINE", StringComparison.Ordinal));
+        var statusIndex = Array.FindIndex(lines, l => l.Contains("STATUSLINE", StringComparison.Ordinal));
 
-        return text.Contains("body 0", StringComparison.Ordinal)
-            ? null
-            : "early body text was overwritten by a repaint: " + live.Dump();
+        if (activityIndex < 0) return "活动行在正文溢出后消失了：" + live.Dump();
+        if (statusIndex < 0) return "状态栏在正文溢出后消失了：" + live.Dump();
+
+        // 块必须贴在最后三行：活动、输入（空）、状态。
+        if (statusIndex != cap.Height - 1)
+            return $"状态栏必须贴最后一行（0-based {cap.Height - 1}），实际 {statusIndex}：" + live.Dump();
+
+        if (activityIndex != cap.Height - 3)
+            return $"活动行必须在倒数第三行（0-based {cap.Height - 3}），实际 {activityIndex}：" + live.Dump();
+
+        // 正文必须真的滚过：最后一行正文在最下面，早期的已经被滚出屏幕。
+        if (!live.Text().Contains("body 19", StringComparison.Ordinal))
+            return "正文没写到屏幕上：" + live.Dump();
+
+        // **反向**：早期正文本该被滚出去。若它还在，说明滚动区没生效、整屏都在滚。
+        return live.Text().Contains("body 0", StringComparison.Ordinal)
+            ? "早期正文没有被滚出滚动区——DECSTBM 没生效：" + live.Dump()
+            : null;
     }
 
     /// <summary>
@@ -2028,9 +2423,13 @@ public static class TerminalChecks
         if (!text.Contains("test-model", StringComparison.Ordinal))
             return "no idle status line before the first turn: " + live.Dump();
 
-        return text.Contains("◇", StringComparison.Ordinal)
-            ? null
-            : "idle line lacks the idle marker: " + live.Dump();
+        // **空闲时不该有活动行**。旧版这里断言的是 `◇`（一个静态空闲符），
+        // 那是"活动行与状态栏合并成一行"时的产物。现在活动行是独立槽位、
+        // 空闲留空，所以正确的判据反过来：底部只该有状态栏那一行。
+        return text.Contains('◇')
+            ? "idle state shows an activity marker -- the activity line must stay empty when idle: "
+                + live.Dump()
+            : null;
     }
 
     /// <summary>
@@ -2058,6 +2457,79 @@ public static class TerminalChecks
         return called
             ? null
             : "Program.cs never calls ShowIdle -- the bottom is empty until the first turn";
+    }
+
+    /// <summary>
+    /// **回合必须拿到一个可取消的令牌。**
+    /// </summary>
+    /// <remarks>
+    /// <b>这条盯的是一个真实缺口</b>：`runtime.RunAsync(request)` 曾经
+    /// 不带令牌——一轮跑起来之后没有任何手段让它停，退出只能等它自然结束
+    /// （重试退避时最长十几秒）。
+    ///
+    /// <para>
+    /// <b>为什么用源码检查而不是行为检查</b>：要验"取消是否生效"得启动真实
+    /// 进程、发信号、等重试——那是一条不可靠且慢的路径（本项目已经因为
+    /// 启动真实进程的检查吃过不稳定之苦）。而这里的缺陷形态极其明确：
+    /// 调用点少传一个参数。源码级断言足以钉住它，且不会误报。
+    /// </para>
+    /// </remarks>
+    private static string? TurnAcceptsCancellation()
+    {
+        var root = FindRepoRoot();
+        var file = Path.Combine(root, "src", "Dougong.Cli", "Program.cs");
+        if (!File.Exists(file)) return "Program.cs not found";
+
+        var calls = File.ReadAllText(file)
+            .Split(Environment.NewLine)
+            .Select(l => l.Trim())
+            .Where(l => l.Contains("runtime.RunAsync(request", StringComparison.Ordinal))
+            .Where(l => !l.StartsWith("//", StringComparison.Ordinal))
+            .ToList();
+
+        if (calls.Count == 0) return "找不到 runtime.RunAsync(request...) 的调用点";
+
+        return calls.All(c => c.Contains(".Token", StringComparison.Ordinal))
+            ? null
+            : $"回合运行时没传取消令牌，跑起来就停不下：{calls[0]}";
+    }
+
+    /// <summary>
+    /// **Ctrl+C 必须绑到"取消回合"的令牌上。**
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么单独一条</b>：光有令牌还不够——回合期间主线程在
+    /// `await foreach` 里，根本回不到 `Console.ReadLine`，所以按键没人读，
+    /// 令牌永远不会被取消。必须有人订阅 <c>Console.CancelKeyPress</c>。
+    ///
+    /// <para>
+    /// 实测（2026-11-09）：修之前重试期间按 Ctrl+C，进程继续重试 30 多次，
+    /// 用户唯一的出路是杀进程。
+    /// </para>
+    /// </remarks>
+    private static string? CtrlCBindsAbortToken()
+    {
+        var root = FindRepoRoot();
+        var file = Path.Combine(root, "src", "Dougong.Cli", "Program.cs");
+        if (!File.Exists(file)) return "Program.cs not found";
+
+        var lines = File.ReadAllText(file).Split(Environment.NewLine);
+
+        var subscribes = lines.Any(l =>
+            l.Contains("Console.CancelKeyPress +=", StringComparison.Ordinal)
+            && !l.TrimStart().StartsWith("//", StringComparison.Ordinal));
+
+        if (!subscribes)
+            return "没人订阅 Console.CancelKeyPress——回合期间按 Ctrl+C 完全没反应";
+
+        // 处理器里必须有 Cancel()：只订阅不取消等于没接。
+        var handlerCancels = lines.Any(l =>
+            l.Contains("current.Cancel()", StringComparison.Ordinal)
+            || l.Contains("abortCts.Cancel()", StringComparison.Ordinal));
+
+        return handlerCancels
+            ? null
+            : "订阅了 Ctrl+C 但处理器没有取消令牌——按键仍然不起作用";
     }
 
     /// <summary>Art row counts and max widths must match 字符规格.json.</summary>
@@ -2235,55 +2707,56 @@ public static class TerminalChecks
     }
 
     /// <summary>
-    /// 状态行有多行时，提示符不能压在其中一行上。
+    /// 三个槽位各占一行，严格递增且不重叠：活动行 → 输入行 → 状态栏。
     /// </summary>
     /// <remarks>
-    /// <b>这是布局翻转后自己发现的碰撞</b>：`BeginPrompt` 原先把提示符
-    /// 写死在 `height-1`，而状态行是贴底向上排的。单行状态时两者恰好不冲突
-    /// （那正是此前唯一验过的情形），两行时第一行状态正好落在 `height-1`，
-    /// 与提示符**画在同一行**——后画的提示符覆盖状态行。
+    /// <b>这条检查的前身是 <c>prompt-does-not-overlap-multi-row-status</c></b>：
+    /// 那时状态块高度随忙闲变化（活动行与状态栏合并、或多行状态），
+    /// 提示符按 <c>height - N</c> 动态计算，算错就重叠。
     ///
     /// <para>
-    /// 正确版式：提示符紧贴状态块上方，即 `height - N`（N = 状态行数）。
-    /// 断言的正是这个关系，并同时验单行情形仍然等于 `height-1`
-    /// （防止"修两行时把单行改坏"）。
+    /// 改成三个固定槽位之后，"重叠"在结构上已经不可能发生，
+    /// 但<b>判据反而要加强</b>：块高是常量，任何一处把行号算错都会
+    /// 让某个槽位落到别人的位置上。所以这里逐行断言三个绝对行号
+    /// 都等于期望值——只断言"互不相同"会让整体偏移一行也通过。
     /// </para>
     /// </remarks>
     private static string? PromptNoOverlapMultiRow()
     {
         var cap = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false, Height: 20);
 
-        // 两行状态：提示符应为 height-2，第一行状态为 height-1。
-        var twoRows = CaptureRegionOutput(cap, region =>
+        var output = CaptureRegionOutput(cap, region =>
         {
-            region.SetLines(["STATUS-A", "STATUS-B"]);
+            region.SetActivity("ACTIVITYMARK");
+            region.SetStatus("STATUSMARK");
             region.BeginPrompt("PROMPTMARK");
         });
 
-        var promptRow = RowOf(twoRows, "PROMPTMARK");
-        var firstStatus = RowOf(twoRows, "STATUS-A");
-        var lastStatus = RowOf(twoRows, "STATUS-B");
+        var activityRow = RowOf(output, "ACTIVITYMARK");
+        var promptRow = RowOf(output, "PROMPTMARK");
+        var statusRow = RowOf(output, "STATUSMARK");
 
-        if (promptRow is null || firstStatus is null || lastStatus is null)
-            return "定位失败：" + DescribeControl(twoRows);
+        if (activityRow is null || promptRow is null || statusRow is null)
+            return "定位失败：" + DescribeControl(output);
 
-        if (promptRow >= firstStatus)
-            return $"两行状态时提示符在第 {promptRow} 行、首行状态在第 {firstStatus} 行——会重叠";
-
-        if (lastStatus != cap.Height)
-            return $"末行状态必须贴底（第 {cap.Height} 行），实际第 {lastStatus} 行";
-
-        // 单行情形仍应是 height-1（回退保护）。
-        var oneRow = CaptureRegionOutput(cap, region =>
+        var expected = new (string Name, int? Actual, int Want)[]
         {
-            region.SetLines(["ONLY"]);
-            region.BeginPrompt("PROMPTMARK");
-        });
+            ("活动行", activityRow, cap.Height - 2),
+            ("输入行", promptRow, cap.Height - 1),
+            ("状态栏", statusRow, cap.Height),
+        };
 
-        var onePrompt = RowOf(oneRow, "PROMPTMARK");
-        return onePrompt == cap.Height - 1
-            ? null
-            : $"单行状态时提示符应在第 {cap.Height - 1} 行，实际 {onePrompt?.ToString() ?? "null"}";
+        foreach (var (name, actual, want) in expected)
+        {
+            if (actual != want)
+                return $"{name}应在第 {want} 行，实际第 {actual} 行：" + DescribeControl(output);
+        }
+
+        // 三行两两不同——这一条在上面都成立时自动成立，但它把意图写明白：
+        // 谁都不许和谁共用一行。
+        return activityRow == promptRow || promptRow == statusRow || activityRow == statusRow
+            ? "三个槽位出现了重叠：" + DescribeControl(output)
+            : null;
     }
 
     /// <summary>
@@ -2853,11 +3326,8 @@ public static class TerminalChecks
     /// </remarks>
     private static string? IdleShowsCapacity()
     {
-        var idle = new ActivityState();
-
-        var line = StatusLine.RenderSingleLine(
-            idle, "model", tokensUsed: null, contextWindow: 1_000_000,
-            turnElapsed: TimeSpan.Zero, now: DateTimeOffset.UnixEpoch, width: 120);
+        var line = StatusLine.RenderStatus(
+            "model", tokensUsed: null, contextWindow: 1_000_000, width: 120);
 
         return line.Contains("1.0M", StringComparison.Ordinal)
             ? null
@@ -2866,48 +3336,65 @@ public static class TerminalChecks
 
     private static string? VtReplayPromptLine()
     {
-        var (live, _) = ReplayRegion(rich =>
-        {
-            rich.RunExclusive(() => Output.Control("> hello"));
-            rich.SetActivity("  思考中…");
+        var cap = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false, Height: 16);
 
-            // 模拟第一个 delta：区域收起，正文接写。
-            rich.SetLines([]);
-            rich.RunExclusive(() => Output.Control("你好"));
+        var (live, _) = ReplayRegion(cap, rich =>
+        {
+            rich.BeginPrompt("> ");
+            rich.CommitPrompt("hello");
+
+            // 模拟一轮开始：活动行出现，正文接写。
+            rich.SetActivity("ACTIVITYMARK");
+            rich.RunExclusive(() => Output.Control("你好\n"));
         });
 
-        var text = live.Text();
+        var lines = live.Text().Split('\n');
 
-        if (!text.Contains("> hello", StringComparison.Ordinal))
-            return "提示符行被覆盖了：\n" + live.Dump();
+        // 提交的输入必须进了正文转录——否则用户看不见自己问过什么。
+        var transcript = Array.FindIndex(lines, l => l.Contains("> hello", StringComparison.Ordinal));
+        if (transcript < 0) return "提交的用户输入没进正文转录：\n" + live.Dump();
 
-        if (!text.Contains("你好", StringComparison.Ordinal))
+        if (!live.Text().Contains("你好", StringComparison.Ordinal))
             return "正文没写出来：\n" + live.Dump();
 
-        return null;
+        // 提交行必须在上方，且不能盖住底部的三个槽位。
+        var activity = Array.FindIndex(lines, l => l.Contains("ACTIVITYMARK", StringComparison.Ordinal));
+        if (activity < 0) return "活动行不见了：\n" + live.Dump();
+
+        return transcript < activity
+            ? null
+            : $"提交的输入写到了第 {transcript} 行、活动行在第 {activity} 行——输入必须在正文区上方：\n"
+                + live.Dump();
     }
 
     /// <summary>
-    /// 区域画出又擦掉之后，光标列必须回到原处——否则下一段正文会错位。
+    /// 输入期间画块不能把用户正在打的字弄丢，也不能把光标列改掉。
     /// </summary>
     /// <remarks>
-    /// 比上一条更严格：不只看有没有覆盖，而是看两次写入是否**紧邻**。
-    /// 正文是逐字拼起来的，任何列偏移都会在视觉上断开一句话。
+    /// <b>这条检查的是新版布局最容易出错的地方</b>：块画在绝对行上，
+    /// 而输入行上用户可能已经打了几个字。任何"顺手重画一下"的路径
+    /// 都会把光标挪走或把那几个字清掉。判据是两次写入**紧邻**
+    /// （"前" 与 "后" 之间没有任何字符间隔）。
     /// </remarks>
     private static string? VtReplayColumn()
     {
-        var (live, _) = ReplayRegion(rich =>
+        var cap = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false, Height: 16);
+
+        var (live, _) = ReplayRegion(cap, rich =>
         {
             rich.RunExclusive(() => Output.Control("前"));
-            rich.SetActivity("  思考中…");
-            rich.SetLines([]);
+            rich.SetActivity("ACTIVITYMARK");
+            rich.SetStatus("STATUSMARK");
             rich.RunExclusive(() => Output.Control("后"));
         });
 
-        if (!live.Text().StartsWith("前后", StringComparison.Ordinal))
+        if (!live.Text().Contains("前后", StringComparison.Ordinal))
             return "两次写入不连续（光标列被重置）：\n" + live.Dump();
 
-        return null;
+        // 块本身仍须在：不能为了"不打断正文"就整个不画。
+        return live.Text().Contains("ACTIVITYMARK", StringComparison.Ordinal)
+            ? null
+            : "两次写入之间活动行丢了（重画被完全跳过）：\n" + live.Dump();
     }
 
     /// <summary>
@@ -2933,20 +3420,31 @@ public static class TerminalChecks
             var rich = new TerminalCapability(TerminalTier.Rich, 80, IsRedirected: false);
             using var region = LiveRegion.Create(rich);
 
-            region.SetLines(["  思考中… 3s"]);
+            region.SetActivity("  思考中… 3s");
             var afterFirst = captured.ToString().Length;
             if (afterFirst == 0) return "首次绘制必须写终端";
 
-            region.SetLines(["  思考中… 3s"]);
-            region.SetLines(["  思考中… 3s"]);
-            region.SetLines(["  思考中… 3s"]);
+            region.SetActivity("  思考中… 3s");
+            region.SetActivity("  思考中… 3s");
+            region.SetActivity("  思考中… 3s");
 
             if (captured.ToString().Length != afterFirst)
                 return $"相同内容重复写了 {captured.ToString().Length - afterFirst} 个字符";
 
-            region.SetLines(["  思考中… 4s"]);
+            region.SetActivity("  思考中… 4s");
             if (captured.ToString().Length == afterFirst)
                 return "内容变化后没有重绘";
+
+            // **状态栏也必须有同样的短路**：它与活动行是两个独立槽位，
+            // 只给其中一个加判据，另一个仍会每 100ms 刷一次。
+            var afterActivity = captured.ToString().Length;
+            region.SetStatus("  模型 · 1s");
+            var afterStatus = captured.ToString().Length;
+            if (afterStatus == afterActivity) return "状态栏首次绘制必须写终端";
+
+            region.SetStatus("  模型 · 1s");
+            if (captured.ToString().Length != afterStatus)
+                return "状态栏相同内容重复写了";
         }
         finally
         {
@@ -2963,16 +3461,16 @@ public static class TerminalChecks
     /// <b>这条对应真机上看到的缺陷</b>（2026-10-29 用户截图）：一轮失败结束后，
     /// 汇总行都打完了，状态栏 <c>MiniMax-M3.1-Flash · 2s</c> 却还留在最下面。
     /// <para>
-    /// 根因：<c>Clear()</c> 只调 <c>Erase()</c> 擦屏幕，**没有清空 <c>_lines</c>**。
-    /// 于是后续任何一次写入（<c>Output.Line</c> 会走 <c>RunExclusive</c>：
-    /// 擦、写、画）都会在写完正文之后把那份陈旧内容重新画到下方。
+    /// 根因：<c>Clear()</c> 只擦屏幕、**没有清空内容**。于是后续任何一次写入
+    /// 都会在写完正文之后把那份陈旧内容重新画到下方。
     /// </para>
     /// </remarks>
     private static string? ClearThenWrite()
     {
         var (live, afterDispose) = ReplayRegion(rich =>
         {
-            rich.SetLines(["  思考中… 2s", "  模型 · 2s"]);
+            rich.SetActivity("  思考中… 2s");
+            rich.SetStatus("  模型 · 2s");
             rich.Clear();
             rich.RunExclusive(() => Output.Control("本轮结束\n"));
         });
@@ -2983,7 +3481,7 @@ public static class TerminalChecks
             return "正文没写出来：\n" + live.Dump();
 
         if (text.Contains("模型", StringComparison.Ordinal))
-            return "Clear 之后写正文，旧区域又被画回来了：\n" + live.Dump();
+            return "Clear 之后写正文，旧状态栏又被画回来了：\n" + live.Dump();
 
         if (text.Contains("思考中", StringComparison.Ordinal))
             return "Clear 之后写正文，活动行又被画回来了：\n" + live.Dump();
@@ -2996,7 +3494,7 @@ public static class TerminalChecks
     }
 
     /// <summary>
-    /// 写 stderr 时底部区域必须让位，不能两行叠在一起。
+    /// 写 stderr 时不能压在底部三行上。
     /// </summary>
     /// <remarks>
     /// <b>这条对应真机上看到的第二个缺陷</b>（2026-10-29 用户截图）：
@@ -3008,16 +3506,20 @@ public static class TerminalChecks
     /// 但漏了一点**：装饰与否跟占不占屏幕位置是两件事。stderr 与 stdout
     /// 写的是同一块屏幕，只是流不同。
     /// </para>
+    /// <para>
+    /// 新版布局里这条的结构保证更强：stderr 走 <c>RunExclusive</c>，
+    /// 光标恒在正文区，而正文区被 DECSTBM 挡住了底部三行。
+    /// 所以断言可以写成"错误行必须出现在活动行上方"——是被验证过的位置关系，
+    /// 不只是"没叠在一起"。
+    /// </para>
     /// </remarks>
     private static string? StderrDoesNotCollide()
     {
-        // 复现真机布局：先有一段正文，再画出区域（区域在正文下方），
-        // 然后写 stderr。真机上区域已经占了底部两行，stderr 直接打在
-        // 光标当前行——若不先擦区域，就会把那两行覆盖掉或与之重叠。
         var (live, _) = ReplayRegion(rich =>
         {
             rich.RunExclusive(() => Output.Control("你好\n"));
-            rich.SetLines(["  思考中… 2s", "  模型 · 2s"]);
+            rich.SetActivity("ACTIVITYMARK");
+            rich.SetStatus("STATUSMARK");
             Output.Diagnostics("  [结束：Failed] 模型流中断\n");
         });
 
@@ -3031,33 +3533,35 @@ public static class TerminalChecks
 
         if (errorLine < 0) return "错误行没写出来：\n" + live.Dump();
 
-        // 错误行必须完整可读——被区域覆盖时会缺字或叠字。
+        // 错误行必须完整可读——被底部块覆盖时会缺字或叠字。
         if (!lines[errorLine].Contains("模型流中断", StringComparison.Ordinal))
-            return "错误行被区域覆盖或截断：\n" + live.Dump();
+            return "错误行被底部块覆盖或截断：\n" + live.Dump();
 
         // 正文不能被挤掉。
         if (!text.Contains("你好", StringComparison.Ordinal))
             return "正文丢失：\n" + live.Dump();
 
-        // 区域内容若还在，必须在错误行下方，不能压在它上面。
-        var activityLine = Array.FindIndex(lines, l => l.Contains("思考中", StringComparison.Ordinal));
-        if (activityLine >= 0 && activityLine <= errorLine)
-            return "活动行压在错误行上方：\n" + live.Dump();
+        var activityLine = Array.FindIndex(lines, l => l.Contains("ACTIVITYMARK", StringComparison.Ordinal));
+        if (activityLine < 0) return "活动行丢失：\n" + live.Dump();
 
-        return null;
+        return errorLine < activityLine
+            ? null
+            : $"错误行在第 {errorLine} 行、活动行在第 {activityLine} 行——错误必须在正文区：\n"
+                + live.Dump();
     }
 
     /// <summary>
-    /// 补白后的活动行不得触发终端自动折行。
+    /// 补白后的活动行与状态栏不得触发终端自动折行。
     /// </summary>
     /// <remarks>
     /// <b>这条防的是真机上真实发生过的缺陷</b>（2026-10-29 截图）：
     /// 活动行被补白到正好等于终端宽度，写满最后一列时终端自动折行，
-    /// 光标跳到下一行；于是 <c>ESC[1E</c> 定位多走一行，文字全错位，
+    /// 光标跳到下一行；于是定位多走一行，文字全错位，
     /// 屏幕上只剩一个 spinner。
     /// <para>
-    /// <b>前几条 VT 检查查不到它</b>：那些用 <c>SetLines</c> 直接塞短字符串，
-    /// 根本不经过补白。这条必须真的走 <see cref="StatusLine.RenderActivity"/>。
+    /// <b>前几条 VT 检查查不到它</b>：那些用短字符串直接塞槽位，
+    /// 根本不经过补白。这条必须真的走 <see cref="StatusLine.RenderActivity"/>
+    /// 与 <see cref="StatusLine.RenderStatus"/>。
     /// </para>
     /// </remarks>
     private static string? PaddedLineNoWrap()
@@ -3072,7 +3576,7 @@ public static class TerminalChecks
             var activity = StatusLine.RenderActivity(state, now, width);
             if (activity is null) return $"宽 {width} 应渲染活动行";
 
-            var status = StatusLine.RenderStatus("model", null, 0, TimeSpan.FromSeconds(3), width);
+            var status = StatusLine.RenderStatus("model", null, 0, width);
 
             foreach (var line in new[] { activity, status })
             {

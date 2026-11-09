@@ -75,123 +75,27 @@ public static class StatusLine
     private static string CompactTokens(int used) => $"{FormatTokens(used)} tok";
 
     /// <summary>
-    /// 生成**单行**状态行：忙闲共用同一个槽位。
+    /// 生成**活动行**（阶段指示）。返回 null 表示当前不该显示。
     /// </summary>
     /// <remarks>
-    /// <b>这是 P4 的核心改动</b>：原来底部是"活动行 + 状态栏"两行，
-    /// 而 Hermes **从头到尾只有一行**（<c>appChrome.tsx:735-745</c>：
-    /// 忙时渲染 <c>FaceTicker</c>，闲时渲染静态 status 文案，同一个槽位）。
+    /// <b>活动行是独立的一行，不在状态栏里</b>（用户 2026-11-05 的版式要求）。
+    /// P4 阶段曾把两者合并成一行、贴在屏幕最底，结果"忙"这件事出现在
+    /// 用户视线的下方——而它恰恰是最该先被看到的信息。现在它独占
+    /// 输入行**上方**那行，忙时出现、闲时留空。
     ///
     /// <para>
-    /// 合并的收益不只是省一行：<b>空闲时底部不再是空的</b>。原来轮次一结束
-    /// 就 <c>SetLines([])</c> 整块收起，用户看到的是"底部空荡"——
-    /// 而 Hermes 的空闲状态行始终在，能看到模型名与上下文占用。
+    /// <b>只放"正在发生什么"</b>：spinner + 面孔 + 阶段文案 + 阶段耗时。
+    /// 模型名与上下文占用归状态栏——那两个是"环境"不是"事件"，
+    /// 混在一起会让同一行既变又不变，读起来费劲。
     /// </para>
     ///
     /// <para>
-    /// <b>渐进披露照抄 Hermes 的判据</b>（<c>appChrome.tsx:596-660</c>）：
-    /// 左段（指示符 / 模型）**不可压缩**、先占位；尾部段按
-    /// <c>bar → duration → compressions → cost</c> 的顺序逐个尝试，
-    /// **放不下的整段丢弃，而不是截断中间**。
-    /// 这比"整行截断"好：它保证"模型名和上下文占用永远能看到"。
-    /// </para>
-    ///
-    /// <para>
-    /// 宽度不足 40 时只留指示符——那时连模型名都放不下，
+    /// 宽度不足 40 时只留 spinner：那时连阶段文案都放不下，
     /// 而"它在动"是这一行唯一不可让渡的信息。
     /// </para>
     /// </remarks>
-    /// <param name="state">活动状态机；null 表示空闲（显示静态状态行）。</param>
-    /// <param name="model">模型名。</param>
-    /// <param name="tokensUsed">已用 token；null 表示未知。</param>
-    /// <param name="contextWindow">上下文窗口；0 表示不显示占用。</param>
-    /// <param name="turnElapsed">本轮耗时；空闲时传上一轮的即可。</param>
-    /// <param name="now">当前时刻（spinner 与面孔轮换用）。</param>
-    /// <param name="width">可用宽度。</param>
-    public static string RenderSingleLine(
-        ActivityState? state,
-        string model,
-        int? tokensUsed,
-        int contextWindow,
-        TimeSpan turnElapsed,
-        DateTimeOffset now,
-        int width)
-    {
-        ArgumentNullException.ThrowIfNull(model);
-
-        var busy = state is { Phase: not ActivityPhase.Idle } && state.ShouldDisplay;
-
-        // ── 左段：不可压缩，先占位 ──────────────────────────
-        string indicator;
-        if (busy)
-        {
-            var spinner = PickSpinner(now);
-            var face = PickFace(state!.Phase, now);
-            var label = Labels.TryGetValue(state.Phase, out var found) ? found : string.Empty;
-
-            // 极窄终端：只留 spinner。连"它在动"都要省掉时这一行就没意义了。
-            if (width < 24) return spinner;
-
-            indicator = string.IsNullOrEmpty(face)
-                ? $"{spinner} {label}"
-                : $"{spinner} {face} {label}";
-        }
-        else
-        {
-            // 空闲：不是"什么都没有"，而是"待命"。
-            // 用一个静态符号而不是 spinner——转着的东西会让用户以为还在跑。
-            indicator = "◇";
-        }
-
-        var builder = new StringBuilder(indicator);
-
-        // ── 模型名：不可压缩（放不下就整行只有指示符）──────
-        if (width >= 40)
-            builder.Append(Separator).Append(model);
-
-        // ── 尾部段：按优先级逐个 fits() 尝试 ────────────────
-        var tail = new List<string>();
-        if (contextWindow > 0)
-        {
-            if (tokensUsed is { } used)
-            {
-                var percent = Math.Min(100, used * 100 / contextWindow);
-                tail.Add(width >= 80
-                    ? $"{FormatTokens(used)}/{FormatTokens(contextWindow)} {RenderGauge(percent, 10)} {percent}%"
-                    : CompactTokens(used));
-            }
-            else
-            {
-                // **还没调用过模型时显示窗口容量，而不是整段消失**。
-                //
-                // 第一版在没有用量时直接跳过这一段，于是启动后状态行只剩
-                // "◇ │ 模型名"——用户看不出这个会话的上下文预算是多少，
-                // 而那正是他最想确认的事之一（"这个模型能装多少"）。
-                //
-                // 只报容量不报占用：报一个 0% 会让人以为"已经用了一点"，
-                // 而实际是一次请求都还没发。容量本身就是确定信息。
-                tail.Add($"≤{FormatTokens(contextWindow)}");
-            }
-        }
-
-        if (busy || turnElapsed > TimeSpan.Zero)
-            tail.Add(FormatDuration(turnElapsed));
-
-        foreach (var segment in tail)
-        {
-            var candidate = builder + Separator + segment;
-            if (DisplayWidth.Of(candidate) > width - 1) break;   // 放不下就停
-            builder.Append(Separator).Append(segment);
-        }
-
-        return PadToWidth(builder.ToString(), width);
-    }
-
-    /// <summary>
-    /// 生成活动行。返回 null 表示当前不该显示。
-    /// </summary>
     /// <param name="state">活动状态机。</param>
-    /// <param name="now">当前时刻。</param>
+    /// <param name="now">当前时刻（spinner 与面孔轮换用）。</param>
     /// <param name="width">可用宽度。</param>
     public static string? RenderActivity(ActivityState state, DateTimeOffset now, int width)
     {
@@ -216,36 +120,92 @@ public static class StatusLine
     }
 
     /// <summary>
-    /// 生成状态栏（模型 · 上下文 · 耗时）。
+    /// 生成**状态栏**（模型 · 上下文）。**常驻**，贴屏幕最底。
     /// </summary>
+    /// <remarks>
+    /// <b>渐进披露照抄 Hermes 的判据</b>（<c>appChrome.tsx:596-660</c>）：
+    /// 模型名**不可压缩**、先占位；尾部段按 <c>bar → tokens</c> 的顺序逐个尝试，
+    /// **放不下的整段丢弃，而不是截断中间**。
+    /// 这比"整行截断"好：它保证"模型名和上下文占用永远能看到"。
+    ///
+    /// <para>
+    /// <b>不含耗时</b>：耗时是"这一轮跑了多久"，属于事件，已经由活动行显示。
+    /// 两处都显示同一件事只会让人怀疑它们不一致。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>耗时只在空闲时由状态栏补上</b>（<paramref name="idleTurnElapsed"/>）：
+    /// 忙时活动行已经在报"这一阶段跑了多久"，两处同时显示只会让人怀疑
+    /// 它们不一致。轮次一结束活动行消失，那时状态栏接过来报本轮总时长——
+    /// 于是任何时刻都恰好有一处在报时间，信息不丢也不重复。
+    /// </para>
+    ///
+    /// <para>
+    /// 宽度不足 40 时只剩模型名：它是这一行唯一不可让渡的信息，
+    /// 而上下文占用随时可以用 <c>/status</c> 查。尾部段按 fits 判据
+    /// 逐个尝试，放不下就停。
+    /// </para>
+    /// </remarks>
     /// <param name="model">模型名。</param>
     /// <param name="tokensUsed">已用 token；null 表示未知。</param>
-    /// <param name="contextWindow">上下文窗口；0 表示未启用压缩。</param>
-    /// <param name="turnElapsed">本轮耗时。</param>
+    /// <param name="contextWindow">上下文窗口；0 表示不显示占用。</param>
     /// <param name="width">可用宽度。</param>
+    /// <param name="idleTurnElapsed">
+    /// 上一轮耗时；**只在空闲时传**（忙时传 null，活动行负责显示）。
+    /// </param>
     public static string RenderStatus(
         string model,
         int? tokensUsed,
         int contextWindow,
-        TimeSpan turnElapsed,
-        int width)
+        int width,
+        TimeSpan? idleTurnElapsed = null)
     {
         ArgumentNullException.ThrowIfNull(model);
 
-        var parts = new List<string> { model };
+        var builder = new StringBuilder("  ");
+        builder.Append(model);
 
-        if (tokensUsed is { } used && contextWindow > 0)
+        // ── 尾部段：按优先级逐个 fits() 尝试 ────────────────
+        var tail = new List<string>();
+
+        if (contextWindow > 0)
         {
-            var percent = Math.Min(100, used * 100 / contextWindow);
-            parts.Add($"{FormatTokens(used)}/{FormatTokens(contextWindow)}");
-            parts.Add(RenderGauge(percent, width >= 80 ? 10 : 5) + $" {percent}%");
+            if (tokensUsed is { } used)
+            {
+                var percent = Math.Min(100, used * 100 / contextWindow);
+
+                // 宽终端：进度条比 token 数更直观，但 token 数是精确值，两个都给。
+                // 窄终端放不下整条，按 Hermes 的做法压成 `12K tok` 并丢掉进度条。
+                tail.Add(width >= 80
+                    ? $"{FormatTokens(used)}/{FormatTokens(contextWindow)} {RenderGauge(percent, 10)} {percent}%"
+                    : CompactTokens(used));
+            }
+            else
+            {
+                // **还没调用过模型时显示窗口容量，而不是整段消失**。
+                //
+                // 启动后状态行只剩"模型名"的话，用户看不出这个会话的上下文
+                // 预算是多少，而那正是他最想确认的事之一（"这个模型能装多少"）。
+                //
+                // 只报容量不报占用：报一个 0% 会让人以为"已经用了一点"，
+                // 而实际是一次请求都还没发。容量本身就是确定信息。
+                tail.Add($"≤{FormatTokens(contextWindow)}");
+            }
         }
 
-        parts.Add(FormatDuration(turnElapsed));
+        // 耗时永远排在最后：它是最容易舍弃的一段。忙时为空——
+        // 那时活动行在报时间，见上面 summary 的说明。
+        if (idleTurnElapsed is { } elapsed && elapsed > TimeSpan.Zero)
+            tail.Add(FormatDuration(elapsed));
 
-        var line = "  " + string.Join(" · ", parts);
-        if (width > 0 && DisplayWidth.Of(line) > width) line = TruncateToWidth(line, width);
-        return line;
+        foreach (var segment in tail)
+        {
+            var candidate = builder + Separator + segment;
+            if (DisplayWidth.Of(candidate) > width - 1) break;   // 放不下就停
+            builder.Append(Separator).Append(segment);
+        }
+
+        return PadToWidth(builder.ToString(), width);
     }
 
     /// <summary>上下文占用率的小进度条。</summary>
