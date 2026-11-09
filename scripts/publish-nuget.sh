@@ -63,14 +63,14 @@ for p in "${PACKAGES[@]}"; do
     echo "  缺失：$f" >&2
     missing=1
   else
-    printf "  %-10s %8d B\n" "$p" "$(stat -c%s "$f")"
+    printf "  %-10s %8d B\n" "$p" "$(wc -c < "$f")"
   fi
 done
 [ "$missing" -eq 0 ] || exit 1
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo
-  echo "== dry-run：以上 7 个包会被推到 $SOURCE（顺序如下）=="
+  echo "== dry-run：以上 7 个包会被推到 ${SOURCE}（顺序如下）=="
   printf '  %s\n' "${PACKAGES[@]}"
   echo
   echo "确认无误后去掉 --dry-run 再跑一次。"
