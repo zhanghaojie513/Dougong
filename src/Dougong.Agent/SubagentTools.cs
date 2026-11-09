@@ -126,7 +126,8 @@ public sealed class SubagentTool : IAgentTool
                 + "等其中一个结束再启动新的（用 subagent_list 查看）。");
 
         var id = $"sub-{Guid.NewGuid().ToString("N")[..12]}";
-        var handle = new SubagentHandle(id, label);
+        // ParentTurnId 从这一处就填上：界面要能把它归到发起它的那一轮下面。
+        var handle = new SubagentHandle(id, label) { ParentTurnId = _parentTurnId };
 
         await _registry.RegisterAsync(handle, cancellationToken).ConfigureAwait(false);
 

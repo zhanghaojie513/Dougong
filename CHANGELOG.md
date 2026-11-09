@@ -19,6 +19,124 @@
 
 ---
 
+## [Unreleased]
+
+**两件事：底部改为三行固定块；宿主契约补上权限预设与子 agent（C5 / C8）。**
+
+### Added
+
+- **`Dougong.HostProtocol` 补上权限预设的契约**（桌面端 C5）：
+  `ListPermissionPresetsCommand` / `SwitchPermissionPresetCommand` /
+  `PermissionPresetListedEvent`，以及 `PermissionPresetInfo` /
+  `PermissionPresetState`。此前 `PermissionPresets` 只在引擎里，
+  桌面端拿不到——它若自己引用 `Dougong.Agent` 再实现一遍，
+  就绕过了 HostProtocol 这个唯一契约，变成两套并行语义。
+
+- **`Dougong.HostProtocol` 补上子 agent 的契约**（桌面端 C8）：
+  `ListSubagentsCommand` / `TakeSubagentResultCommand` /
+  `CancelSubagentCommand` / `SubagentsListedEvent` / `SubagentUpdatedEvent`，
+  以及 `SubagentInfo` / `SubagentOutcome` / `SubagentRunState`。
+  子 agent 消耗同一份额度却不在主对话的条目流里，界面此前完全看不见。
+
+- **`Dougong.Hosting` 新增 `ProtocolMapping`**：引擎类型 ↔ 协议形状的映射。
+  **所有宿主共用这一份**——"引擎枚举对应协议枚举"这条知识若留在各宿主里，
+  每个都要重写一遍，而写错是静默的（枚举加值时两边都编译通过，
+  只是那个值在界面上显示成别的东西）。为此 `Dougong.Hosting` 新增对
+  `Dougong.HostProtocol` 的引用（L2 → L0，分层允许）。
+
+- **`SubagentHandle` 补 `StartedAt` / `ParentTurnId` / `ToolRounds` /
+  `CurrentStatus` / `IsRunning` / `Complete()`**。前三个是宿主回答
+  "这个子 agent 跑了多久、是哪一轮派的、跑了几轮工具"所必需的；
+  `CurrentStatus` 把"已结束但结果未取走"这条判断收成一份，
+  不让每个宿主自己拼 `IsCompleted` 与 `Result`。
+
+### Added（协议服务端）
+
+- **`Dougong.Hosting` 新增 `HostProtocolServer`**：宿主协议的参考服务端。
+  从裸 `Stream` 读 `ClientCommand`、向裸 `Stream` 写 `ServerEvent`（按行分帧的 JSON）。
+  能力由 **`IHostSessionProvider`** 注入，服务端只认接口——
+  **不引用任何具体宿主工程**，桌面端 / CLI / 第三方各给各的。
+
+  - 已实现：`permission/presets`、`permission/switch`、
+    `subagent/list`、`subagent/result`、`subagent/cancel`
+  - 其余命令（`turn/start` 等）明确回 `CommandFailureReason.Unsupported`，
+    **不假装支持**。静默不响应是最坏的形态：客户端只能等到超时，
+    用户永远看不到原因。
+
+- **子 agent 完成时会主动推送 `subagent/updated`**（事件驱动，不必轮询）。
+  引擎侧新增两个通知源：`SubagentHandle.Changed`（单个句柄结束）与
+  `SubagentRegistry.Completed`（任一子 agent 结束，注册时自动转发、
+  注销时自动摘下）。服务端在第一次见到某会话的注册表时订阅它，
+  之后每次结束都推一条。
+
+  此前 `subagent/updated` 只在契约里存在，**服务端从未发出过一条**——
+  因为引擎根本没有可订阅的通知源。契约先于实现存在时看不见这个洞。
+
+- **子 agent 启动时也推送**（`Started` 事件）。此前只推完成——
+  界面要等它跑完才知道它存在过，而那时它已经开始花额度了；
+  多子 agent 并发时"谁先开始"在轮询模型下完全看不到。
+  现在一条 `Started`（Running）+ 一条 `Completed` 构成完整生命周期。
+
+- **新增 `permission/watch` 命令：权限变更的可选广播**（默认关闭）。
+  单窗口客户端自己切、自己收响应就够了，多推是多余的一帧；
+  只有"多个界面同时看同一个会话"（例如 Dock 浮动窗与主窗口并存）
+  才需要。订阅是幂等的，`Enabled: false` 可退订。
+  广播那条**不带 `RequestId`**（它是状态更新，不是对某条命令的回答）。
+
+- **`ServerEvent` 补 `RequestId`**。此前只有 `ClientCommand` 有它，
+  而事件从不回传——命令与响应只能靠"顺序"配对，一旦有推送事件插在中间就失效。
+  契约先于实现存在时看不到这个洞；补服务端时第一件就撞上。
+
+- **新增 `CommandFailedEvent` 与 `CommandFailureReason`**
+  （`Unsupported` / `Invalid` / `Conflict` / `Failed`）。
+  失败也是事件，带 `RequestId` 与原来的命令配对。
+  四种原因分开是因为客户端对它们的正确反应不同：
+  `Unsupported` 该隐藏入口（重试永远不会成功），`Failed` 该显示错误并允许重试。
+
+### Fixed
+
+- **锚定模式下 `LiveRegion.Clear()` 不清屏**，退出后底部三行留在终端上
+  （用户回 shell 还能看到「重试中…」）。根因是 `Clear()` 只调相对模式的擦除，
+  而那个方法在锚定模式下直接返回。现在锚定模式逐行清三行，且在
+  **复原滚动区之前**完成。真机验证：`/exit` 之后字节流是
+  `清 38/39/40 行 → ESC[r`。
+
+- **`CommandFailedEvent.Method` 与多态判别器 `<c>method</c>` 撞名**，
+  序列化时抛 `InvalidOperationException`（"conflicts with an existing
+  metadata property name"）。这个冲突在编译期看不出来，只在第一次序列化时炸。
+  已改序列化为 `failedMethod`。
+
+- **忙时活动行跑到了输入行下面**（用户 2026-11-05 报告，附实机截图）。
+  根因不是排版算错，而是**底部块待在正文滚动区里**：正文一长，整块被推走，
+  想让块留在原地就只能按绝对行号重画，而正文又从那些行写起，
+  于是"谁后画谁赢"，次序完全由时序决定。现在用 DECSTBM 把正文限制在
+  `1..height-3` 内滚动，底部三行**物理上不可能被正文碰到**——版式变成
+  结构保证，而不是时序巧合。
+
+- **`SubagentHandle.Completion` 的初值是 `Task.CompletedTask`**，
+  于是刚创建、还没交给运行器的句柄立刻被判成"已结束"。此前没人用它
+  判断"是否在运行"，所以这个洞一直没暴露；补宿主可见性时第一个就撞上。
+  改为永不完成的 `TaskCompletionSource().Task`。
+
+### Changed
+
+- **活动行与状态栏拆成两个独立槽位**（撤销 0.1.18-alpha.1 的"单行合并"）：
+  - 活动行：spinner + 面孔 + 阶段文案 + 阶段耗时，**仅忙时**出现，
+    位于输入行**上方**
+  - 输入行：`> ` 常驻
+  - 状态栏：模型 · 上下文占用，**常驻**，贴屏幕最底
+- **状态栏不再显示本轮耗时**：那是"这一轮跑了多久"，属于事件，归活动行。
+  两处都显示同一件事只会让人怀疑它们不一致。
+- **用户输入会写进正文转录**：输入行在底部块里，终端回声留在那一行、
+  下一轮就被覆盖。现在提交时由底部区域把 `> 输入` 重新写进正文区。
+- **窄终端与高度未知的终端退回单行**（忙时活动行、闲时状态栏）：
+  三行版式依赖滚动区与绝对行定位，那两档都不具备。这是有意的降级，
+  不是缺失。
+- 启动面板的高度判据把底部预留从 2 行改成 3 行。
+- **`SubagentStatus` 追加 `Running` 到末尾**。插在开头会让已有三个值
+  全部后移一位，那种错位在日志里就是一个词对不上、查起来毫无线索
+  （ApiCompat `CP0011` 拦下过一次）。
+
 ## [0.1.18-alpha.1] — 2026-11-05
 
 **终端呈现改造：全屏化、`DOUGONG-HARNESS` 字标、启动面板、单行状态行、黑白灰默认。**

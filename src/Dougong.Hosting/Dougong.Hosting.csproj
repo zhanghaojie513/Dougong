@@ -11,6 +11,12 @@
   <ItemGroup>
     <ProjectReference Include="..\Dougong.Kernel\Dougong.Kernel.csproj" />
     <ProjectReference Include="..\Dougong.Agent\Dougong.Agent.csproj" />
+    <!-- 协议映射：把引擎类型翻译成宿主契约的形状。
+         放这里而不是 HostProtocol，因为契约包零依赖、不能引用 Agent；
+         也不放在各宿主里，否则"引擎枚举 ↔ 协议枚举"这条知识要重写 N 遍，
+         而写错是静默的（枚举加值时两边都编译通过）。
+         分层 L2 → L0 允许（见 ArchitectureBoundaryTests.Layers）。 -->
+    <ProjectReference Include="..\Dougong.HostProtocol\Dougong.HostProtocol.csproj" />
   </ItemGroup>
 
 </Project>

@@ -232,10 +232,60 @@ public abstract partial record ConversationItem
 [JsonDerivedType(typeof(StartTurnCommand), "turn/start")]
 [JsonDerivedType(typeof(CancelTurnCommand), "turn/cancel")]
 [JsonDerivedType(typeof(RespondApprovalCommand), "approval/respond")]
+[JsonDerivedType(typeof(ListPermissionPresetsCommand), "permission/presets")]
+[JsonDerivedType(typeof(SwitchPermissionPresetCommand), "permission/switch")]
+[JsonDerivedType(typeof(WatchPermissionPresetsCommand), "permission/watch")]
+[JsonDerivedType(typeof(ListSubagentsCommand), "subagent/list")]
+[JsonDerivedType(typeof(TakeSubagentResultCommand), "subagent/result")]
+[JsonDerivedType(typeof(CancelSubagentCommand), "subagent/cancel")]
 public abstract record ClientCommand
 {
     /// <summary>请求 ID。响应带同一个 ID 回来，用于配对。</summary>
     public required string RequestId { get; init; }
+
+    /// <summary>
+    /// 这条命令的判别器（例如 <c>turn/start</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <b>从 <see cref="JsonDerivedTypeAttribute"/> 派生，不靠手写一张映射表</b>：
+    /// 服务端要把原始判别器回报给客户端（例如失败事件里的
+    /// <c>failedMethod</c>），而手写映射表必然与这里的特性登记漂移——
+    /// 加了新命令却忘了改表，回报的就变成类名，而客户端认不出它。
+    ///
+    /// <para>
+    /// 派生在这里而不是服务端，是因为**这份知识属于契约**：
+    /// 判别器写在哪，就该从哪读。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>必须标 <see cref="JsonIgnoreAttribute"/></b>：判别器本身已经占了
+    /// 线上 <c>method</c> 这个字段名，把这个属性也序列化会直接撞车
+    /// （与 <c>CommandFailedEvent.Method</c> 踩的是同一个坑）。
+    /// </para>
+    /// </remarks>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Method => MethodOf(GetType());
+
+    /// <summary>查某个命令类型的判别器；未登记时退回类型名。</summary>
+    /// <remarks>
+    /// <b>退回类型名而不是抛异常</b>：未登记的类型本就不该出现在线上
+    /// （<c>all-derived-types-register-discriminator</c> 会拦住它）。
+    /// 这里抛异常会让一条"本该被拒绝"的消息变成连接级故障。
+    /// </remarks>
+    public static string MethodOf(Type commandType)
+    {
+        ArgumentNullException.ThrowIfNull(commandType);
+
+        foreach (var attr in typeof(ClientCommand)
+            .GetCustomAttributes(typeof(JsonDerivedTypeAttribute), inherit: false)
+            .Cast<JsonDerivedTypeAttribute>())
+        {
+            if (attr.DerivedType == commandType)
+                return attr.TypeDiscriminator?.ToString() ?? commandType.Name;
+        }
+
+        return commandType.Name;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -276,8 +326,33 @@ public abstract record ClientCommand
 [JsonDerivedType(typeof(ItemUpdatedEvent), "item/updated")]
 [JsonDerivedType(typeof(ApprovalRequestedEvent), "approval/requested")]
 [JsonDerivedType(typeof(EngineStatusEvent), "engine/status")]
+[JsonDerivedType(typeof(PermissionPresetListedEvent), "permission/listed")]
+[JsonDerivedType(typeof(SubagentsListedEvent), "subagent/listed")]
+[JsonDerivedType(typeof(SubagentUpdatedEvent), "subagent/updated")]
+[JsonDerivedType(typeof(CommandFailedEvent), "command/failed")]
 public abstract record ServerEvent
 {
     /// <summary>单调递增序号，用于检测缺口。</summary>
     public required long Sequence { get; init; }
+
+    /// <summary>
+    /// 这条事件回应的是哪个命令。**推送类事件为 null。**
+    /// </summary>
+    /// <remarks>
+    /// <b>没有它，客户端无法知道"我这条命令处理得怎么样了"</b>：
+    /// <see cref="ClientCommand.RequestId"/> 一直在，但事件从不回传它，
+    /// 于是命令与响应只能靠"顺序"配对——而推送事件（回合进度、子 agent 更新）
+    /// 会插在中间，顺序配对立刻失效。
+    ///
+    /// <para>
+    /// <b>为什么会这样</b>：契约先有了命令与事件，但当时没有任何服务端实现，
+    /// 所以"配对"这件事从未被真正跑过一遍。补服务端时它是第一件撞上的缺口。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>推送类事件必须留 null</b>：给它填一个"最近一次请求"的 id 会让客户端
+    /// 误以为那是响应。宁可缺失，不要填错。
+    /// </para>
+    /// </remarks>
+    public string? RequestId { get; init; }
 }

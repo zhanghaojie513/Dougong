@@ -130,12 +130,66 @@ public sealed class SubagentRegistry : IAsyncDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             _active[handle.Id] = handle;
+
+            // **在这一刻就挂上转发**，而不是让订阅方去遍历现有句柄：
+            // 订阅方（协议层 / UI）通常比第一个子 agent 更早存在，
+            // 让它"订阅时遍历一遍、之后每个新的再挂一次"是把时序知识
+            // 推给调用方。注册表自己知道每次有谁进来，就该由它转发。
+            handle.Changed += OnHandleChanged;
+
+            // 登记本身就是"出现了"这件事。**必须在锁内、在释放前触发**：
+            // 调用方拿到 Started 之后通常会立刻去查列表，
+            // 若此时那边还没登记完，就会查不到刚通知过的那个 id。
+            Started?.Invoke(handle);
         }
         finally
         {
             _gate.Release();
         }
     }
+
+    /// <summary>
+    /// 任何一个子 agent 结束时的通知。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是宿主做事件驱动的入口。</b>只报"结束了"（成功/失败/取消都会来），
+    /// 不报中途进度——子 agent 的中间过程应当留在子上下文里。
+    ///
+    /// <para>
+    /// <b>回调在子 agent 的收尾线程上执行</b>，不要在回调里做阻塞等待
+    /// （例如等子 agent 自己的完成 Task，那是死锁）。要刷新就异步投递。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>它只在句柄被取消订阅/注销后停止</b>：注销时转发会摘掉，
+    /// 所以不会出现"取走结果之后还推一条"。
+    /// </para>
+    /// </remarks>
+    public event Action<SubagentHandle>? Completed;
+
+    /// <summary>
+    /// 有新的子 agent 被登记（即"开始了"）。
+    /// </summary>
+    /// <remarks>
+    /// <b>没有它，界面只能靠轮询发现"多了一个"</b>：只推 <see cref="Completed"/>
+    /// 的话，用户在主对话还在生成正文时完全看不到"模型又派了一个子 agent 出去"
+    /// ——而那正是额度开始被消耗的时刻。
+    ///
+    /// <para>
+    /// <b>与 <see cref="Completed"/> 成对</b>：一条 Started、一条 Completed，
+    /// 界面就能维护完整的生命周期，不必在中间轮询。中间的工具轮数变化
+    /// **不推**（那是过程，不该漏回主侧）。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>回调在登记方的线程上、且在注册表的锁内执行</b>：回调里不能
+    /// 同步等待注册表的其它方法（会死锁）。要查列表就异步投递出去。
+    /// </para>
+    /// </remarks>
+    public event Action<SubagentHandle>? Started;
+
+    /// <summary>把句柄的结束通知转发给注册表级订阅者。</summary>
+    private void OnHandleChanged(SubagentHandle handle) => Completed?.Invoke(handle);
 
     /// <summary>注销（结果已取走，或被丢弃）。</summary>
     /// <param name="id">子 agent 标识。</param>
@@ -145,7 +199,13 @@ public sealed class SubagentRegistry : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _active.Remove(id);
+            if (_active.Remove(id, out var removed))
+            {
+                // **必须摘掉转发**：不摘的话句柄会被事件持有，注销之后
+                // 一条迟到的通知仍会推到已经取走结果的订阅方——
+                // 而那个 id 已经不在列表里了，界面会显示一个幽灵条目。
+                removed.Changed -= OnHandleChanged;
+            }
         }
         finally
         {
@@ -235,6 +295,7 @@ public sealed class SubagentHandle : IDisposable
     {
         Id = id;
         Label = label;
+        StartedAt = DateTimeOffset.UtcNow;
     }
 
     /// <summary>子 agent 标识。</summary>
@@ -243,14 +304,163 @@ public sealed class SubagentHandle : IDisposable
     /// <summary>短语描述，用于列表展示。</summary>
     public string Label { get; }
 
-    /// <summary>任务是否已经结束（完成、失败或取消）。</summary>
+    /// <summary>
+    /// 启动时刻。
+    /// </summary>
+    /// <remarks>
+    /// <b>宿主需要它才能回答"这个子 agent 跑了多久"</b>：子 agent 消耗的是
+    /// 同一份额度却不在主对话的条目流里，用户看不清代价。
+    /// 只报"在跑"和报"已经跑了 4 分钟"是两种完全不同的知情程度。
+    /// </remarks>
+    public DateTimeOffset StartedAt { get; }
+
+    /// <summary>
+    /// 发起它的那一轮；未知时为 null。
+    /// </summary>
+    /// <remarks>
+    /// <b>界面据此把它归到对应回合下面</b>，而不是漂在会话级——
+    /// 否则用户看到一串子 agent，却不知道它们是因为哪句话被派出去的。
+    /// </remarks>
+    public string? ParentTurnId { get; init; }
+
+    /// <summary>
+    /// 是否已经被请求停止。
+    /// </summary>
+    /// <remarks>
+    /// <b>它回答"点了停止之后到底有没有生效"</b>：取消是请求不是立即终止，
+    /// 界面要把"已请求停止"与"已停止"分开显示。没有这个属性时，
+    /// 调用方只能靠"状态还没变"来猜，而那是无法区分的
+    /// ——"请求丢了"和"正在跑当前工具调用"看起来一模一样。
+    /// </remarks>
+    public bool IsCancellationRequested
+    {
+        get
+        {
+            try { return _cts.IsCancellationRequested; }
+            catch (ObjectDisposedException) { return true; }
+        }
+    }
+
+    /// <summary>已跑的工具轮数；未知时为 null（供判断"值不值"）。</summary>
+    public int? ToolRounds { get; internal set; }
+
+    /// <summary>
+    /// 任务是否已经结束（完成、失败或取消）。
+    /// </summary>
+    /// <remarks>
+    /// <b>它与 <see cref="Result"/> 是分开维护的</b>：跑完了但结果还没被取走时，
+    /// 句柄仍在列表里、<c>IsCompleted</c> 为真、<c>Result</c> 有值。
+    /// 所以判断"现在是什么状态"不能只看它——用 <see cref="CurrentStatus"/>。
+    /// </remarks>
     public bool IsCompleted => Completion.IsCompleted;
+
+    /// <summary>
+    /// 当前状态。**宿主与诊断都应该用这个，不要自己拼 <c>IsCompleted</c> 与 <c>Result</c>。**
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么这条判断只该有一份</b>：只看 <see cref="IsCompleted"/> 会把
+    /// "已结束、等你去取结果"报成"还在跑"，于是界面一直显示一个已经结束的
+    /// 任务在转圈。每个宿主各写一遍这个三元判断，就会各自错一次。
+    /// </remarks>
+    public SubagentStatus CurrentStatus => Result?.Status
+        ?? (IsCompleted
+            // 结束了却没有结果：被取消或异常退出，引擎没留下 SubagentResult。
+            ? SubagentStatus.Cancelled
+            : SubagentStatus.Running);
+
+    /// <summary>是否仍在运行。</summary>
+    public bool IsRunning => !IsCompleted;
 
     /// <summary>最终结果；未完成时为 null。</summary>
     public SubagentResult? Result { get; internal set; }
 
-    /// <summary>完成信号（无论成败都会完成）。</summary>
-    internal Task Completion { get; set; } = Task.CompletedTask;
+    /// <summary>
+    /// 状态变化通知。**子 agent 结束（无论成败）时触发一次，且只触发一次。**
+    /// </summary>
+    /// <remarks>
+    /// <b>宿主靠它做事件驱动，而不是轮询。</b>没有这个通知源时，界面只能定时
+    /// 调 <c>subagent_list</c> 才知道"跑完了"——延迟等于轮询间隔，
+    /// 而子 agent 可能跑几分钟，这期间的每次轮询都是无意义的往返。
+    ///
+    /// <para>
+    /// <b>它只报"结束了"，不报进度</b>：子 agent 的意义是中间过程留在
+    /// 子上下文里。逐工具回调会把那些过程漏回主侧，正好抵消隔离。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>必须保证只触发一次</b>：重复触发会让界面收到两条"已完成"，
+    /// 而消费方通常按"收到即刷新"处理——那会多刷一次，更糟的是
+    /// 如果它在回调里取结果，第二条就取不到了（结果已取走）。
+    /// </para>
+    /// </remarks>
+    public event Action<SubagentHandle>? Changed;
+
+    /// <summary>
+    /// 记录子 agent 已结束及其结果。**由运行它的那一侧调用**（引擎内部或宿主）。
+    /// </summary>
+    /// <remarks>
+    /// <b>它同时置结果与完成信号，不让调用方分两步做</b>：分两步时很容易
+    /// 只做一半——只置结果不置完成信号，<c>IsCompleted</c> 就一直是假，
+    /// 界面显示"还在跑"而其实早结束了。这个组合是个不可分的整体，
+    /// 所以收进一个方法里。
+    ///
+    /// <para>
+    /// <b>重复调用是安全的，但只通知一次</b>：子 agent 的收尾路径有多条
+    /// （正常结束、异常、取消），它们可能在极端时序下都走到这里。
+    /// 用 <c>_completionNotified</c> 挡住第二次通知，而不是挡住第二次赋值
+    /// ——后者会让结果丢失。
+    /// </para>
+    /// </remarks>
+    /// <param name="result">最终结果。</param>
+    public void Complete(SubagentResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        Result = result;
+        Completion = Task.CompletedTask;
+
+        RaiseChangedOnce();
+    }
+
+    /// <summary>通知一次状态变化；重复调用无副作用。</summary>
+    /// <remarks>
+    /// <b>回调异常必须吞掉</b>：通知方（通常是 UI 或协议层）抛异常不能
+    /// 反过来把子 agent 的收尾搞坏——那会让"跑完了"变成一个失败。
+    /// 诊断信息不够就丢掉，不能污染控制流。
+    ///
+    /// <para>
+    /// <b>用 <see cref="Interlocked.Exchange(ref int, int)"/> 而不是
+    /// <c>if (flag) { flag = true; }</c></b>：后者是非原子的 check-then-set，
+    /// 两个线程同时走到这里会都通过检查、都推送——而这正是本属性
+    /// 声称要防的事。概率低不等于不存在，而"只推一次"是契约级承诺。
+    /// </para>
+    /// </remarks>
+    internal void RaiseChangedOnce()
+    {
+        if (Interlocked.Exchange(ref _completionNotified, 1) != 0) return;
+
+        try { Changed?.Invoke(this); }
+        catch (Exception) { /* 订阅方的问题不该影响子 agent 的收尾。 */ }
+    }
+
+    /// <summary>是否已经通知过"结束了"。防止重复推送。</summary>
+    private int _completionNotified;
+
+    /// <summary>
+    /// 完成信号（无论成败都会完成）。
+    /// </summary>
+    /// <remarks>
+    /// <b>初值必须是"永不完成"，不能是 <see cref="Task.CompletedTask"/></b>：
+    /// 后者会让一个**刚创建、还没交给运行器**的句柄立刻被判成已结束，
+    /// 于是宿主把它报成"已取消"。第一版就是那个初值，只是当时没有人
+    /// 用它判断"是否在运行"，所以这个洞一直没暴露。
+    /// <para>
+    /// 用 <see cref="TaskCompletionSource"/> 的 Task：它只在
+    /// <see cref="Complete"/> 或运行器赋新值时完成。
+    /// </para>
+    /// </remarks>
+    internal Task Completion { get; set; } =
+        new TaskCompletionSource().Task;
 
     /// <summary>子 agent 的取消令牌。</summary>
     internal CancellationToken Token => _cts.Token;
@@ -284,6 +494,17 @@ public sealed record SubagentResult(
     int ToolRounds);
 
 /// <summary>子 agent 的结束方式。</summary>
+/// <remarks>
+/// <b><see cref="Running"/> 是后加的，且必须排在末尾</b>：枚举值是公开契约的一部分
+/// ——JSON 按名字序列化，但有人会把它们存进配置文件、数据库，或按序号比较。
+/// 插在开头会让已有三个值全部后移一位（<c>Completed</c> 从 0 变 1……），
+/// 那种错位在日志里就是一个词对不上，而查起来毫无线索。
+/// <para>
+/// 语义上"Running 排在 Completed 前面"更顺，但**契约兼容优先于阅读顺序**：
+/// 名字都写在那儿，读者不需要靠位置理解含义。ApiCompat 的
+/// <c>CP0011</c> 正是为这条设的。
+/// </para>
+/// </remarks>
 public enum SubagentStatus
 {
     /// <summary>正常结束。</summary>
@@ -294,6 +515,9 @@ public enum SubagentStatus
 
     /// <summary>被取消。</summary>
     Cancelled,
+
+    /// <summary>仍在运行。后加，故排在末尾。</summary>
+    Running,
 }
 
 /// <summary>
@@ -384,8 +608,12 @@ public static class SubagentRunner
         }
         finally
         {
-            handle.Result = new SubagentResult(
-                handle.Id, status, text.ToString().Trim(), diagnostic, toolRounds);
+            // **必须走 Complete，不能只赋 Result**：那条语句原先只写 Result，
+            // 而 IsCompleted 读的是 Completion —— 由 Task.Run 的那条任务自己
+            // 结束，所以两者恰好同时成立。但调用方若看到"Result 有了、
+            // IsCompleted 还是假"就会误判成还在跑。把两件事合成一步。
+            handle.Complete(new SubagentResult(
+                handle.Id, status, text.ToString().Trim(), diagnostic, toolRounds));
 
             // **不在这里注销**。第一版在这里注销了，于是 `subagent_result`
             // 永远取不到结果——"取走即消失"变成了"完成后立刻消失"，
