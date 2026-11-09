@@ -113,6 +113,8 @@ public static class TerminalChecks
         // The idle status line must exist before the first turn, not only after one.
         failures += Check("idle-status-line-shows-before-first-turn", IdleBeforeFirstTurn);
         failures += Check("startup-actually-calls-show-idle", StartupCallsShowIdle);
+        failures += Check("turn-runs-with-a-cancellable-token", TurnAcceptsCancellation);
+        failures += Check("ctrl-c-aborts-turn-not-process", CtrlCBindsAbortToken);
 
         // P2: yungong art + four-tier banner.
         failures += Check("art-rows-match-spec", ArtRowsMatchSpec);
@@ -2455,6 +2457,79 @@ public static class TerminalChecks
         return called
             ? null
             : "Program.cs never calls ShowIdle -- the bottom is empty until the first turn";
+    }
+
+    /// <summary>
+    /// **回合必须拿到一个可取消的令牌。**
+    /// </summary>
+    /// <remarks>
+    /// <b>这条盯的是一个真实缺口</b>：`runtime.RunAsync(request)` 曾经
+    /// 不带令牌——一轮跑起来之后没有任何手段让它停，退出只能等它自然结束
+    /// （重试退避时最长十几秒）。
+    ///
+    /// <para>
+    /// <b>为什么用源码检查而不是行为检查</b>：要验"取消是否生效"得启动真实
+    /// 进程、发信号、等重试——那是一条不可靠且慢的路径（本项目已经因为
+    /// 启动真实进程的检查吃过不稳定之苦）。而这里的缺陷形态极其明确：
+    /// 调用点少传一个参数。源码级断言足以钉住它，且不会误报。
+    /// </para>
+    /// </remarks>
+    private static string? TurnAcceptsCancellation()
+    {
+        var root = FindRepoRoot();
+        var file = Path.Combine(root, "src", "Dougong.Cli", "Program.cs");
+        if (!File.Exists(file)) return "Program.cs not found";
+
+        var calls = File.ReadAllText(file)
+            .Split(Environment.NewLine)
+            .Select(l => l.Trim())
+            .Where(l => l.Contains("runtime.RunAsync(request", StringComparison.Ordinal))
+            .Where(l => !l.StartsWith("//", StringComparison.Ordinal))
+            .ToList();
+
+        if (calls.Count == 0) return "找不到 runtime.RunAsync(request...) 的调用点";
+
+        return calls.All(c => c.Contains(".Token", StringComparison.Ordinal))
+            ? null
+            : $"回合运行时没传取消令牌，跑起来就停不下：{calls[0]}";
+    }
+
+    /// <summary>
+    /// **Ctrl+C 必须绑到"取消回合"的令牌上。**
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么单独一条</b>：光有令牌还不够——回合期间主线程在
+    /// `await foreach` 里，根本回不到 `Console.ReadLine`，所以按键没人读，
+    /// 令牌永远不会被取消。必须有人订阅 <c>Console.CancelKeyPress</c>。
+    ///
+    /// <para>
+    /// 实测（2026-11-09）：修之前重试期间按 Ctrl+C，进程继续重试 30 多次，
+    /// 用户唯一的出路是杀进程。
+    /// </para>
+    /// </remarks>
+    private static string? CtrlCBindsAbortToken()
+    {
+        var root = FindRepoRoot();
+        var file = Path.Combine(root, "src", "Dougong.Cli", "Program.cs");
+        if (!File.Exists(file)) return "Program.cs not found";
+
+        var lines = File.ReadAllText(file).Split(Environment.NewLine);
+
+        var subscribes = lines.Any(l =>
+            l.Contains("Console.CancelKeyPress +=", StringComparison.Ordinal)
+            && !l.TrimStart().StartsWith("//", StringComparison.Ordinal));
+
+        if (!subscribes)
+            return "没人订阅 Console.CancelKeyPress——回合期间按 Ctrl+C 完全没反应";
+
+        // 处理器里必须有 Cancel()：只订阅不取消等于没接。
+        var handlerCancels = lines.Any(l =>
+            l.Contains("current.Cancel()", StringComparison.Ordinal)
+            || l.Contains("abortCts.Cancel()", StringComparison.Ordinal));
+
+        return handlerCancels
+            ? null
+            : "订阅了 Ctrl+C 但处理器没有取消令牌——按键仍然不起作用";
     }
 
     /// <summary>Art row counts and max widths must match 字符规格.json.</summary>
