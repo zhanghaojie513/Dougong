@@ -123,7 +123,7 @@ public static class Banner
     /// </summary>
     /// <param name="height">终端高度；0 或负数表示读不到，一律放行。</param>
     /// <param name="required">
-    /// 该档正文占的行数，<b>已含底部两行</b>（见 <see cref="FullMinHeight"/> 等常量）。
+    /// 该档正文占的行数，<b>已含底部三行</b>（见 <see cref="FullMinHeight"/> 等常量）。
     /// </param>
     /// <remarks>
     /// <b>字标不参与这个判据，因为它"可丢"。</b>正文放得下就选中该档；
@@ -177,8 +177,22 @@ public static class Banner
     /// <summary>ascii 档：实测 19 行 + 底部。</summary>
     private const int AsciiMinHeight = 19 + BottomRows;
 
-    /// <summary>底部区域要占的行：状态栏 1 + 提示符 1。</summary>
-    private const int BottomRows = 2;
+    /// <summary>
+    /// 底部固定块要占的行：活动行 1 + 输入行 1 + 状态栏 1。
+    /// </summary>
+    /// <remarks>
+    /// <b>三行，不是两行</b>（用户 2026-11-05 的版式要求）。原来是"状态栏 1 +
+    /// 提示符 1"，活动行与状态栏合并成一行；拆开之后多出一行，任何一档的判据
+    /// 都必须跟着加一——否则正好卡在边界高度的终端上，面板会把底部块
+    /// 挤出屏幕。
+    ///
+    /// <para>
+    /// <b>空闲时也占三行</b>：活动行留空而不是塌掉，滚动区高度才能在整个
+    /// 会话里保持不变（改 DECSTBM 会把光标打回屏幕原点）。所以这里按
+    /// 最大占用算，不能按"空闲时只占两行"算。
+    /// </para>
+    /// </remarks>
+    private const int BottomRows = 3;
 
     /// <summary>
     /// 面板版式：字标在上，边框盒里左形象、右清单。

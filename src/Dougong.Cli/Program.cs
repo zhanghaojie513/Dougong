@@ -512,12 +512,14 @@ public static class Program
         {
             // **提示符交给底部区域画，不是正文**。
             //
-            // Hermes 的状态行在提示符**上方**（`appLayout.tsx:420` 的
-            // StatusRulePane 在 `:424` 的输入 Box 之前）；而我们原来的提示符
-            // 是正文的一部分，于是状态行只能画在它下面——方向正好相反。
+            // 版式（用户 2026-11-05 要求）：
             //
-            // 交给区域之后它自己画两行：状态行占 `height-1`，提示符占 `height`。
-            // 返回 false 表示没接管（Plain 档 / 窄终端 / 高度未知），
+            //     活动行   ← 忙时才有内容，在输入行上方
+            //     > 输入行 ← 常驻
+            //     状态栏   ← 常驻，贴屏幕最底
+            //
+            // 交给区域之后，正文只在上半屏的滚动区里滚，底部三行不被波及。
+            // 返回 false 表示没接管（Plain 档 / 窄终端 / 高度不够），
             // 那时照旧由正文写 `> `——那条路 46 个套件与真机都验过。
             if (!liveRegion.BeginPrompt("> "))
                 Output.Text("> ");
@@ -525,6 +527,11 @@ public static class Program
             var input = Console.ReadLine();
             if (input is null) break;                       // EOF
             if (string.IsNullOrWhiteSpace(input)) continue;
+
+            // **把这一行写进正文转录**：输入行在底部块里，终端的回声留在
+            // 那一行上，下一轮重画就被覆盖了。用户看不见自己问过什么。
+            // 由区域把它重新写进正文区，并清空输入行。
+            liveRegion.CommitPrompt(input);
 
             if (input.StartsWith('/'))
             {

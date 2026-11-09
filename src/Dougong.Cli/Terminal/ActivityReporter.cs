@@ -41,6 +41,15 @@ public sealed class ActivityReporter : IAsyncDisposable
     /// </remarks>
     private readonly object _sync = new();
 
+    /// <summary>上一轮的总耗时。轮次结束时记下，供空闲状态栏显示。</summary>
+    /// <remarks>
+    /// <b>必须自己记，不能事后问状态机</b>：<c>AgentPhaseTracker.OnRunFinished</c>
+    /// 在成功结束时会清掉 <c>_turnStart</c>，此后 <c>TurnElapsed</c> 恒为 0
+    /// ——那是刻意的语义（"这一轮结束了"），不该为了显示去改它。
+    /// 所以在结束前把它抄下来。
+    /// </remarks>
+    private TimeSpan _lastTurnElapsed;
+
     private CancellationTokenSource? _turnCts;
     private Task? _pump;
 
@@ -72,15 +81,15 @@ public sealed class ActivityReporter : IAsyncDisposable
     public ActivityState State => _state;
 
     /// <summary>
-    /// 立刻画一次空闲状态行。
+    /// 立刻画一次空闲底栏。
     /// </summary>
     /// <remarks>
-    /// <b>为什么需要显式调用</b>：状态行只由两处触发——泵线程（轮次内每 100ms）
+    /// <b>为什么需要显式调用</b>：底栏只由两处触发——泵线程（轮次内每 100ms）
     /// 与 <see cref="FinishTurnAsync"/>（轮次结束）。而**启动到第一次输入之间
     /// 没有任何轮次**，于是那段时间底部是空的。
     ///
     /// 真机验证时看到的正是这个：banner 之后一大片空白，直到首次提问才出现
-    /// 状态行。而 Hermes 的空闲状态行是**从启动第一刻就在的**。
+    /// 状态栏。而 Hermes 的空闲状态栏是**从启动第一刻就在的**。
     /// </remarks>
     public void ShowIdle()
     {
@@ -195,6 +204,24 @@ public sealed class ActivityReporter : IAsyncDisposable
         _turnCts?.Dispose();
         _turnCts = null;
 
+        // **把状态机真正推回空闲**，并在它清掉计时之前抄下本轮总时长。
+        //
+        // 原来这里只取消循环，然后直接 Render()——而循环的退出条件才是
+        // "回到空闲"，取消它并不改变 `_state` 的阶段。于是轮次结束后
+        // `Render()` 画的仍是"思考中"，活动行留着不收。
+        //
+        // 合并成单行版式时看不出来（忙闲共用一格，内容差不多）；
+        // 拆成两行之后活动行就明晃晃地挂在输入行上方不消失——
+        // 用户会以为它还在跑。必须显式收一轮。
+        lock (_sync)
+        {
+            if (_state.Phase is not (ActivityPhase.Idle or ActivityPhase.Failed))
+            {
+                _lastTurnElapsed = _state.TurnElapsed(_clock.GetUtcNow());
+                _state.OnRunFinished(_clock.GetUtcNow(), failed: false);
+            }
+        }
+
         // **不清空区域，改画空闲状态行**。
         //
         // 原来这里是 `_region.Clear()`，于是轮次一结束底部整块消失——
@@ -247,43 +274,52 @@ public sealed class ActivityReporter : IAsyncDisposable
         }
     }
 
-    /// <summary>按当前状态重画底部区域。</summary>
+    /// <summary>
+    /// 按当前状态重画底部区域。
+    /// </summary>
     /// <remarks>
-    /// <b>单行，忙闲共用槽位</b>（P4）：原来是"活动行 + 状态栏"两行，
-    /// 而 Hermes 从头到尾只有一行——忙时 <c>FaceTicker</c>、闲时静态文案
-    /// （<c>appChrome.tsx:735-745</c>）。
+    /// <b>两个槽位分开喂</b>（用户 2026-11-05 的版式要求）：
+    /// <code>
+    ///   活动行   ← 仅忙时有内容，闲时留空
+    ///   输入行   ← 常驻，由 LiveRegion 管
+    ///   状态栏   ← 常驻，贴最底
+    /// </code>
+    /// P4 阶段把活动行与状态栏合并成一行贴底，于是"正在忙"这件事跑到了
+    /// 用户视线下方，比输入行还低——那正是用户报的问题。
     ///
     /// <para>
-    /// 合并的关键收益：<b>空闲时状态行常驻</b>。原来轮次一结束就
-    /// <c>SetLines([])</c> 整块收起，用户看到"底部空荡"；
-    /// 而 Hermes 的空闲状态行始终在，能看到模型名与上下文占用。
+    /// <b>流式期间仍然收起活动行</b>：正文在逐字滚动，区域留着只会多一次
+    /// 擦画开销，而"还活着"这件事正文本身已经证明了（方案 §3.8.8）。
+    /// 但<b>状态栏照旧常驻</b>——它是参考信息，与忙闲无关。
     /// </para>
     ///
     /// <para>
-    /// <b>流式期间仍然整块收起</b>：正文在逐字滚动，区域留着只会多一次
-    /// 擦画开销，而"还活着"这件事正文本身已经证明了（方案 §3.8.8）。
+    /// <b>耗时只在一个地方显示</b>：忙时归活动行（"这一阶段多久"），
+    /// 空闲时归状态栏（"上一轮多久"）。两处都显示同一件事只会让人
+    /// 怀疑它们不一致；都不显示则用户看不到本轮用了多久。
     /// </para>
     /// </remarks>
     private void Render()
     {
-        // 流式期间不画：正文自己在滚，那是更好的"活着"证据。
-        if (_state.Phase is ActivityPhase.Streaming)
-        {
-            _region.SetLines([]);
-            return;
-        }
-
         var now = _clock.GetUtcNow();
 
-        var line = StatusLine.RenderSingleLine(
-            _state,
-            _model,
-            _tokensUsed(),
-            _contextWindow,
-            _state.TurnElapsed(now),
-            now,
-            _region.Width);
+        var busy = _state.Phase is not (ActivityPhase.Idle or ActivityPhase.Streaming);
 
-        _region.SetLines([line]);
+        // 流式期间不画活动行：正文自己在滚，那是更好的"活着"证据。
+        _region.SetActivity(
+            _state.Phase is ActivityPhase.Streaming
+                ? null
+                : StatusLine.RenderActivity(_state, now, _region.Width));
+
+        // 状态栏与忙闲无关，始终在。
+        // 耗时只在空闲时由它补上——忙时活动行已经在报。
+        // 空闲时用 `_lastTurnElapsed`：状态机在轮末已把计时清零（见那个字段的注释）。
+        _region.SetStatus(
+            StatusLine.RenderStatus(
+                _model,
+                _tokensUsed(),
+                _contextWindow,
+                _region.Width,
+                idleTurnElapsed: busy ? null : _lastTurnElapsed));
     }
 }
