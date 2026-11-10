@@ -83,19 +83,32 @@ public sealed class EditFileTool(IFileSystem files)
                 "old_string 不能为空。要整文件重写请用 write_file。");
         }
 
-        // 先取版本：**必须在读内容之前**。反过来的话，读到内容后、
-        // 取版本前的那一瞬间文件被改，守卫就失效了。
-        var stat = await _files.StatAsync(path, cancellationToken).ConfigureAwait(false);
-        if (stat is null)
-            return Failure(path, "not_found", $"文件不存在：{path}");
-
-        if (stat.Length > 2 * 1024 * 1024)
+        // **内容与版本一次读盘拿到**（2026-11-10 改）。
+        //
+        // 原实现是 `StatAsync` + `ReadTextAsync` 两次独立读盘，中间有窗口。
+        // 那时注释写着"先取版本就安全"——**那是错的**：窗口只是换了方向。
+        // 版本取到后内容才读，文件若在中间变，`old_string` 匹配的是新内容、
+        // 而版本号是旧内容的，写入必然冲突。虽然 fail-closed（不会静默覆盖），
+        // 但会误报冲突让模型重试，而它重试也没用——同样的竞态会再来一次。
+        //
+        // `ReadTextWithVersionAsync` 只读一次，两者天然同源，窗口不存在。
+        string original;
+        string version;
+        try
         {
-            return Failure(path, "too_large",
-                $"文件 {stat.Length} 字节，超过 2 MiB 上限。大文件请用 write_file。");
+            (original, version) = await _files
+                .ReadTextWithVersionAsync(path, cancellationToken).ConfigureAwait(false);
+        }
+        catch (FileNotFoundException)
+        {
+            return Failure(path, "not_found", $"文件不存在：{path}");
         }
 
-        var original = await _files.ReadTextAsync(path, cancellationToken).ConfigureAwait(false);
+        if (original.Length > 2 * 1024 * 1024)
+        {
+            return Failure(path, "too_large",
+                $"文件 {original.Length} 字符，超过 2 MiB 上限。大文件请用 write_file。");
+        }
 
         // 统计出现次数。用 IndexOf 循环而不是 Regex：old_string 是字面量，
         // 正则化会引入转义问题，而"改一个普通字符串"不该要求用户懂正则。
@@ -132,7 +145,7 @@ public sealed class EditFileTool(IFileSystem files)
         try
         {
             var outcome = await _files.WriteTextAsync(
-                path, updated, new FileWriteExpectation.MustMatchVersion(stat.Version),
+                path, updated, new FileWriteExpectation.MustMatchVersion(version),
                 cancellationToken).ConfigureAwait(false);
 
             using var document = JsonDocument.Parse(JsonSerializer.Serialize(new

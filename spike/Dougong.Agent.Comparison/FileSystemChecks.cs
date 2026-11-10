@@ -23,6 +23,8 @@ public static class FileSystemChecks
         failures += await CheckAsync("write-returns-before-content", BeforeContentAsync);
         failures += await CheckAsync("create-vs-replace-is-distinguished", CreateVsReplaceAsync);
         failures += await CheckAsync("version-guard-blocks-stale-write", VersionGuardAsync);
+        failures += await CheckAsync("read-returns-content-and-version-atomically", AtomicReadAsync);
+        failures += await CheckAsync("read-file-tool-does-not-split-read-from-stat", ReadToolSingleReadAsync);
         failures += await CheckAsync("must-not-exist-blocks-overwrite", MustNotExistAsync);
         failures += await CheckAsync("directory-listing-is-stable", ListingStableAsync);
         failures += await CheckAsync("atomic-write-leaves-no-partial", NoPartialFileAsync);
@@ -298,6 +300,146 @@ public static class FileSystemChecks
     // ── 支撑 ─────────────────────────────────────────────────────
 
     /// <summary>一次性临时目录，退出时删除。</summary>
+    /// <summary>
+    /// **读取内容与版本必须来自同一次读盘。**
+    /// </summary>
+    /// <remarks>
+    /// <b>这条抓的是一个让版本守卫失效的真实缺陷</b>（2026-11-10 实测）：
+    /// <c>read_file</c> 原先用 <c>ReadTextAsync</c> + 单独的 <c>StatAsync</c>，
+    /// 两次独立读盘。实测复现：读到"版本A"的内容后文件被改成"版本B"，
+    /// <c>StatAsync</c> 返回 B 的版本；模型拿 A 的内容配 B 的版本去写，
+    /// 守卫判定通过，**静默覆盖别人的改动**。
+    ///
+    /// <para>
+    /// <b>为何不靠竞态去验</b>：时序窗口极短，测试里插不进改动，
+    /// 那种"看起来通过"的检查证明不了任何东西（实测过一次：把实现改回两步读，
+    /// 检查仍然绿）。所以判据改成**结构性的**——看实现里有没有第二次读。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>同时保留一个正例</b>：正常路径下内容与版本必须自洽（版本能用于写入）。
+    /// 那条是行为验证，保证方法本身可用。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> AtomicReadAsync()
+    {
+        using var dir = new TempDir();
+        var files = new LocalFileSystem(dir.Path);
+
+        await files.WriteTextAsync("a.txt", "版本A").ConfigureAwait(false);
+
+        var (content, version) = await files
+            .ReadTextWithVersionAsync("a.txt").ConfigureAwait(false);
+
+        if (content != "版本A") return $"读到的内容不对：{content}";
+
+        // 正例：拿到的版本必须能用于写入（自洽）。
+        var outcome = await files.WriteTextAsync(
+            "a.txt", "基于A修改", new FileWriteExpectation.MustMatchVersion(version))
+            .ConfigureAwait(false);
+
+        if (outcome.Before != "版本A")
+            return $"写之前的内容不对：{outcome.Before}";
+
+        // **结构性判据**：本地实现不得在读取之后另调 StatAsync。
+        var root = RepoRoot();
+        if (root is null) return "找不到仓库根";
+
+        var impl = Path.Combine(root, "src", "Dougong.Agent", "LocalFileSystem.cs");
+        if (!File.Exists(impl)) return "LocalFileSystem.cs 不存在";
+
+        var text = File.ReadAllText(impl);
+        var start = text.IndexOf("ReadTextWithVersionAsync", StringComparison.Ordinal);
+        if (start < 0) return "找不到 ReadTextWithVersionAsync 的实现";
+
+        // **必须按方法边界切，不能按固定长度切**：固定窗口会越界截到
+        // 下一个方法的签名（`StatAsync`），于是把"相邻的方法"误报成
+        // "方法内部的第二次读"。第一版就是 900 字符窗口，假红过一次。
+        //
+        // 方法边界取"="花括号深度归零"那一刻：从签名后的第一个 `{` 数起。
+        var braceStart = text.IndexOf('{', start);
+        if (braceStart < 0) return "找不到方法体";
+
+        var depth = 0;
+        var braceEnd = -1;
+        for (var i = braceStart; i < text.Length; i++)
+        {
+            if (text[i] == '{') depth++;
+            else if (text[i] == '}')
+            {
+                depth--;
+                if (depth == 0) { braceEnd = i; break; }
+            }
+        }
+
+        if (braceEnd < 0) return "方法体括号不配对";
+
+        var body = text[braceStart..braceEnd];
+
+        // 注释里的 StatAsync 不算（这段代码的注释就提到了它）。
+        var codeOnly = string.Join('\n', body
+            .Split('\n')
+            .Select(l => l.Trim())
+            .Where(l => !l.StartsWith("//", StringComparison.Ordinal)));
+
+        return codeOnly.Contains("StatAsync", StringComparison.Ordinal)
+            ? "LocalFileSystem 的 ReadTextWithVersionAsync 里调了 StatAsync——"
+                + "那就是第二次读盘，竞态窗口还在"
+            : null;
+    }
+
+    /// <summary>
+    /// **`read_file` 工具不能自己拆成两步读。**
+    /// </summary>
+    /// <remarks>
+    /// 上一条验接口实现；这条验**工具有没有用它**。
+    /// 接口给了原子方法而工具仍写两步，缺陷原样存在——
+    /// 那种写法编译通过、行为“看起来正常”，只在竞态时出错。
+    /// </remarks>
+    private static Task<string?> ReadToolSingleReadAsync()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir is not null && !File.Exists(Path.Combine(dir, "Dougong.slnx")))
+            dir = Path.GetDirectoryName(dir);
+
+        if (dir is null) return Task.FromResult<string?>("找不到仓库根");
+
+        var file = Path.Combine(dir, "src", "Dougong.Agent", "FileTools.cs");
+        if (!File.Exists(file)) return Task.FromResult<string?>("FileTools.cs 不存在");
+
+        var text = File.ReadAllText(file);
+        var start = text.IndexOf("public sealed class ReadFileTool", StringComparison.Ordinal);
+        if (start < 0) return Task.FromResult<string?>("找不到 ReadFileTool");
+
+        var end = text.IndexOf("public sealed class WriteFileTool", start, StringComparison.Ordinal);
+        var segment = end > start ? text[start..end] : text[start..];
+
+        if (!segment.Contains("ReadTextWithVersionAsync", StringComparison.Ordinal))
+            return Task.FromResult<string?>(
+                "ReadFileTool 没用 ReadTextWithVersionAsync——内容与版本来自两次读盘");
+
+        // **必须排除注释行**：这段代码的注释里就写着 "StatAsync"（说明历史变迁），
+        // 按裸文本匹配会把那条注释当成真实调用——第一版就是这么假红的。
+        var callsStat = segment
+            .Split('\n')
+            .Select(l => l.Trim())
+            .Where(l => !l.StartsWith("//", StringComparison.Ordinal))
+            .Any(l => l.Contains("StatAsync", StringComparison.Ordinal));
+
+        return Task.FromResult<string?>(callsStat
+            ? "ReadFileTool 里仍有独立的 StatAsync 调用——那正是要消除的第二次读"
+            : null);
+    }
+
+    /// <summary>向上找含 Dougong.slnx 的目录。</summary>
+    private static string? RepoRoot()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir is not null && !File.Exists(Path.Combine(dir, "Dougong.slnx")))
+            dir = Path.GetDirectoryName(dir);
+        return dir;
+    }
+
     private sealed class TempDir : IDisposable
     {
         public TempDir()

@@ -33,6 +33,47 @@ public interface IFileSystem
     /// <summary>读取整份文本。文件不存在时抛 <see cref="FileNotFoundException"/>。</summary>
     ValueTask<string> ReadTextAsync(string path, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 读取整份文本**并同时给出它的版本**，两者保证对应同一份内容。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么必须是一个方法，而不是"先 ReadText 再 Stat"</b>：
+    /// 那是两次独立读盘，中间文件可能被改。实测（2026-11-10）：
+    /// 读到内容"版本A"，期间文件被改成"版本B"，随后 <see cref="StatAsync"/>
+    /// 返回的是 B 的版本。模型于是拿着 A 的内容、B 的版本号去写，
+    /// 版本守卫判定通过，**静默覆盖了别人的改动**——而版本守卫存在的
+    /// 全部意义就是防这件事。
+    ///
+    /// <para>
+    /// <b>有默认实现（读内容 + 再 Stat），但那是最差的兜底</b>：
+    /// 它仍有窗口，只是比"调用方自己分两步"少一次遗漏机会。
+    /// **自己的实现应当覆盖它**，保证一次读盘即可——本地实现就是那样做的。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>为什么给默认实现而不是强制实现</b>：加一个没有默认实现的接口方法，
+    /// 会让所有第三方实现（包括桌面端自带的装饰器）**编译失败**。
+    /// 这是公开接口，破坏它需要正当理由——而这里不成立：
+    /// 默认实现虽然弱，但比"编译不过"好得多，且它会把窗口缩到最小。
+    /// </para>
+    ///
+    /// <para>
+    /// 版本与 <see cref="StatAsync"/> 返回的是同一套值，可互比。
+    /// </para>
+    /// </remarks>
+    /// <returns>内容与该内容的版本。文件不存在时抛 <see cref="FileNotFoundException"/>。</returns>
+    async ValueTask<(string Content, string Version)> ReadTextWithVersionAsync(
+        string path, CancellationToken cancellationToken = default)
+    {
+        var content = await ReadTextAsync(path, cancellationToken).ConfigureAwait(false);
+
+        var stat = await StatAsync(path, cancellationToken).ConfigureAwait(false);
+        if (stat is null)
+            throw new FileNotFoundException($"读取后文件已不存在：{path}", path);
+
+        return (content, stat.Version);
+    }
+
     /// <summary>取一个文件的版本与尺寸；不存在时返回 null。</summary>
     /// <remarks>
     /// 版本是**不透明**的：调用方只能把它原样传回

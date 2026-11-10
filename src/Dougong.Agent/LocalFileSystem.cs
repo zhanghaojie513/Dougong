@@ -61,6 +61,23 @@ public sealed class LocalFileSystem(string workspace) : IFileSystem
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <b>只读一次盘，版本用同一份内容算</b>——这就是这个方法存在的理由。
+    /// 实现里若改成"读一次 + 再 Stat 一次"，两次之间文件被改，
+    /// 返回的内容与版本就不对应了（见接口注释里的实测）。
+    /// </remarks>
+    public async ValueTask<(string Content, string Version)> ReadTextWithVersionAsync(
+        string path, CancellationToken cancellationToken = default)
+    {
+        var full = Resolve(path);
+        var content = await File.ReadAllTextAsync(full, cancellationToken).ConfigureAwait(false);
+
+        // 用 VersionOf(content) 而不是 HashAsync(full)：
+        // 后者会**再开一次流读盘**，正是要避免的那第二次读。
+        return (content, VersionOf(content));
+    }
+
+    /// <inheritdoc />
     public async ValueTask<FileStat?> StatAsync(
         string path, CancellationToken cancellationToken = default)
     {

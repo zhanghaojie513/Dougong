@@ -130,17 +130,23 @@ public sealed class ReadFileTool(IFileSystem files)
         ToolInvocation invocation, CancellationToken cancellationToken)
     {
         var path = ToolArguments.RequiredString(invocation.Arguments, "path");
-        var content = await _files.ReadTextAsync(path, cancellationToken).ConfigureAwait(false);
 
-        // 返回**版本**：模型此后要改这个文件时，可以带上它做守卫。
-        // 不带版本时也能写，但那会覆盖别人期间的改动。
-        var stat = await _files.StatAsync(path, cancellationToken).ConfigureAwait(false);
+        // **内容与版本必须同源**：一次读盘同时给出两者。
+        //
+        // 原先是 `ReadTextAsync` + 单独的 `StatAsync`——两次独立读盘，
+        // 中间文件可被改。实测（2026-11-10）：读到"版本A"的内容，
+        // 期间文件被改成"版本B"，Stat 返回 B 的版本；模型拿 A 的内容
+        // 配 B 的版本去写，版本守卫判定通过，**静默覆盖别人的改动**。
+        //
+        // 版本守卫的全部意义就是防这件事，两段读之间的窗口把它废掉了。
+        var (content, version) = await _files
+            .ReadTextWithVersionAsync(path, cancellationToken).ConfigureAwait(false);
 
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(new
         {
             path,
             content,
-            version = stat?.Version,
+            version,
         }));
         return new AgentToolResult(document.RootElement.Clone());
     }
