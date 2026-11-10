@@ -36,6 +36,8 @@ public static class HostProtocolChecks
         failures += await CheckAsync("all-derived-types-register-discriminator", AllRegisteredAsync);
         failures += await CheckAsync("every-command-serializes-its-method", CommandsCarryMethodAsync);
         failures += await CheckAsync("every-event-serializes-its-method", EventsCarryMethodAsync);
+        failures += await CheckAsync("wire-property-names-are-camel-case", WireNamingAsync);
+        failures += await CheckAsync("non-null-payload-fields-reach-the-wire", PayloadFieldsAsync);
         failures += await CheckAsync("unknown-method-is-explicitly-handled", UnknownMethodAsync);
         failures += await CheckAsync("shared-json-options-are-correct", SharedOptionsAsync);
 
@@ -443,6 +445,109 @@ public static class HostProtocolChecks
             ? null
             : "这些类型的线上文本缺判别器（对端会静默丢弃）：\n  "
                 + string.Join("\n  ", problems));
+    }
+
+    /// <summary>
+    /// **所有上线属性必须是 camelCase。**
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么值得单独一条</b>：桌面端报过一个消息里同时出现两种命名风格
+    /// （<c>sessionId</c> + <c>Key</c>），2026-11-10 复核时当前版本复现不出来
+    /// ——但"复现不出来"不等于"不会发生"。真正要防的是**有人给某个属性加了
+    /// <c>[JsonPropertyName]</c> 却没统一风格**：那种改动在编译期完全看不出来，
+    /// 只有抓包或这条检查能发现。
+    ///
+    /// <para>
+    /// <b>对照的先例</b>：<c>CommandFailedEvent.Method</c> 因为与多态判别器
+    /// <c>method</c> 撞名，显式命名成了 <c>failedMethod</c>——那是**正确的例外**
+    /// （camelCase 且必要）。这条检查不管"为什么改名"，只要求结果仍是 camelCase。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> WireNamingAsync()
+    {
+        var asm = typeof(HostProtocolContract).Assembly;
+        var problems = new List<string>();
+
+        foreach (var root in new[] { typeof(ClientCommand), typeof(ServerEvent), typeof(ConversationItem) })
+        {
+            foreach (var type in asm.GetExportedTypes())
+            {
+                if (type.IsAbstract || type.IsEnum || !root.IsAssignableFrom(type)) continue;
+
+                var sample = BuildSample(type);
+                if (sample is null) continue;   // 由 payload 那条报"构造不出来"
+
+                string json;
+                try { json = JsonSerializer.Serialize(sample, root, HostProtocolContract.Json); }
+                catch (JsonException) { continue; }   // 同上
+
+                using var doc = JsonDocument.Parse(json);
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (prop.Name.Length == 0 || !char.IsUpper(prop.Name[0])) continue;
+                    problems.Add($"{type.Name}.{prop.Name}");
+                }
+            }
+        }
+
+        return Task.FromResult(problems.Count == 0
+            ? null
+            : $"这些属性上线成了 PascalCase（应为 camelCase）：{string.Join("、", problems)}");
+    }
+
+    /// <summary>
+    /// **非空、非抽象类型的属性必须真的出现在线上。**
+    /// </summary>
+    /// <remarks>
+    /// <b>这条抓的是"字段悄悄丢了"</b>：属性存在、类型正确、编译通过，
+    /// 但序列化时因为某个 <c>JsonIgnore</c> 或者命名不匹配而没上线。
+    /// 对端读不到它，会当成缺失——而契约里它是 <c>required</c>，
+    /// 于是反序列化直接失败，症状是"这条消息收不到"。
+    ///
+    /// <para>
+    /// <b>跳过 null 与抽象类型</b>：可空字段为 null 时被
+    /// <c>DefaultIgnoreCondition.WhenWritingNull</c> 合理省略；
+    /// 抽象类型（<c>ConversationItem</c>）由样本构造器指定具体实现，
+    /// 构造不出来时不在这里报。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> PayloadFieldsAsync()
+    {
+        var asm = typeof(HostProtocolContract).Assembly;
+        var problems = new List<string>();
+
+        foreach (var root in new[] { typeof(ClientCommand), typeof(ServerEvent), typeof(ConversationItem) })
+        {
+            foreach (var type in asm.GetExportedTypes())
+            {
+                if (type.IsAbstract || type.IsEnum || !root.IsAssignableFrom(type)) continue;
+
+                var sample = BuildSample(type);
+                if (sample is null) continue;
+
+                string json;
+                try { json = JsonSerializer.Serialize(sample, root, HostProtocolContract.Json); }
+                catch (JsonException) { continue; }
+
+                using var doc = JsonDocument.Parse(json);
+
+                foreach (var prop in type.GetProperties(
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+                {
+                    if (Nullable.GetUnderlyingType(prop.PropertyType) is not null) continue;
+                    if (prop.PropertyType.IsAbstract) continue;
+                    if (prop.GetValue(sample) is null) continue;
+
+                    var name = char.ToLowerInvariant(prop.Name[0]) + prop.Name[1..];
+                    if (!doc.RootElement.TryGetProperty(name, out _))
+                        problems.Add($"{type.Name}.{prop.Name}（expected '{name}'）");
+                }
+            }
+        }
+
+        return Task.FromResult(problems.Count == 0
+            ? null
+            : $"这些非空字段没上线，对端会当成缺失：{string.Join("、", problems)}");
     }
 
     /// <summary>
