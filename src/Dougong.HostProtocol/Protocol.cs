@@ -37,9 +37,36 @@ namespace Dougong.HostProtocol;
 /// </para>
 ///
 /// <para>
-/// <b>不认识的判别器要忽略，不是崩</b>：这一条对三个方向都成立——
-/// 旧客户端遇到新命令、旧服务端遇到新事件、旧 UI 遇到新条目类型（降级为通用卡片）。
-/// 加新类型因此不需要升 <see cref="Version"/>。
+/// <b>不认识的判别器必须由调用方捕获并忽略——框架不会替你降级。</b>
+/// </para>
+///
+/// <para>
+/// 这是修正过的说法。本段原先写"不认识的判别器要忽略，不是崩"，
+/// 读起来像框架会自动处理；**实测不成立**：直接
+/// <c>JsonSerializer.Deserialize&lt;ClientCommand&gt;(...)</c> 遇到未知判别器
+/// 会抛 <see cref="System.Text.Json.JsonException"/>
+/// （<c>Read unrecognized type discriminator id '...'</c>）。
+/// </para>
+///
+/// <para>
+/// <b>为什么不能自动降级</b>：多态根是**抽象**的，`FallBackToBaseType`
+/// 与 `FallBackToNearestAncestor` 都要求能实例化目标类型——抽象类型无法
+/// 构造，所以两个选项在这里都不生效（2026-11-10 实测，两者都仍抛异常）。
+/// 用 converter 包装能绕开，但那等于自己重写一遍多态分发，风险大于收益。
+/// </para>
+///
+/// <para>
+/// <b>所以用 <see cref="TryParse{T}"/>，不要直接 Deserialize</b>：
+/// 它把"未知判别器"折成 <c>false</c>，调用方据此跳过该条消息。
+/// 三个方向的用法一致——旧客户端遇到新命令、旧服务端遇到新事件、
+/// 旧 UI 遇到新条目类型（降级为通用卡片）。
+/// </para>
+///
+/// <para>
+/// <b>这条能力成立时，加新类型才不需要升 <see cref="Version"/></b>；
+/// 前提是调用方真的用了 <see cref="TryParse{T}"/>。直接
+/// <c>Deserialize</c> 的宿主会在第一条新消息上崩——那是调用方的问题，
+/// 但本契约有责任写清楚，不能让文档替它许诺。
 /// </para>
 /// </remarks>
 public static class HostProtocolContract
@@ -49,7 +76,9 @@ public static class HostProtocolContract
     /// </summary>
     /// <remarks>
     /// <b>改这个数字的判据</b>：类型被**删除**、或字段**语义**改变时加一。
-    /// 只加新类型、或加可空字段不需要——旧客户端会忽略不认识的判别器。
+    /// 只加新类型、或加可空字段不需要——前提是接收方用
+    /// <see cref="TryParse{T}"/> 而不是直接 <c>Deserialize</c>
+    /// （见类型注释里那条修正说明）。
     ///
     /// <para>
     /// <b>当前协商状态：未实现。</b>这个字段存在，但**没有任何代码比较它**。
@@ -173,6 +202,93 @@ public static class HostProtocolContract
     /// </remarks>
     public static IReadOnlyList<(Type BaseType, JsonDerivedType Derived)> RegisteredExtensions =>
         HostExtensionRegistry.Registered;
+
+    /// <summary>
+    /// 解析一条消息；**不认识的判别器折成 <c>false</c>，不抛异常**。
+    /// </summary>
+    /// <remarks>
+    /// <b>这是"忽略未知消息"这条能力的唯一实现</b>：框架层的多态反序列化
+    /// 在抽象基类上无法降级（见类型注释里的修正说明），所以这层 try/catch
+    /// 必须有人做。收在这里而不是让每个宿主自己写，是因为**漏写的代价是崩**，
+    /// 而漏写的方式很自然——直接 <c>Deserialize</c> 更顺手。
+    ///
+    /// <para>
+    /// <b>只吞判别器相关的失败，其余照抛</b>：缺必需字段、JSON 本身坏掉，
+    /// 那都是真错误，静默跳过只会让问题更难查。判据是
+    /// <see cref="System.Text.Json.JsonException"/> 且消息里含
+    /// "unrecognized type discriminator"。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>用 <paramref name="onUnknown"/> 而不是返回更细的结果类型</b>：
+    /// 调用方要么想记一笔（日志 / 诊断），要么不关心。给一个回调足够，
+    /// 而额外的结果类型会让最常见的那条路径（`if (!TryParse(...)) return;`）
+    /// 变啰嗦。
+    /// </para>
+    /// </remarks>
+    /// <typeparam name="T">多态根（<see cref="ClientCommand"/> / <see cref="ServerEvent"/> / <see cref="ConversationItem"/>）。</typeparam>
+    /// <param name="json">单条消息的 JSON 文本。</param>
+    /// <param name="message">解析结果；未知判别器时为 null。</param>
+    /// <param name="onUnknown">遇到未知判别器时的回调，参数是原始的判别器值（可能为 null）。</param>
+    /// <returns>
+    /// true 表示解析成功（或判别器已知但内容无效——那种情况仍会抛）；
+    /// false 表示判别器不认识，调用方应当跳过这条消息。
+    /// </returns>
+    /// <exception cref="System.Text.Json.JsonException">
+    /// 判别器已知但消息内容有问题（缺必需字段、类型不匹配等）。
+    /// </exception>
+    public static bool TryParse<T>(
+        string json, out T? message, Action<string?>? onUnknown = null)
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(json);
+
+        try
+        {
+            message = JsonSerializer.Deserialize<T>(json, Json);
+            return true;
+        }
+        catch (JsonException ex) when (IsUnknownDiscriminator(ex))
+        {
+            onUnknown?.Invoke(ExtractDiscriminator(json));
+            message = null;
+            return false;
+        }
+    }
+
+    /// <summary>这条 <see cref="JsonException"/> 是不是"判别器不认识"。</summary>
+    /// <remarks>
+    /// <b>靠消息文本判断是不得已</b>：System.Text.Json 没有给"未知判别器"
+    /// 单独的异常类型或错误码。文本匹配会随版本变化，所以这里同时接受
+    /// 英文原文与"unrecognized"这个关键词——宁可多认几个，也不要把真错误
+    /// 当成未知消息静默跳过（那比崩更难查）。
+    /// </remarks>
+    private static bool IsUnknownDiscriminator(JsonException ex) =>
+        ex.Message.Contains("unrecognized type discriminator", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>从原始 JSON 里抠出判别器值，供诊断。</summary>
+    private static string? ExtractDiscriminator(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+
+            foreach (var name in new[] { "method", "kind" })
+            {
+                if (doc.RootElement.TryGetProperty(name, out var value)
+                    && value.ValueKind is JsonValueKind.String)
+                {
+                    return value.GetString();
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // 连 JSON 都不是：没有判别器可取。
+        }
+
+        return null;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────

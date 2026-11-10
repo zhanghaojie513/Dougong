@@ -529,26 +529,64 @@ public static class HostProtocolChecks
     }
 
     /// <summary>
-    /// 不认识的 method 必须**明确失败**，不能静默变成 null。
+    /// **未知判别器：直接 Deserialize 会抛，TryParse 会折成 false。**
     /// </summary>
     /// <remarks>
-    /// <b>为什么必须测这个</b>：旧客户端收到新事件是常态（新服务端 + 旧客户端）。
-    /// 如果反序列化静默给出 null，客户端会当成"没有事件"——表现为界面卡住
-    /// 而日志里什么都没有，这种问题最难查。
+    /// <b>这条检查原先断言的是相反的行为</b>——它要求"必须抛异常"，
+    /// 而类型注释当时写着"不认识的判别器要忽略，不是崩"。两者矛盾，
+    /// 而检查是绿的，于是那个假承诺一直留在文档里，直到桌面端实测打回来
+    /// （2026-11-10）。
+    ///
+    /// <para>
+    /// <b>现在两边都钉</b>：
+    /// <list type="bullet">
+    /// <item>裸 <c>Deserialize</c> 确实抛——这是事实，写进文档让人别指望它；</item>
+    /// <item><see cref="HostProtocolContract.TryParse{T}"/> 返回 false 且不抛
+    /// ——这是承诺，必须成立。</item>
+    /// </list>
+    /// 只钉第二条会让人以为框架自动降级；只钉第一条则等于放弃"加新类型不用
+    /// 升 Version"这条能力。
+    /// </para>
     /// </remarks>
     private static Task<string?> UnknownMethodAsync()
     {
         const string json = """{"method":"future/unknown","sequence":1}""";
 
+        // 1. 裸反序列化：必须抛（文档如实写了这一点）。
+        var threw = false;
         try
         {
-            var result = JsonSerializer.Deserialize<ServerEvent>(json, HostProtocolContract.Json);
-            return Task.FromResult<string?>(
-                $"不认识的判别器没有抛异常，而是给出了 {result?.GetType().Name ?? "null"}");
+            _ = JsonSerializer.Deserialize<ServerEvent>(json, HostProtocolContract.Json);
         }
         catch (JsonException)
         {
-            // 预期：明确失败。
+            threw = true;
+        }
+
+        if (!threw)
+            return Task.FromResult<string?>(
+                "未知判别器竟然没抛异常——若 System.Text.Json 改了行为，"
+                + "TryParse 的 try/catch 就成了死代码，需要重新评估");
+
+        // 2. TryParse：必须不抛、返回 false、message 为 null，且回调拿到判别器值。
+        string? reported = null;
+        var ok = HostProtocolContract.TryParse<ServerEvent>(json, out var parsed, d => reported = d);
+
+        if (ok) return Task.FromResult<string?>("TryParse 对未知判别器返回了 true");
+        if (parsed is not null) return Task.FromResult<string?>("TryParse 未知判别器时 message 应为 null");
+        if (reported != "future/unknown")
+            return Task.FromResult<string?>($"回调应当拿到 'future/unknown'，实际 {reported ?? "null"}");
+
+        // 3. 已知判别器但内容坏了：**必须仍然抛**，不能被当成"未知消息"吞掉。
+        const string broken = """{"method":"turn/started"}""";   // 缺 sessionId/turnId
+        try
+        {
+            var swallowed = HostProtocolContract.TryParse<ServerEvent>(broken, out _);
+            return Task.FromResult<string?>(
+                $"缺必需字段的消息被 TryParse 吞成了 {swallowed}——真错误不该被当成未知消息");
+        }
+        catch (JsonException)
+        {
             return Task.FromResult<string?>(null);
         }
     }

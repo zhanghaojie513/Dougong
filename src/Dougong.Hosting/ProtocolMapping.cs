@@ -96,10 +96,24 @@ public static class ProtocolMapping
 
     /// <summary>引擎的结束方式 → 协议形状。</summary>
     /// <remarks>
-    /// <b>用穷尽 switch 而不是 <c>Enum.Parse</c> 或强转</b>：名字碰巧一致时，
+    /// <b>用显式 switch 而不是 <c>Enum.Parse</c> 或强转</b>：名字碰巧一致时，
     /// 强转能工作；但一旦哪一边加了个值，强转会把新值映射成一个
     /// **语义无关**的旧值（按序号对齐），而界面上不会报错，只是显示成错的。
-    /// 穷尽 switch 让这类改动在编译期就暴露。
+    ///
+    /// <para>
+    /// <b>⚠️ 这不是编译期检查——实际在运行时才暴露。</b>
+    /// 下面那个 <c>_ => throw</c> 分支会接住任何新增值，所以编译器认为
+    /// switch 已穷尽，<b>不会</b>报 <c>CS8509</c>（2026-11-10 实测：加一个
+    /// 枚举值后构建干净通过，零警告）。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>因此升级 SDK 时仍要人工检查枚举变更</b>——新值不会让编译失败，
+    /// 只会在线上被映射到时抛 <see cref="ArgumentOutOfRangeException"/>。
+    /// 这条检查留在 <c>protocol-mapping</c> 套里
+    /// （<c>subagent-status-mapping-is-exhaustive</c> 遍历全部枚举值），
+    /// 但那是**本仓库的验收**，不是给下游宿主的编译期保障。
+    /// </para>
     /// </remarks>
     private static SubagentRunState Map(SubagentStatus status) => status switch
     {

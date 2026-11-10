@@ -25,6 +25,7 @@ public static class ProtocolMappingChecks
         failures += Check("subagent-completed-without-result-is-not-running", SubagentCompletedNotRunning);
         failures += Check("subagent-carries-start-time", SubagentCarriesStartTime);
         failures += Check("protocol-enum-covers-engine-enum", ProtocolEnumCoversEngine);
+        failures += Check("new-enum-value-fails-at-runtime-not-compile", NewEnumValueIsRuntimeOnly);
 
         Console.WriteLine(failures == 0
             ? "PROTOCOL-MAPPING: ALL PASS"
@@ -183,6 +184,58 @@ public static class ProtocolMappingChecks
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// **引擎枚举新增值时，失败发生在运行时，不是编译期。**
+    /// </summary>
+    /// <remarks>
+    /// <b>这条钉的是一个被写错的承诺。</b> <see cref="ProtocolMapping"/> 的
+    /// <c>Map</c> 注释原先写"穷尽 switch 让这类改动在编译期就暴露"——
+    /// 桌面端实测打回：<c>_ => throw</c> 分支会接住任何新增值，
+    /// 编译器认为已穷尽，**不报 <c>CS8509</c>**。
+    ///
+    /// <para>
+    /// 危害很具体：那句话会让人在升级 SDK 时放心地跳过 CHANGELOG。
+    /// 桌面端就照抄了这个说法写进自己的注释，直到复核才发现。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>检查怎么钉"运行时才炸"</b>：用一个**不在**任何映射分支里的
+    /// 整数值造出伪造的枚举值，走完 <see cref="ProtocolMapping"/> 的
+    /// <c>ToProtocol</c> 路径，断言它抛 <see cref="ArgumentOutOfRangeException"/>。
+    /// 若将来有人把 <c>_ => throw</c> 改成 <c>_ => 某个默认值</c>，
+    /// 这条会立刻红——那正是最危险的情形：新增值被静默映射成语义无关的旧值。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>它不能证明"编译期不报错"</b>（检查跑在运行时）。但把
+    /// 运行时行为钉死之后，"靠编译期发现"这个说法就没有立足点了——
+    /// 读注释的人会看到这条检查，并在它的注释里读到实测结论。
+    /// </para>
+    /// </remarks>
+    private static string? NewEnumValueIsRuntimeOnly()
+    {
+        // 造一个不在映射表里的伪造值。取一个远离现有范围的值，
+        // 避免将来枚举扩张后恰好撞上真值。
+        var forged = (SubagentStatus)9999;
+
+        try
+        {
+            var result = new SubagentResult("sub-1", forged, "t", null, 1);
+            _ = result.ToProtocol();
+
+            return "未知枚举值被静默映射了——这比抛异常更危险："
+                + "新增的状态会在界面上显示成语义无关的旧值";
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;   // 预期：运行时炸，不是静默
+        }
+        catch (Exception ex)
+        {
+            return $"未知枚举值抛了 {ex.GetType().Name}，预期 ArgumentOutOfRangeException";
+        }
     }
 
     /// <summary>
