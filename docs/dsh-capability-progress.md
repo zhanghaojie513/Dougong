@@ -16,8 +16,19 @@
 >
 > **判定要严**：有类名但没接进装配，算 `⬜`；接进装配但没有验证，算 `🟡`。
 > 上一轮就吃过这个亏——`SystemPrompt` 属性存在但永远没人赋值。
+>
+> **`⬜` 不等于"欠着"**：它只表示"没实现"。其中：
+> - **明确不做**的项在 `➖` 里，不在 `⬜`；
+> - 一部分 `⬜` 是**等场景**（目录、SSH、LSP、PowerShell）——
+>   README 的原则是"下一步由真实需求决定，不照路线图硬推"，
+>   先把没有消费者的架子做出来，等于为猜的需求付维护成本；
+> - 剩下的是**真缺口**（读后写观察态、会话查询 seam 等），
+>   它们的备注里写了"卡在哪"。
+>
+> **因此完成度百分比不要当 KPI 看**：它统计的是"与 dsh 的逐项对照"，
+> 不是"这个产品还差多少才可用"。
 
-最后更新：2026-11-05，SDK `0.1.18-alpha.1`
+最后更新：2026-11-11，SDK `0.1.23-alpha.1`
 
 ---
 
@@ -47,18 +58,18 @@
 | 1. Agent 循环 | 7 | 0 | 1 | 1 | 9 | 88% |
 | 2. LLM 与用量 | 5 | 2 | 2 | 0 | 9 | 56% |
 | 3. 会话与持久化 | 9 | 5 | 3 | 0 | 17 | 68% |
-| 4. 工具 | 12 | 3 | 4 | 4 | 23 | 61% |
+| 4. 工具 | 14 | 3 | 2 | 4 | 23 | 67% |
 | 5. 审批与提问 | 4 | 0 | 0 | 0 | 4 | 100% |
 | 6. 沙箱与进程 | 1 | 2 | 3 | 1 | 7 | 17% |
 | 7. 文件系统 | 4 | 0 | 2 | 0 | 6 | 67% |
 | 8. 技能 / 目标 / 计划 / 子 agent | 4 | 0 | 0 | 0 | 4 | 100% |
-| 9. 任务与调度 | 3 | 1 | 2 | 0 | 6 | 50% |
+| 9. 任务与调度 | 4 | 1 | 1 | 0 | 6 | 75% |
 | 10. 网络与外部 | 3 | 2 | 0 | 1 | 6 | 60% |
 | 11. 配置与凭据 | 3 | 2 | 1 | 0 | 6 | 50% |
-| **合计** | **55** | **17** | **18** | **7** | **97** | **63%** |
+| **合计** | **58** | **17** | **15** | **7** | **97** | **66%** |
 
 完成度算法：`(✅ + 🟡×0.5) / (✅+🟡+⬜)`，不含 `➖`。
-（`(55 + 8.5) / 90 = 63%`）
+（`(58 + 8.5) / 90 = 66%`）
 
 > **这张表曾长期与逐行数据不一致**（2026-11-03 复核时发现：多个领域的
 > ✅/🟡/⬜ 都在改行时漏改过，而 `capability-progress-counts-are-consistent`
@@ -171,12 +182,12 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | ⬜ | LSP 代码导航 | `[—]` | `dsh-lsp` / `-stdio` / `tool-lsp` | — | 定义/引用/实现/悬停。**是优化不是缺口**：编辑闭环不依赖它，只在"重构找全部引用"与"重载/同名方法"上有增量。见 D-10 |
 | ✅ | 工具超时 | `[自有]` | `dsh-tool-call-timeout-policy` | `ToolExecutionPlan.Timeout` + `ToolDispatcher.DefaultToolTimeout` | 逐工具上限优先；`TimedOut` 与"用户取消"分开；超时算已执行 |
 | ✅ | 向人类提问 | `[自有]` | `dsh-tool-ask-user` | `AskUser`（语义）+ `AcpElicitationTool` / `ConsoleElicitationTool`（传输） | 语义层下沉到 Agent，两个宿主共用；四态结果分开（答/拒/取消/不可用）；2026-11-02 |
-| ⬜ | 技能加载 | `[—]` | `dsh-tool-skill` | — | |
+| ✅ | 技能加载 | `[自有]` | `dsh-tool-skill` | `SkillTool` | `SessionComposition.cs:581` 注册进装配；按需加载技能正文，非目录注入；2026-11-11 复核 |
 | ✅ | 子 agent 委派 | `[自有]` | `dsh-tool-subagent*` | `subagent` / `subagent_list` / `subagent_result` | 三工具分动作，不用 mode 参数；2026-11-03 |
 | ✅ | 后台任务控制 | `[自有]` | `dsh-tool-jobs` | `JobStartTool` / `JobOutputTool` / `JobStopTool` / `JobListTool` | 四个名字各自说清动作，不用 mode 参数（模型会选错）；2026-11-02 |
 | 🟡 | web 抓取 | `[自有]` | `dsh-web-fetch-http` | `WebFetchTool` | 只做抓取，不执行 JS；默认关闭（`DOUGONG_WEB_FETCH=1`）；报 `ToolAccess.Network` + 目标域名；2026-11-02 |
-| 🟡 | `present` 工具 | `[自有]` | `dsh-tool-present` | — | 改动清单有了（`--changes`），但**没有 `present` 工具**让模型主动声明交付物 |
-| ⬜ | 目标工具 | `[—]` | `dsh-tool-goal` | — | |
+| 🟡 | `present` 工具 | `[自有]` | `dsh-tool-present` | — | 改动清单有了（`--changes`），但**没有 `present` 工具**让模型主动声明交付物。**待场景**：需要先定"交付物"在桌面端怎么展示，否则工具输出没有消费者 |
+| ✅ | 目标工具 | `[自有]` | `dsh-tool-goal` | `CreateGoalTool` / `GetGoalTool` / `UpdateGoalTool` | 三工具注册进装配（`SessionComposition.cs:622-624`）；做状态与工具，**不做自动续轮**（见 D-33）；2026-11-11 复核 |
 | ✅ | 重复调用提醒 | `[自有]` | `dsh-repeat-tool-reminder` | `RepeatToolReminder` | 只提醒不阻止；按连续相同（工具+完整参数）计数，阈值 3/5/8；透明工具（todo_write 等）既不计数也不清零；判定用完整参数、展示截断 500 字；2026-11-03 |
 | ➖ | 工作流引擎 | `[—]` | `dsh-workflow` | — | `goal.md` 把可视化编排列为反目标；脚本式也没做 |
 | ➖ | 工作流脚本工具 | `[—]` | `dsh-tool-workflow` | — | |
@@ -229,7 +240,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | 状态 | 能力 | 实现方式 | dsh | 我们 | 备注 |
 |---|---|---|---|---|---|
 | 🟡 | 工具结果限制 | `[自有]` | `dsh-output-retention` | `ToolResultLimits` | 保头尾 + 中间落盘可取回；仍非 dsh 的分区裁剪 |
-| ⬜ | 工具结果分区裁剪 | `[—]` | `dsh-compaction-tool-result-pruner` | — | dsh 做头/中/尾三段保留且可回放；我们只会截尾 |
+| ✅ | 工具结果分区裁剪 | `[自有]` | `dsh-compaction-tool-result-pruner` | `ToolResultLimits.Clamp` | **原备注"我们只会截尾"是错的**：实际是头 24000 + 尾 6000 + 中间标记，且中间段落盘可取回（`spillPath`）。两条进模型历史的路径都用了它（`LoopAgentRuntime.cs:1135/1694`）；2026-11-11 复核 |
 | ✅ | 后台任务 | `[自有]` | `dsh-jobs` / `dsh-jobs-local` / `dsh-tool-jobs` | `JobRegistry` + 四个工具 | 启动立即返回；游标只进不退；环形缓冲 256 KiB 且如实报丢弃；按 owner 限并发 10；2026-11-02 |
 | ⬜ | 持久提醒 | `[—]` | `dsh-schedule` | — | |
 | ✅ | 大结果落盘可取回 | `[自有]` | `dsh-spill` / `spill-local` / `spill-policy` | `SpillStore` + `Clamp(…, spillPath)` | 落盘到工作区 `.dougong/spill`；文件名由内容哈希决定（同内容不重复落盘）；标记给相对路径，模型用已有 `read_file` 取回；`.dougong` 已排除出 glob/grep；2026-11-02 |
@@ -253,7 +264,7 @@ MCP（官方 SDK）、JSON（`System.Text.Json`）。
 | ✅ | 凭据引用（不存值） | `[自有]` | `dsh-credentials*` | `ProviderConfigFile.key` + `CredentialFile` | 配置只存条目名，值在 `~/.dougong/credentials`；环境变量回退已删 |
 | ✅ | 配置加载与校验 | `[库]` | — | `ProviderConfigFile` + `ProviderConfigWriter` | TOML 用 **Tomlyn**；写入走语法树保留注释 |
 | 🟡 | 配置来源层级 | `[自有]` | `dsh-launch-environment` | 偏好走冻结快照并记录来源；provider 走配置/环境变量 | **provider 类仍不记录来源**；偏好类已具备 |
-| 🟡 | 命令注册 | `[自有]` | `dsh-commands` | `HandleCommand`（硬编码 switch） | 不可扩展 |
+| 🟡 | 命令注册 | `[自有]` | `dsh-commands` | `HandleCommand`（硬编码 switch，10 条 case） | 不可扩展：宿主加自己的斜杠命令只能改源码。**等第二个宿主提需求再做**——现在抽注册表等于为单个场景设计框架（与 D-26 技能注册表同一判断） |
 | ✅ | 路径助手 | `[自有]` | `dsh-home-paths` | `DougongHome` | 单一入口 + `DOUGONG_HOME`；`Describe()` 符号化不泄漏用户名 |
 | ⬜ | 超时原语 | `[—]` | `dsh-timeout` | 分散实现 | 无统一 `TimeoutReason` 分类 |
 
