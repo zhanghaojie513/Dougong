@@ -54,7 +54,7 @@ missing=0
 for pkg in "${PACKAGES[@]}"; do
   lower="$(echo "dougong.$pkg" | tr '[:upper:]' '[:lower:]')"
   printf '  %-14s ' "$pkg"
-  if curl -sf --max-time 30 "$SOURCE/$lower/index.json" \
+  if curl -sfL --max-time 30 "$SOURCE/$lower/index.json" \
        | grep -q "\"$VERSION\""; then
     echo "已上架"
   else
@@ -72,7 +72,7 @@ if [ "$missing" -gt 0 ]; then
       missing=0
       for pkg in "${PACKAGES[@]}"; do
         lower="$(echo "dougong.$pkg" | tr '[:upper:]' '[:lower:]')"
-        curl -sf --max-time 30 "$SOURCE/$lower/index.json" \
+        curl -sfL --max-time 30 "$SOURCE/$lower/index.json" \
           | grep -q "\"$VERSION\"" || missing=$((missing + 1))
       done
       echo "  第 $attempt 次：还缺 $missing 个"
