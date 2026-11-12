@@ -365,7 +365,9 @@ public static class Program
             // （1048576/1048576）模型上算出负预算。
             requestOutputReserve: null,
             // 给了会话文件才持久化工作目录：换过目录之后要能恢复。
-            sessionLogPath: sessionPath);
+            sessionLogPath: sessionPath,
+            // 推理强度来自 provider 配置（中性值，翻译在协议层做）。
+            reasoningEffort: config.ReasoningEffort);
         // 内核接线（G14）：默认启用——运行能力由内核解析，宿主不直接持有
         // dispatcher/runtime 实例。DOUGONG_KERNEL=0 可退回直连路径，
         // 保留给"怀疑内核接线本身有问题"时的对照手段。

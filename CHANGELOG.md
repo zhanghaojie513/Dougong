@@ -19,6 +19,34 @@
 
 ---
 
+## [0.1.24-alpha.1] — 2026-11-12
+
+**修一个"能力完整、用户开不了"的假功能：推理强度档位无法从配置触发。**
+
+### Fixed
+
+- **`reasoning_effort` 现在可以写进 provider 配置了。**
+
+  翻译层（`ThinkingParameters`）早就写好了，三个协议各实现了
+  "中性档位 → 各家字段"的映射，`wire` 套也验了每种写法输出正确。
+  但它读的是 `ChatOptions.AdditionalProperties[dougong.reasoning-effort]`
+  ——而**没有任何一处往那里写**：TOML 里没有这个键，白名单也不允许。
+
+  于是用户改配置什么都不会发生，且不会有任何报错。这与
+  "界面能切预设、引擎行为不变"是同一类假功能。
+
+### Added
+
+- `ChatProviderConfig.ReasoningEffort` 与 `LoopAgentRuntime.ReasoningEffort`
+  （后者用 `init` 属性，不改构造签名，ApiCompat 无破坏）。
+- 配置键 `reasoning_effort`，取值是**中性档位**
+  （`minimal` / `low` / `medium` / `high`），由协议层翻译成
+  `reasoning_effort` / `thinking.budget_tokens` / `output_config.effort` 等。
+  让用户填 provider 字段名，等于把"哪家怎么叫"泄漏到配置里，换 provider 就得改配置。
+- 检查 `reasoning-effort-is-reachable-from-config`：逐环断言
+  白名单 → 解析 → 配置字段 → 装配 → 运行时写入，任何一环断了都报。
+  反证：断开运行时注入、删掉白名单任一处，检查分别变红。
+
 ## [0.1.23-alpha.1] — 2026-11-10
 
 **修一个让版本守卫失效的竞态：读取的内容与版本来自两次独立读盘。**

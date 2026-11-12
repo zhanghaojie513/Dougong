@@ -102,6 +102,11 @@ public sealed class SessionComposition : IDisposable
     public PlanMode PlanMode => _planMode;
     private readonly int _contextWindow;
     private readonly int _requestOutputReserve;
+
+    /// <summary>
+    /// 推理强度档位；null 表示不发送。见 <see cref="ChatProviderConfig.ReasoningEffort"/>。
+    /// </summary>
+    private readonly string? _reasoningEffort;
     private readonly IReadOnlyList<McpServerSpec> _mcpServers;
 
     private SessionComposition(
@@ -120,7 +125,8 @@ public sealed class SessionComposition : IDisposable
         IWorkingDirectoryStore? directoryStore = null,
         SkillDiscovery? skills = null,
         int delegationDepth = 0,
-        SubagentRegistry? subagents = null)
+        SubagentRegistry? subagents = null,
+        string? reasoningEffort = null)
     {
         _sessionId = sessionId;
         _workspace = workspace;
@@ -129,6 +135,7 @@ public sealed class SessionComposition : IDisposable
         _shellEnabled = shellEnabled;
         _contextWindow = contextWindow;
         _requestOutputReserve = requestOutputReserve;
+        _reasoningEffort = reasoningEffort;
         _mcpServers = mcpServers;
         Memory = memory;
         MemoryStore = memoryStore;
@@ -318,7 +325,7 @@ public sealed class SessionComposition : IDisposable
         string sessionId, string workspace, IChatClient client, IToolApprover approver,
         string? memoryDirectory = null, CancellationToken cancellationToken = default,
         int? contextWindow = null, int? requestOutputReserve = null,
-        string? sessionLogPath = null)
+        string? sessionLogPath = null, string? reasoningEffort = null)
     {
         // 记忆按工作区分文件：跨工作区默认不传播（skills-evolution.md §3）。
         // 用路径哈希而不是文件名，避免不同工作区撞到同一个文件。
@@ -336,14 +343,14 @@ public sealed class SessionComposition : IDisposable
 
         return Create(
             sessionId, workspace, client, approver, memory, memoryStore,
-            contextWindow, requestOutputReserve, sessionLogPath);
+            contextWindow, requestOutputReserve, sessionLogPath, reasoningEffort);
     }
 
     private static SessionComposition Create(
         string sessionId, string workspace, IChatClient client, IToolApprover approver,
         IMemoryInjector? memory, MemoryStore? memoryStore,
         int? configuredContextWindow = null, int? configuredOutputReserve = null,
-        string? sessionLogPath = null)
+        string? sessionLogPath = null, string? reasoningEffort = null)
     {
         // 走冻结快照，不直接读环境变量：
         // 安全开关必须在进程启动时定下来，否则模型改了配置文件就能影响
@@ -403,7 +410,8 @@ public sealed class SessionComposition : IDisposable
         return new SessionComposition(
             sessionId, workspace, client, approver,
             shellEnabled, contextWindow, outputReserve, ParseMcpServers(), memory, memoryStore,
-            askUserHost: null, restoredDirectory, directoryStore, skills)
+            askUserHost: null, restoredDirectory, directoryStore, skills,
+            reasoningEffort: reasoningEffort)
         {
             TriggerRatio = triggerRatio,
             RetainRatio = retainRatio,
@@ -750,6 +758,7 @@ public sealed class SessionComposition : IDisposable
             Time = CreateTimeContext(),
             Directory = _directory,
             RepeatDetection = new RepeatToolReminder(),
+            ReasoningEffort = _reasoningEffort,
             // **不给 PlanMode**：子 agent 没有人在看它的计划，等审阅会永久阻塞。
         };
     }
@@ -926,6 +935,7 @@ public sealed class SessionComposition : IDisposable
                 Retry = RetryPolicy.Default,
                 Spill = CreateSpillStore(),
                 PlanMode = _planMode,
+                ReasoningEffort = _reasoningEffort,
             };
 
         return new LoopAgentRuntime(

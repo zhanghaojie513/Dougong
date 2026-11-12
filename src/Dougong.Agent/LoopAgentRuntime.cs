@@ -60,6 +60,31 @@ public sealed class LoopAgentRuntime : IAgentRuntime
     public string MemoryWorkspace { get; init; } = string.Empty;
 
     /// <summary>
+    /// 推理强度档位；null 表示不发送该参数，由 provider 用默认值。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么必须有这个入口</b>：翻译层（<c>ThinkingParameters</c>）早就写好了，
+    /// 三个协议各自实现了"中性档位 → 各家字段"的映射，但它从
+    /// <see cref="ChatOptions.AdditionalProperties"/> 读 <c>dougong.reasoning-effort</c>
+    /// ——而**没有任何一处往那里写**。结果是：能力完整、用户开不了，
+    /// 与"界面能切但引擎不生效"是同一类假功能。
+    ///
+    /// <para>
+    /// <b>中性值而不是 provider 字段名</b>：这里收的是
+    /// <c>minimal</c> / <c>low</c> / <c>medium</c> / <c>high</c>，
+    /// 由各协议自己翻译（OpenAI 用 <c>reasoning_effort</c>、Anthropic 用
+    /// <c>thinking.budget_tokens</c> 或 <c>output_config.effort</c>）。
+    /// 让宿主直接填 <c>reasoning_effort</c> 会把"哪家怎么叫"泄漏到配置里。
+    /// </para>
+    ///
+    /// <para>
+    /// 不做校验：未知值原样下发，provider 会自己忽略或报错。
+    /// 在这里拦一道只会让"新增档位"需要改两处。
+    /// </para>
+    /// </remarks>
+    public string? ReasoningEffort { get; init; }
+
+    /// <summary>
     /// 本次运行使用的系统提示词全文；null 表示没有。
     /// </summary>
     /// <remarks>
@@ -400,6 +425,16 @@ public sealed class LoopAgentRuntime : IAgentRuntime
 
             // 工具声明是运行时对连接器的正式输出，不是循环拼的提示文本。
             var chatOptions = new ChatOptions().Attach(await _dispatcher.GetToolsAsync(cancellationToken).ConfigureAwait(false));
+
+            // 推理档位：翻译层读的是这个中性键，见 ReasoningEffort 属性上的说明。
+            // **只在非空时写**：写了 null 会让 AdditionalProperties 里多一个空值，
+            // 而各协议的 ReadReasoningEffort 会把 null 当成"宿主明确要求不设"——
+            // 那是我们没表达过的意图。
+            if (!string.IsNullOrWhiteSpace(ReasoningEffort))
+            {
+                chatOptions.AdditionalProperties ??= [];
+                chatOptions.AdditionalProperties[AgentPropertyKeys.ReasoningEffort] = ReasoningEffort;
+            }
 
             // L1 偏好注入：**每轮取一次快照**，整轮使用它。
             // 运行中撤销不影响当前轮——已发送给模型的内容无法撤回。

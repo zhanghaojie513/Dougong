@@ -74,6 +74,19 @@ public sealed record ChatProviderConfig
     public int? MaxOutputTokens { get; init; }
 
     /// <summary>
+    /// 推理强度档位（中性值：<c>minimal</c> / <c>low</c> / <c>medium</c> / <c>high</c>）。
+    /// null 表示不发送，由端点用默认值。
+    /// </summary>
+    /// <remarks>
+    /// <b>配置里放中性值，翻译在协议层做</b>：三家对同一个概念用的字段名和
+    /// 取值完全不同（OpenAI 的 <c>reasoning_effort</c>、Anthropic 的
+    /// <c>thinking.budget_tokens</c> 或 <c>output_config.effort</c>）。
+    /// 让用户在 TOML 里填 provider 字段名，等于把"哪家怎么叫"泄漏到配置里，
+    /// 换 provider 就得改配置。
+    /// </remarks>
+    public string? ReasoningEffort { get; init; }
+
+    /// <summary>
     /// Anthropic 兼容层的端点路径覆盖。多数是 <c>/v1/messages</c>；
     /// DeepSeek 挂在 <c>/anthropic/v1/messages</c>。仅对 <see cref="ChatProtocol.AnthropicMessages"/> 有效。
     /// </summary>

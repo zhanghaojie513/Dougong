@@ -28,6 +28,7 @@ public static class ProviderChecks
         failures += await CheckAsync("secret-never-appears-in-doctor-output", SecretNeverPrintedAsync);
         failures += await CheckAsync("presets-are-data-only", PresetsAreDataOnly);
         failures += await CheckAsync("reasoning-effort-semantics-are-documented", EffortSemanticsDocumented);
+        failures += await CheckAsync("reasoning-effort-is-reachable-from-config", EffortReachableAsync);
         failures += await CheckAsync("protocol-inference-three-levels", ProtocolInferenceAsync);
         failures += await CheckAsync("capabilities-and-fallback", CapabilitiesAndFallbackAsync);
         failures += await CheckAsync("presets-fit-their-budget", PresetsFitTheirBudgetAsync);
@@ -1332,6 +1333,91 @@ public static class ProviderChecks
 
     private static string Trim(string text) =>
         text.Length <= 600 ? text : text[..600] + "…";
+
+    /// <summary>
+    /// **推理档位必须能从配置触发——整条链路的每一环都要在。**
+    /// </summary>
+    /// <remarks>
+    /// <b>这条补的是一个"能力完整、用户开不了"的假功能</b>：翻译层
+    /// （<c>ThinkingParameters</c>）三个协议都实现了，<c>wire</c> 套也验了它
+    /// 对每种写法输出正确。但它读的是
+    /// <c>ChatOptions.AdditionalProperties[dougong.reasoning-effort]</c>
+    /// ——而**没有任何一处往那里写**。
+    ///
+    /// <para>
+    /// 于是用户改了 TOML 什么也不会发生，而且不会有任何报错：
+    /// 配置项被白名单拒绝（如果没加），或者加了但没人读。
+    /// 这与"界面能切预设、引擎行为不变"是同一类问题。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>为什么用源码级断言而不是端到端</b>：端到端要造一个假
+    /// <c>IChatClient</c> 并跑完整轮，那涉及的工具声明、历史组装等
+    /// 与这条缺陷无关的东西会把检查变得脆弱。而缺陷形态是
+    /// "某一环少了一行"——逐环断言正好对应。
+    /// </para>
+    /// </remarks>
+    private static Task<string?> EffortReachableAsync()
+    {
+        var root = FindRepoRoot();
+        if (root is null) return Task.FromResult<string?>("找不到仓库根");
+
+        var problems = new List<string>();
+
+        // ① 配置白名单要允许这个键，否则用户写了直接被拒。
+        var configFile = Path.Combine(root, "src", "Dougong.Ai", "ProviderConfigFile.cs");
+        if (!File.Exists(configFile)) return Task.FromResult<string?>("ProviderConfigFile.cs 不存在");
+
+        var configText = File.ReadAllText(configFile);
+
+        // **白名单要单独锚定**：`"reasoning_effort"` 这个带引号的字面量
+        // 在解析那一行也会出现，裸 Contains 会把"解析有、白名单没有"
+        // 判成通过——反证时实测漏过一次。所以取白名单数组那一段再看。
+        var keyListStart = configText.IndexOf("AllowedProviderKeys", StringComparison.Ordinal);
+        var keyListEnd = keyListStart < 0
+            ? -1
+            : configText.IndexOf("];", keyListStart, StringComparison.Ordinal);
+        var keyList = keyListStart >= 0 && keyListEnd > keyListStart
+            ? configText[keyListStart..keyListEnd]
+            : string.Empty;
+
+        if (!keyList.Contains("\"reasoning_effort\"", StringComparison.Ordinal))
+            problems.Add("ProviderConfigFile 的白名单里没有 reasoning_effort（用户写了会被拒）");
+
+        // ② 配置要被解析进 ChatProviderConfig。
+        if (!configText.Contains("ReasoningEffort = ReadString", StringComparison.Ordinal))
+            problems.Add("ProviderConfigFile 没有把 reasoning_effort 解析进配置");
+
+        var recordFile = Path.Combine(root, "src", "Dougong.Ai", "ChatClientFactory.cs");
+        var recordText = File.Exists(recordFile) ? File.ReadAllText(recordFile) : string.Empty;
+        if (!recordText.Contains("public string? ReasoningEffort", StringComparison.Ordinal))
+            problems.Add("ChatProviderConfig 没有 ReasoningEffort 字段");
+
+        // ③ 装配层要把它传给运行时。
+        var comp = Path.Combine(root, "src", "Dougong.Cli", "SessionComposition.cs");
+        var compText = File.Exists(comp) ? File.ReadAllText(comp) : string.Empty;
+        if (!compText.Contains("ReasoningEffort = _reasoningEffort", StringComparison.Ordinal))
+            problems.Add("SessionComposition 没有把档位传给 LoopAgentRuntime");
+
+        // ④ 运行时真的写进 ChatOptions（翻译层读的就是那里）。
+        var runtime = Path.Combine(root, "src", "Dougong.Agent", "LoopAgentRuntime.cs");
+        var runtimeText = File.Exists(runtime) ? File.ReadAllText(runtime) : string.Empty;
+        if (!runtimeText.Contains(
+                "AdditionalProperties[AgentPropertyKeys.ReasoningEffort]", StringComparison.Ordinal))
+        {
+            problems.Add("LoopAgentRuntime 没有把档位写进 ChatOptions.AdditionalProperties");
+        }
+
+        // ⑤ 宿主入口要传（CLI 是当前唯一的宿主）。
+        var program = Path.Combine(root, "src", "Dougong.Cli", "Program.cs");
+        var programText = File.Exists(program) ? File.ReadAllText(program) : string.Empty;
+        if (!programText.Contains("reasoningEffort: config.ReasoningEffort", StringComparison.Ordinal))
+            problems.Add("Program.cs 没有把配置里的档位传下去");
+
+        return Task.FromResult(problems.Count == 0
+            ? null
+            : "推理档位这条链路断了（用户改配置不会有任何效果）：" + string.Join("；", problems));
+    }
 
     private static async Task<int> CheckAsync(string name, Func<Task<string?>> action)
     {

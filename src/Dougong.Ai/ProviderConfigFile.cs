@@ -47,6 +47,9 @@ public static class ProviderConfigFile
         // 就成了"向导显示 1M 上下文、配置文件里有、但程序读不到"——
         // 压缩永远不启用且没有任何提示。实测踩到过。
         "context_window", "max_output_tokens",
+        // 推理强度：翻译层早就能把它转成各家的字段，但 TOML 里没有这个键，
+        // 于是"能力完整、用户开不了"。2026-11-12 补上。
+        "reasoning_effort",
     ];
 
     /// <summary>解析选项。未知键由我们自己报，所以不禁用它们的读取。</summary>
@@ -260,6 +263,7 @@ public static class ProviderConfigFile
             MessagesPath = ReadString(table, "messages_path"),
             ContextWindowTokens = contextWindow,
             MaxOutputTokens = maxOutputTokens,
+            ReasoningEffort = ReadString(table, "reasoning_effort"),
         };
 
         return null;
