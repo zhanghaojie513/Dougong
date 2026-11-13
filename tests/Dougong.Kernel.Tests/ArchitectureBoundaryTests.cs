@@ -175,11 +175,11 @@ public sealed class ArchitectureBoundaryTests
         // 注意本测试工程不引用 Dougong.Agent（这本身就是分层正确的体现），
         // 所以只能按程序集名加载，不能用 typeof。
         var agentPath = Path.Combine(
-            RepoRoot, "src", "Dougong.Agent", "bin", "Release", "net10.0", "Dougong.Agent.dll");
+            RepoRoot, "src", "Dougong.Agent", "bin", "Release", "net11.0", "Dougong.Agent.dll");
         if (!File.Exists(agentPath))
         {
             agentPath = Path.Combine(
-                RepoRoot, "src", "Dougong.Agent", "bin", "Debug", "net10.0", "Dougong.Agent.dll");
+                RepoRoot, "src", "Dougong.Agent", "bin", "Debug", "net11.0", "Dougong.Agent.dll");
         }
 
         Assert.True(File.Exists(agentPath), $"找不到 Dougong.Agent.dll：{agentPath}");

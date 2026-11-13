@@ -93,7 +93,7 @@ fi
 
 probe_exe="$sf_out/SingleFileProbe"
 [ -f "$probe_exe.exe" ] && probe_exe="$probe_exe.exe"
-plugin_dll="$ROOT/samples/Dougong.Sample.Plugin/bin/Release/net10.0/Dougong.Sample.Plugin.dll"
+plugin_dll="$ROOT/samples/Dougong.Sample.Plugin/bin/Release/net11.0/Dougong.Sample.Plugin.dll"
 if ! "$probe_exe" "$plugin_dll" > /tmp/sf-probe.log 2>&1; then
   echo "singlefile        FAIL"
   tail -8 /tmp/sf-probe.log

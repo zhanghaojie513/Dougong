@@ -14,7 +14,7 @@ public sealed class KernelCrossAlcAcceptanceTests
     private static string ContractsAssemblyPath() => Path.GetFullPath(Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "..",
         "samples", "Dougong.Sample.Contracts", "bin", Configuration,
-        "net10.0", "Dougong.Sample.Contracts.dll"));
+        "net11.0", "Dougong.Sample.Contracts.dll"));
 
     private static string Configuration =>
 #if DEBUG

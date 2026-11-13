@@ -1,7 +1,7 @@
 # Dougong 架构
 
 > 本文回答"系统长什么样、怎么运转"。**四条不可让渡的性质见 [goal.md](goal.md)**；为什么这样设计见 [design.md](design.md)；分层取舍见 [host-layering-decision.md](host-layering-decision.md)。
-> 对应 design v1（2026-10-22）。全部包名 `Dougong.*`，目标框架 `net10.0`。
+> 对应 design v1（2026-10-22）。全部包名 `Dougong.*`，目标框架 `net11.0`。
 
 ---
 

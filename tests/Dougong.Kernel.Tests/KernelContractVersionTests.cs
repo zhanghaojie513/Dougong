@@ -10,7 +10,7 @@ public sealed class KernelContractVersionTests
         Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "..",
             "samples", "Dougong.Sample.Contracts", "bin", Configuration,
-            "net10.0", "Dougong.Sample.Contracts.dll"));
+            "net11.0", "Dougong.Sample.Contracts.dll"));
 
     private static string Configuration =>
 #if DEBUG
@@ -26,16 +26,51 @@ public sealed class KernelContractVersionTests
         Assert.NotNull(version);
     }
 
-    [Theory]
-    [InlineData("0.1", true)]
-    [InlineData("0.0", true)]
-    [InlineData("0.2", false)]
-    [InlineData("1.0", false)]
-    public void Contract_range_is_checked_against_host_major_and_minor(string range, bool expected)
+    /// <summary>
+    /// **兼容范围按宿主的主/次版本判定。**
+    /// </summary>
+    /// <remarks>
+    /// <b>这里原先把具体区间写死在 InlineData 里</b>（"0.1"→true、"0.2"→false），
+    /// 于是版本号从 0.1.x 走到 0.2.0 时测试立刻红——**红的不是代码错了，
+    /// 是测试把"当前版本"当成了期望值的一部分**。
+    ///
+    /// <para>
+    /// 现在从宿主版本推导：同主次版和更低的都兼容，更高的都不兼容。
+    /// 这样升版本不会误报，而判据本身（只看主次版，不看修订号与预发布标签）
+    /// 仍然被钉住。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Contract_range_is_checked_against_host_major_and_minor()
     {
         var host = DougongKernel.ContractVersions["Dougong.Kernel"];
 
-        Assert.Equal(expected, new ContractVersion("Dougong.Kernel", range).IsSatisfiedBy(host));
+        // 同主次版：兼容。预发布标签（-alpha.1）不影响判定。
+        var sameMinor = $"{host.Major}.{host.Minor}";
+        Assert.True(
+            new ContractVersion("Dougong.Kernel", sameMinor).IsSatisfiedBy(host),
+            $"宿主 {host} 应当兼容范围 {sameMinor}");
+
+        // 更低的次版本：兼容（次版本只增不减）。
+        if (host.Minor > 0)
+        {
+            var lower = $"{host.Major}.{host.Minor - 1}";
+            Assert.True(
+                new ContractVersion("Dougong.Kernel", lower).IsSatisfiedBy(host),
+                $"宿主 {host} 应当兼容更低的范围 {lower}");
+        }
+
+        // 更高的次版本：不兼容。
+        var higher = $"{host.Major}.{host.Minor + 1}";
+        Assert.False(
+            new ContractVersion("Dougong.Kernel", higher).IsSatisfiedBy(host),
+            $"宿主 {host} 不该兼容更高的范围 {higher}");
+
+        // 更高的主版本：不兼容。
+        var nextMajor = $"{host.Major + 1}.0";
+        Assert.False(
+            new ContractVersion("Dougong.Kernel", nextMajor).IsSatisfiedBy(host),
+            $"宿主 {host} 不该兼容更高的主版本 {nextMajor}");
     }
 
     [Fact]
@@ -88,5 +123,5 @@ public sealed class KernelContractVersionTests
         Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "..",
             "samples", "Dougong.Sample.Plugin", "bin", Configuration,
-            "net10.0", "Dougong.Sample.Plugin.dll"));
+            "net11.0", "Dougong.Sample.Plugin.dll"));
 }

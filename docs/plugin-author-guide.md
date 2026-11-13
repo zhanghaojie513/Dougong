@@ -32,7 +32,7 @@ Dougong 的插件不是"扩展点回调"，而是**运行能力的提供方**。
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <!-- 必须：动态加载要求程序集可独立解析 -->
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <IsPackable>false</IsPackable>

@@ -163,7 +163,7 @@ public static class PerformanceBaselineChecks
     {
         var samplePath = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-            "samples", "Dougong.Sample.Plugin", "bin", "Release", "net10.0",
+            "samples", "Dougong.Sample.Plugin", "bin", "Release", "net11.0",
             "Dougong.Sample.Plugin.dll"));
 
         if (!File.Exists(samplePath))

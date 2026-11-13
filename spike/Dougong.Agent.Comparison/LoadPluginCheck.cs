@@ -28,7 +28,7 @@ public static class LoadPluginCheck
             Console.WriteLine("用法：-- load-plugin <插件 dll 的路径>");
             Console.WriteLine();
             Console.WriteLine("  例如：dotnet run --project spike/Dougong.Agent.Comparison \\");
-            Console.WriteLine("          -- load-plugin samples/my-first-plugin/bin/Release/net10.0/MyFirstPlugin.dll");
+            Console.WriteLine("          -- load-plugin samples/my-first-plugin/bin/Release/net11.0/MyFirstPlugin.dll");
             Console.WriteLine();
             Console.WriteLine("  只应加载你自己写的、可信的插件。");
             return 2;

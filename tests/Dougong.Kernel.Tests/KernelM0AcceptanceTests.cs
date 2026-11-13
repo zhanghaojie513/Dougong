@@ -189,7 +189,7 @@ public sealed class KernelM0AcceptanceTests
     private static string SampleAssemblyPath() => Path.GetFullPath(Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "..",
         "samples", "Dougong.Sample.Plugin", "bin", Configuration,
-        "net10.0", "Dougong.Sample.Plugin.dll"));
+        "net11.0", "Dougong.Sample.Plugin.dll"));
 
     private static string Configuration =>
 #if DEBUG

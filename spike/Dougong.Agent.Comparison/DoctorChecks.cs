@@ -359,7 +359,7 @@ public static class DoctorChecks
         IReadOnlyDictionary<string, string?> environment)
     {
         var cliDll = Path.Combine(
-            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net11.0", "Dougong.Cli.dll");
 
         if (!File.Exists(cliDll))
             throw new InvalidOperationException($"找不到 CLI 产物：{cliDll}（先跑 all-checks.sh 构建）");
@@ -442,7 +442,7 @@ public static class DoctorChecks
         string[] commands, IReadOnlyDictionary<string, string?> environment)
     {
         var cliDll = Path.Combine(
-            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net11.0", "Dougong.Cli.dll");
 
         if (!File.Exists(cliDll))
             throw new InvalidOperationException($"找不到 CLI 产物：{cliDll}");
@@ -672,7 +672,7 @@ public static class DoctorChecks
         string[] arguments, IReadOnlyDictionary<string, string?> environment)
     {
         var cliDll = Path.Combine(
-            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net11.0", "Dougong.Cli.dll");
 
         if (!File.Exists(cliDll))
             throw new InvalidOperationException($"找不到 CLI 产物：{cliDll}（先跑 all-checks.sh 构建）");

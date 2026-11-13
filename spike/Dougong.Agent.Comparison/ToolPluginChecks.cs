@@ -231,7 +231,7 @@ public static class ToolPluginChecks
     {
         var spikeDll = Path.Combine(
             FindRepoRoot(), "spike", "Dougong.Agent.Comparison",
-            "bin", "Release", "net10.0", "Dougong.Agent.Comparison.dll");
+            "bin", "Release", "net11.0", "Dougong.Agent.Comparison.dll");
 
         if (!File.Exists(spikeDll)) return "找不到 spike 产物";
 
@@ -423,7 +423,7 @@ public static class ToolPluginChecks
             await File.WriteAllTextAsync(Path.Combine(ProbeDir, "Probe.csproj"), $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
-                    <TargetFramework>net10.0</TargetFramework>
+                    <TargetFramework>net11.0</TargetFramework>
                     <ImplicitUsings>enable</ImplicitUsings>
                     <Nullable>enable</Nullable>
                     <IsPackable>false</IsPackable>
@@ -446,7 +446,7 @@ public static class ToolPluginChecks
                 return (false, _buildError);
             }
 
-            var dll = Path.Combine(ProbeDir, "bin", "Release", "net10.0", "Probe.dll");
+            var dll = Path.Combine(ProbeDir, "bin", "Release", "net11.0", "Probe.dll");
             if (!File.Exists(dll))
             {
                 _buildError = $"找不到产物 {dll}";

@@ -27,12 +27,12 @@ public sealed class KernelDirectoryLoadingTests
 
     private static string SamplePluginPath => Path.GetFullPath(Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-        "samples", "Dougong.Sample.Plugin", "bin", Flavor, "net10.0",
+        "samples", "Dougong.Sample.Plugin", "bin", Flavor, "net11.0",
         "Dougong.Sample.Plugin.dll"));
 
     private static string TwoPluginsPath => Path.GetFullPath(Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-        "samples", "Dougong.Sample.TwoPlugins", "bin", Flavor, "net10.0",
+        "samples", "Dougong.Sample.TwoPlugins", "bin", Flavor, "net11.0",
         "Dougong.Sample.TwoPlugins.dll"));
 
     /// <summary>

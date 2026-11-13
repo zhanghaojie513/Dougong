@@ -96,7 +96,7 @@ MCP 官方 SDK 保持拟采用底座；Tasks 等可选扩展按实际版本能�
 └────────────────────────────────────────────────────────┘
 ```
 
-**目标包清单**（`net10.0`，MIT，`Dougong.*` 前缀；**除 `Dougong.Telemetry` 外均已实现**，实际引用状态见 architecture.md §2）：
+**目标包清单**（`net11.0`，MIT，`Dougong.*` 前缀；**除 `Dougong.Telemetry` 外均已实现**，实际引用状态见 architecture.md §2）：
 
 | 包 | 内容 | 目标依赖 |
 |---|---|---|
@@ -300,7 +300,7 @@ DougongDesktop.PtyHost（按需启动，持有 PTY/shell 句柄）
 
 | 项 | 默认 | 备注 |
 |---|---|---|
-| TFM | `net10.0` | SDK 需支持该目标和 `.slnx`，实施时检测并固定可复现版本；不把 SDK 11 当唯一要求。当前无 11 独有 API 依赖，升目标或多目标在 M3 按需求评估 |
+| TFM | `net11.0` | **2026-11-13 升到 net11**（原为 net10）。当初的判断是"无 11 独有 API 依赖、不把 SDK 11 当唯一要求"——那条仍然成立，这次升目标不是因为它带来新 API，而是**与桌面端统一**、避免两个仓库跨 TFM 引用。代价：使用者需要 .NET 11 运行时，而 net10 是 LTS、net11 是 STS |
 | 序列化 | System.Text.Json | AgentHost 是 JIT，AOT 压力只在宿主侧 |
 | 日志/配置/DI | Microsoft.Extensions.* | 不引第三方 |
 | 许可 | MIT | 与 dsh/pi.net 一致 |

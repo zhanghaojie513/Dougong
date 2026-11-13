@@ -73,7 +73,7 @@ public sealed class KernelStateCommitTests
 #else
                     "Release",
 #endif
-                    "net10.0", "Dougong.Sample.Contracts.dll")),
+                    "net11.0", "Dougong.Sample.Contracts.dll")),
                 "Dougong.Sample.Contracts.CompatibleContractPlugin")
             .AsTask().WaitAsync(Timeout);
         await kernel.UnloadAsync(handle.Id).AsTask().WaitAsync(Timeout);

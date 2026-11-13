@@ -34,7 +34,7 @@ public sealed class KernelFailureDiagnosisTests
 #else
         "Release",
 #endif
-        "net10.0", "Dougong.Sample.Plugin.dll"));
+        "net11.0", "Dougong.Sample.Plugin.dll"));
 
     /// <summary>Activate 阶段：激活抛异常 → Stage=Activate，Hint 指向检查插件实现。</summary>
     [Fact]
@@ -172,7 +172,7 @@ public sealed class KernelFailureDiagnosisTests
 #else
         "Release",
 #endif
-        "net10.0", "Dougong.Sample.IsolatedPlugin.dll"));
+        "net11.0", "Dougong.Sample.IsolatedPlugin.dll"));
 
     /// <summary>把异常链条拍平成一段文本，便于断言"建议是否出现在某处"。</summary>
     private static string Flatten(Exception error)

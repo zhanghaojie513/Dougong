@@ -2,13 +2,13 @@
 
   <!-- 全仓库公共属性；包版本统一在 Directory.Packages.props（CPM） -->
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <Version>0.1.25-alpha.1</Version>
+    <Version>0.2.0-alpha.1</Version>
     <Authors>Haojie Zhang</Authors>
     <RepositoryUrl>https://github.com/zhanghaojie513/Dougong</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

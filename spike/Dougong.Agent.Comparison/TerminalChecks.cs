@@ -3639,7 +3639,7 @@ public static class TerminalChecks
         if (ownDir is null) return "取不到检查程序集路径";
 
         var inSpike = Path.Combine(ownDir, "Dougong.Cli.dll");
-        var release = Path.Combine(root, "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+        var release = Path.Combine(root, "src", "Dougong.Cli", "bin", "Release", "net11.0", "Dougong.Cli.dll");
 
         if (!File.Exists(inSpike)) return "检查目录里没有 Dougong.Cli.dll（引用没带过来）";
         if (!File.Exists(release)) return "找不到 Release 产物（先构建）";
@@ -3668,7 +3668,7 @@ public static class TerminalChecks
         foreach (var project in projects)
         {
             var source = Path.Combine(root, "src", project);
-            var assembly = Path.Combine(source, "bin", "Release", "net10.0", project + ".dll");
+            var assembly = Path.Combine(source, "bin", "Release", "net11.0", project + ".dll");
 
             if (!Directory.Exists(source)) continue;
             if (!File.Exists(assembly)) return $"找不到 {project}.dll（先构建）";

@@ -16,7 +16,7 @@ public sealed class KernelDynamicLoadingTests
             var candidate = Path.GetFullPath(Path.Combine(
                 here, "..", "..", "..", "..", "..",
                 "samples", "Dougong.Sample.Plugin", "bin",
-                Configuration, "net10.0", "Dougong.Sample.Plugin.dll"));
+                Configuration, "net11.0", "Dougong.Sample.Plugin.dll"));
             Assert.True(File.Exists(candidate), $"样例插件未构建：{candidate}");
             return candidate;
         }

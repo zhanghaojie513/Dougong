@@ -115,9 +115,9 @@ for pkg in "${CHECK_PACKAGES[@]}"; do
     exit 1
   fi
 
-  dll="$WORK/$pkg/lib/net10.0/Dougong.$pkg.dll"
+  dll="$WORK/$pkg/lib/net11.0/Dougong.$pkg.dll"
   if [ ! -f "$dll" ]; then
-    echo "包里没有 lib/net10.0/Dougong.$pkg.dll"
+    echo "包里没有 lib/net11.0/Dougong.$pkg.dll"
     exit 1
   fi
   echo "已下载（$(stat -c%s "$dll" 2>/dev/null || wc -c < "$dll") B）"
@@ -135,16 +135,16 @@ cat > "$PROBE/probe.csproj" <<EOF
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Dougong.Ai">
-      <HintPath>$(cygpath -w "$WORK/Ai/lib/net10.0/Dougong.Ai.dll" 2>/dev/null || echo "$WORK/Ai/lib/net10.0/Dougong.Ai.dll")</HintPath>
+      <HintPath>$(cygpath -w "$WORK/Ai/lib/net11.0/Dougong.Ai.dll" 2>/dev/null || echo "$WORK/Ai/lib/net11.0/Dougong.Ai.dll")</HintPath>
     </Reference>
     <Reference Include="Dougong.HostProtocol">
-      <HintPath>$(cygpath -w "$WORK/HostProtocol/lib/net10.0/Dougong.HostProtocol.dll" 2>/dev/null || echo "$WORK/HostProtocol/lib/net10.0/Dougong.HostProtocol.dll")</HintPath>
+      <HintPath>$(cygpath -w "$WORK/HostProtocol/lib/net11.0/Dougong.HostProtocol.dll" 2>/dev/null || echo "$WORK/HostProtocol/lib/net11.0/Dougong.HostProtocol.dll")</HintPath>
     </Reference>
   </ItemGroup>
 </Project>
@@ -225,10 +225,10 @@ PROBE_CS
 
 # 把被验的 DLL 拷贝到探针输出目录：LoadFrom 按 BaseDirectory 找。
 # 不拷的话 AppContext.BaseDirectory 里没有它们，查找必然失败。
-PROBE_OUT="$PROBE/bin/Release/net10.0"
+PROBE_OUT="$PROBE/bin/Release/net11.0"
 mkdir -p "$PROBE_OUT"
-cp "$WORK/Ai/lib/net10.0/Dougong.Ai.dll" "$PROBE_OUT/"
-cp "$WORK/HostProtocol/lib/net10.0/Dougong.HostProtocol.dll" "$PROBE_OUT/"
+cp "$WORK/Ai/lib/net11.0/Dougong.Ai.dll" "$PROBE_OUT/"
+cp "$WORK/HostProtocol/lib/net11.0/Dougong.HostProtocol.dll" "$PROBE_OUT/"
 
 if ! "$DOTNET" run --project "$PROBE/probe.csproj" -c Release 2>&1 | tail -20; then
   echo "反射核对失败" >&2

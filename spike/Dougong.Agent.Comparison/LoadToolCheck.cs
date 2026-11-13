@@ -27,7 +27,7 @@ public static class LoadToolCheck
             Console.WriteLine("用法：-- load-tool <工具 dll 的路径>");
             Console.WriteLine();
             Console.WriteLine("  例如：dotnet run --project spike/Dougong.Agent.Comparison \\");
-            Console.WriteLine("          -- load-tool samples/my-first-tool/bin/Release/net10.0/MyFirstTool.dll");
+            Console.WriteLine("          -- load-tool samples/my-first-tool/bin/Release/net11.0/MyFirstTool.dll");
             Console.WriteLine();
             Console.WriteLine("  只应加载你自己写的、可信的工具。");
             return 2;

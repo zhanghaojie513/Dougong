@@ -109,7 +109,7 @@ README 对组合方式的表述：
 | `Doctor.cs` | **`public`** | **深**：7 个 `DOUGONG_*` 变量写死在检查逻辑里 | **不能** |
 
 `SessionComposition` 与 `Doctor` 虽然是 `public`，但外部项目实际上用不了——
-`Dougong.Cli` 是 `PackAsTool`，nupkg 布局是 `tools/net10.0/any/`，不是 `lib/`，
+`Dougong.Cli` 是 `PackAsTool`，nupkg 布局是 `tools/net11.0/any/`，不是 `lib/`，
 `PackageReference` 引用它找不到程序集（已在 `.nupkg` 里核实）。所以 `public`
 在这里只意味着"没别的项目误用"，不意味着"这是给别人用的 API"。
 

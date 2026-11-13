@@ -18,7 +18,7 @@ public sealed class KernelSharedContractMissingTests
     private static string PluginAssemblyPath() => Path.GetFullPath(Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "..",
         "samples", "Dougong.Sample.IsolatedPlugin", "bin", Configuration,
-        "net10.0", "Dougong.Sample.IsolatedPlugin.dll"));
+        "net11.0", "Dougong.Sample.IsolatedPlugin.dll"));
 
     private static string Configuration =>
 #if DEBUG
@@ -127,6 +127,6 @@ public sealed class KernelSharedContractMissingTests
     private static string ContractAssemblyPath() => Path.Combine(
         Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-            "samples", "Dougong.Sample.Isolated", "bin", Configuration, "net10.0")),
+            "samples", "Dougong.Sample.Isolated", "bin", Configuration, "net11.0")),
         $"{ContractAssemblyName}.dll");
 }

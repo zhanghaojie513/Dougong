@@ -475,7 +475,7 @@ public static class KernelProcessChecks
     {
         var dll = Path.Combine(
             AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar),
-            "..", "..", "..", "..", "..", "src", "Dougong.Cli", "bin", "Release", "net10.0",
+            "..", "..", "..", "..", "..", "src", "Dougong.Cli", "bin", "Release", "net11.0",
             "Dougong.Cli.dll");
         dll = Path.GetFullPath(dll);
         if (!File.Exists(dll))

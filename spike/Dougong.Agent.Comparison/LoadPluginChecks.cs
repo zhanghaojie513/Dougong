@@ -92,7 +92,7 @@ public static class LoadPluginChecks
     private static async Task<string?> BadFileGivesReasonsAsync()
     {
         var kernelDll = Path.Combine(
-            FindRepoRoot(), "src", "Dougong.Kernel", "bin", "Release", "net10.0", "Dougong.Kernel.dll");
+            FindRepoRoot(), "src", "Dougong.Kernel", "bin", "Release", "net11.0", "Dougong.Kernel.dll");
 
         if (!File.Exists(kernelDll)) return "找不到内核 dll（先构建 solution）";
 
@@ -190,7 +190,7 @@ public static class LoadPluginChecks
                 return null;
             }
 
-            var dll = Path.Combine(SampleDir, "bin", "Release", "net10.0", "Probe.dll");
+            var dll = Path.Combine(SampleDir, "bin", "Release", "net11.0", "Probe.dll");
             return File.Exists(dll) ? Path.GetFullPath(dll) : null;
         }
         catch (Exception ex)
@@ -228,7 +228,7 @@ public static class LoadPluginChecks
     {
         var spikeDll = Path.Combine(
             FindRepoRoot(), "spike", "Dougong.Agent.Comparison",
-            "bin", "Release", "net10.0", "Dougong.Agent.Comparison.dll");
+            "bin", "Release", "net11.0", "Dougong.Agent.Comparison.dll");
 
         if (!File.Exists(spikeDll))
             throw new InvalidOperationException($"找不到 spike 产物：{spikeDll}");

@@ -191,7 +191,7 @@ public static class ToolPackageChecks
     private static async Task<CliResult> RunCliAsync(string[] args, bool clearProviderConfig)
     {
         var cliDll = Path.Combine(
-            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net11.0", "Dougong.Cli.dll");
 
         if (!File.Exists(cliDll))
             throw new InvalidOperationException($"找不到 CLI 产物：{cliDll}");
@@ -539,7 +539,7 @@ public static class ToolPackageChecks
     private static async Task<string?> RunAcpInitializeAsync()
     {
         var cliDll = Path.Combine(
-            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net11.0", "Dougong.Cli.dll");
 
         if (!File.Exists(cliDll)) return null;
 

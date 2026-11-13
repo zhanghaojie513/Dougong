@@ -1208,7 +1208,7 @@ public static class ProviderChecks
         string? stdin = null)
     {
         var cliDll = Path.Combine(
-            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net10.0", "Dougong.Cli.dll");
+            FindRepoRoot(), "src", "Dougong.Cli", "bin", "Release", "net11.0", "Dougong.Cli.dll");
 
         if (!File.Exists(cliDll))
             throw new InvalidOperationException($"找不到 CLI 产物：{cliDll}（先构建）");

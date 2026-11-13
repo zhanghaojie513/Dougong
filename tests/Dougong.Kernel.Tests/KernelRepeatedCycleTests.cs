@@ -27,7 +27,7 @@ public sealed class KernelRepeatedCycleTests
 #else
         "Release",
 #endif
-        "net10.0", "Dougong.Sample.Plugin.dll"));
+        "net11.0", "Dougong.Sample.Plugin.dll"));
 
     private const int Cycles = 20;
 
