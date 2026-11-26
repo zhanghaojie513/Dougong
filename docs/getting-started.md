@@ -16,8 +16,8 @@
 
 ### 0.1 .NET SDK
 
-1. 打开 <https://dotnet.microsoft.com/download/dotnet/10.0>
-2. 下载 **SDK 10.0.x**（不是 Runtime，不是 ASP.NET Core Runtime——必须是 SDK）
+1. 打开 <https://dotnet.microsoft.com/download/dotnet/11.0>
+2. 下载 **SDK 11.0.x**（不是 Runtime，不是 ASP.NET Core Runtime——必须是 SDK）
 3. 安装，一路下一步
 4. **关掉所有已经打开的终端窗口**（不关的话新装的命令找不到）
 
@@ -27,7 +27,7 @@
 dotnet --version
 ```
 
-**应该看到**：`10.0.402` 或更高的 `10.0.x`。
+**应该看到**：`11.0.100` 或更高的 `11.0.x`。
 
 **如果看到** `command not found` 或 `'dotnet' 不是内部或外部命令`：
 说明没装成功，或者没重开终端。重开一个再试；还不行就重新装一遍。
@@ -429,10 +429,10 @@ dotnet run --project src/Dougong.Cli -c Release -- --doctor
 
 ```
 [失败] 运行时：.NET 9.0.x
-         下一步：本项目面向 .NET 10。……
+         下一步：本项目面向 .NET 11。……
 ```
 
-说明 SDK 版本太低，回到 §0.1 装 .NET 10。
+说明 SDK 版本太低，回到 §0.1 装 .NET 11。
 
 ### 6.4 跑一个真实任务
 

@@ -19,7 +19,7 @@
 <p align="center">
   <a href="https://github.com/zhanghaojie513/Dougong"><img src="https://img.shields.io/badge/repository-Dougong-2f6f5e?style=flat-square" alt="Repository"></a>
   <a href="https://github.com/zhanghaojie513/Dougong/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/zhanghaojie513/Dougong/build.yml?style=flat-square&label=build" alt="Build"></a>
-  <a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-10.0-512bd4?style=flat-square" alt=".NET 10"></a>
+  <a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-11.0-512bd4?style=flat-square" alt=".NET 11"></a>
   <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.2.0--alpha.1-orange?style=flat-square" alt="Version 0.2.0-alpha.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f883d?style=flat-square" alt="MIT License"></a>
 </p>
@@ -50,7 +50,7 @@ organised into action through clear connections.
 
 ## Current Status
 
-Targeting `net11.0`, version `0.2.0-alpha.1`, available on nuget.org once published.
+Targeting `net11.0`, version `0.2.0-alpha.1`, **published on nuget.org** (prerelease tag).
 All four design commitments — composability, lifecycle integrity, explainable failure,
 actually usable — are met; see [design commitments](docs/goal.md).
 

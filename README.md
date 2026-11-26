@@ -19,7 +19,7 @@
 <p align="center">
   <a href="https://github.com/zhanghaojie513/Dougong"><img src="https://img.shields.io/badge/repository-Dougong-2f6f5e?style=flat-square" alt="Repository"></a>
   <a href="https://github.com/zhanghaojie513/Dougong/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/zhanghaojie513/Dougong/build.yml?style=flat-square&label=build" alt="Build"></a>
-  <a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-10.0-512bd4?style=flat-square" alt=".NET 10"></a>
+  <a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-11.0-512bd4?style=flat-square" alt=".NET 11"></a>
   <a href="https://github.com/zhanghaojie513/Dougong/releases"><img src="https://img.shields.io/badge/version-0.2.0--alpha.1-orange?style=flat-square" alt="Version 0.2.0-alpha.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f883d?style=flat-square" alt="MIT License"></a>
 </p>
@@ -43,7 +43,7 @@
 
 ## 当前状态
 
-目标框架 `net11.0`，版本 `0.2.0-alpha.1`，发布到 nuget.org 后可用。
+目标框架 `net11.0`，版本 `0.2.0-alpha.1`，**已发布到 nuget.org**（预发布标签）。
 四条设计承诺（可组合、完整生命周期、故障可解释、真实可用）均已达成，
 见 [设计承诺](docs/goal.md)。
 

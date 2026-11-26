@@ -1,9 +1,9 @@
-# 交接：底部三行版式已落地（活动行 / 输入行 / 状态栏）
+# 交接：SDK 侧当前状态
 
 > **给下一个会话的起点。** 只写"现在在哪、差什么、怎么接"。
 > 设计理由看代码注释，不要去翻旧对话。
 >
-> 最后更新：2026-11-06，`main` + 未提交改动（本轮尚未 commit）。
+> 最后更新：2026-11-26，`main` @ `cbc499f`，工作区干净、与远端同步。
 
 ---
 
@@ -11,145 +11,130 @@
 
 ```bash
 cd /Users/zhanghaojie/项目/my/dougong
-git status                 # 5 个文件有改动，见第二节
+git status                 # 应当干净
+dotnet --version           # 应当 11.0.100
 bash scripts/all-checks.sh # 见第四节"已知红项"
 ```
 
+**当前版本：`0.2.0-alpha.1`，目标框架 `net11.0`，已发到 nuget.org。**
+
 ### 必须先做的决定
 
-1. **本轮改动还没提交**，也**没升版本号**。`version-not-already-published`
-   现在是红的，因为 `0.1.18-alpha.1` 已发布到 nuget.org——这是预期行为。
-   **发版前要先问用户**（用户 2026-11-02 明确要求：没有指示时不动版本号与 API 基线）。
-2. 本轮**没有改任何 SDK 公开 API**（只动了 `Dougong.Cli` 内部与检查），
-   所以 ApiCompat 不需要更新基线。
+动版本号或 API 基线之前**先问用户**（用户 2026-11-02 明确要求：
+没有指示时不动版本号与 API 基线）。`version-not-already-published`
+转红是提醒，不是故障。
 
 ---
 
-## 二、本轮做了什么
+## 二、最近三个版本做了什么
 
-用户 2026-11-05 报的问题：**忙时活动行跑到了输入行下面**（附两张实机截图）。
-
-### 根因（不是排版算错）
-
-底部块当时**待在正文滚动区里**。正文一长，整块被推走；想让块留在原地
-就只能按绝对行号重画，而正文又从那些行写起——于是"谁后画谁赢"，
-次序完全由时序决定。
-
-### 修法
-
-**用 DECSTBM 把正文限制在 `1..height-3` 内滚动**，底部三行物理上碰不到：
-
-```
-1 .. height-3   正文滚动区
-height-2        活动行（仅忙时有内容，空闲留空）
-height-1        输入行（`> ` 常驻）
-height          状态栏（模型 · 上下文）
-```
-
-改动文件：
-
-| 文件 | 改了什么 |
+| 版本 | 内容 |
 |---|---|
-| `src/Dougong.Cli/Terminal/LiveRegion.cs` | **整类重写**。三槽位 + 滚动区进出 + `CommitPrompt` |
-| `src/Dougong.Cli/Terminal/StatusLine.cs` | 删掉 `RenderSingleLine`，拆成独立的 `RenderActivity` / `RenderStatus` |
-| `src/Dougong.Cli/Terminal/ActivityReporter.cs` | `Render()` 分别喂两个槽位；流式只隐活动行、状态栏常驻 |
-| `src/Dougong.Cli/Program.cs` | `ReadLine` 之后调 `liveRegion.CommitPrompt(input)` |
-| `src/Dougong.Cli/Terminal/Banner.cs` | `BottomRows` 2 → 3 |
-| `spike/Dougong.Agent.Comparison/TerminalChecks.cs` | VT 模拟器加 DECSTBM + 区域内滚动 + ONLCR；改写 10 条旧断言；新增 2 条 |
+| `0.2.0-alpha.1` | **TFM 从 `net10.0` 升到 `net11.0`**（与桌面端同批升）。 |
+| `0.1.25-alpha.1` | 删掉能力清单里的假缺口（"子进程无进程组"是错的，见第七节）。 |
+| `0.1.24-alpha.1` | 接通推理强度档位：配置键 `reasoning_effort` 现在真的生效。 |
 
-### 关键取舍（改代码前先读）
+### TFM 升级的要点
 
-1. **块高恒为 3 行，空闲不塌成 2 行。** 改 DECSTBM 会把光标打回屏幕原点，
-   高度一变就得每轮重设。空闲时活动行留空，滚动区整个会话只设一次。
-2. **相对模式（Narrow / 高度未知）退回单行。** 曾试图在两档也画两行，
-   真机在 60×24 上暴露：光标贴底时第二行被终端裁掉，活动行整条消失。
-   三行版式是富终端能力，不是所有档都有。
-3. **只用一个 DECSC 槽。** 静止时光标恒在正文区；`BeginPrompt` 存一次、
-   `CommitPrompt` 用它回去。不要读光标坐标（要走 DSR，管道里拿不到回应）。
-4. **`BeginPrompt` 只存一次光标。** 用户连按空回车会再次进入，
-   存第二次就把"正文位置"换成"输入行位置"了。
+- `.NET 11` 于 2026-11-10 发布，**是 STS（支持到 2028-05）**；
+  `net10` 是 LTS（到 2028-11）。这是用更长的支持期换了更新的运行时。
+- **使用者需要 .NET 11 运行时**。CLI 是 `dotnet tool`，装完运行就靠它；
+  SDK 包使用方要把项目目标改到 `net11.0` 才拿得到 `lib/net11.0/` 的程序集。
+- `global.json` 固定 `11.0.100`。
+- **升级时改了 31 个文件、53 处 `net10.0` 硬编码**——分布在 tests、spike、
+  scripts、docs 里。这类改动**改漏不会编译失败**，只在运行时找不到 DLL
+  或发版验证时报错。改 TFM 时务必全仓 grep 一遍，并用
+  **清空 `bin`/`obj` 后重建**来验证（旧产物会让漏改的路径"假通过"）。
 
 ---
 
-## 三、验证怎么做的（复现方式）
+## 三、C5 / C8：宿主契约与服务端（已完成）
 
-### 1. 检查套件
+桌面端当初把 C5（权限预设）、C6（AgentPreset）从 ⬜ 改成 ⏳。核实结果：
 
-```bash
-dotnet run --project spike/Dougong.Agent.Comparison -c Release --no-build -- terminal
-# TERMINAL: ALL PASS（共 3 条新增 + 10 条改写）
+| 项 | 桌面端标 | 实际 | 结论 |
+|---|---|---|---|
+| C5 权限预设 | ⏳ | `PermissionPresets` 在引擎，CLI 在用 | **⏳ 成立**，契约已补 |
+| C6 AgentPreset | ⏳ | **全仓库零实现** | **应退回 ⬜**（等能力，不是等契约） |
+| C8 子 agent | ⏳ | `SubagentRegistry` 在引擎，装配在 CLI 应用层 | **⏳ 成立**，契约已补 |
+
+### 补了什么
+
+- `src/Dougong.HostProtocol/Permission.cs`：2 条命令 + 1 个事件
+- `src/Dougong.HostProtocol/Subagent.cs`：3 条命令 + 2 个事件
+- `src/Dougong.HostProtocol/Failure.cs`：`CommandFailedEvent` + 四种失败原因
+- `src/Dougong.Hosting/ProtocolMapping.cs`：**引擎类型 ↔ 协议形状的映射**
+- `src/Dougong.Hosting/HostProtocolServer.cs`：参考服务端
+
+### ⚠️ 两个约束，答错就是假控件
+
+**1. `HostProtocolServer` 不提供扩展点，别指望继承。**
+类 `sealed`，分发点是私有 switch。即使去掉 `sealed` 也没用——分发逻辑
+不认识宿主的命令，那些一律落到 `Unsupported`。
+宿主有自己的协议命令时，**保留自己的服务端循环**，只复用契约类型与
+`ProtocolMapping`。（桌面端实测：744 行 IpcServer 承载 `fs/*`、`models/*`，
+用不上本类。）
+
+**2. `IHostSessionProvider` 两个方法必须返回"引擎真正在用的那一份"。**
+
+```csharp
+// C5：presets 只 new 一次，既包进审批链，也交给 provider
+var presets = PermissionPresets.CreateDefault(ApprovalPolicy.AskOnRisk);
+var approver = new PermissionPolicyApprover(new PresetApprover(inner, presets));
+// → dispatcher 用 approver；provider.Permissions() 返回 presets
+
+// C8：subagents 只 new 一次，既给三个工具，也给 provider
+var subagents = new SubagentRegistry(maxDepth: 3, maxConcurrent: 4);
+// → SubagentTool/ListTool/ResultTool 都用它；provider.Subagents() 返回它
 ```
 
-新增两条是这次改造的验收点：
+接错的表现：界面能切、服务端回成功，**但引擎行为不变**；
+或者 `subagent/list` 永远为空而额度在烧。
+两条检查钉着这件事：`permission-switch-affects-real-approval`、
+`subagent-list-sees-real-registry`（反证都验过）。
 
-- `activity-line-sits-above-input-line`——**用户报的那个缺陷本身**。
-  跑完整流程（提两次问 + 正文 + 忙起来），按屏幕行号比较。
-- `bottom-block-rows-are-stable`——空闲时活动行槽位必须为空、状态栏仍在。
-- `turn-elapsed-is-shown-exactly-once`——本轮耗时恰好显示一处：忙时活动行、
-  闲时状态栏。**走真实 Reporter，不调纯函数**（原因见下面的反向验证表）。
-
-**三条反向验证都做过**（改坏 → 确认变红 → 还原）：
-
-| 破坏方式 | 变红的检查 |
-|---|---|
-| 活动行与输入行对调 | 4 条（含用户缺陷那条） |
-| 去掉 DECSTBM | `anchored-region-survives-body-scroll` |
-| 三槽位合并回一行（复现 P4 版式） | 4 条 |
-| 忙时状态栏也报耗时 | `turn-elapsed-is-shown-exactly-once` |
-
-**第四条的教训值得记住**：第一版那条检查只调了两个渲染函数，
-于是"状态栏永远带耗时"改坏后它仍然全绿——它验的是纯函数，
-而缺陷在 `ActivityReporter` 的接线处。现在改成经 Reporter 渲染、
-再从区域捕获真实的两行。**反证失败过一轮才修对，别以为写了检查就算数。**
-
-### 2. 真机（PTY 回放）
-
-`/tmp/dgprobe/pty-probe.py` + `/tmp/dgprobe/replay.py`（**临时文件，未入库**；
-要复现就重写，思路见下）：
-
-- 用不可用 provider（`http://127.0.0.1:9`）触发 `Retrying`
-- PTY 里跑真实 CLI，喂一句 `你好`，录下字节流
-- 自己写 VT 回放，得到"用户实际看到的屏幕"，再断言行序
-
-**结果：24×60、30×80、40×120、16×50、12×40 全部 PASS**，
-边界高度 29–33 也全过。
-
-真机抓到的屏幕（40×120）：
+### 事件驱动，不是轮询
 
 ```
-37|  | (´･_･`) 重试中… · 7s        ← 活动行
-38|>                               ← 输入行
-39|  probe-model                   ← 状态栏
+subagent：Started 与 Completed 都推 subagent/updated，用 State 区分
+permission：默认不广播；多界面场景（Dock 浮动窗）发 permission/watch 订阅
 ```
 
-### 3. VT 模拟器踩到的坑（**别再踩**）
+推送**不带 `RequestId`**（带了会被误认为某条命令的响应），`PushAsync` 强制检查。
 
-- **ONLCR**：真实 tty 把 `\n` 转成 `\r\n`，模拟器早先只下移不归零，
-  于是不带 `\r` 的正文每行右移一段。已在模拟器里补上。
-- **`Text()` 会 TrimEnd**：`> ` 到屏幕上只剩 `>`，所以断言提示符要用
-  `StartsWith('>')`，不能用 `Contains("> ")`。
-- **`> ` 在转录里也出现**：按文本找输入行会命中正文第一行。
-  输入行必须按**槽位行号**判定。
+### 传输：stdio
+
+桌面端已定 stdio，并决定**自己做 serve 循环**——`dougong serve` 子命令
+在本仓库**不存在**（`HostProtocolServer` 类有，CLI 入口没做）。
+不要开 TCP localhost：协议无鉴权，同机任意进程都能发命令。
 
 ---
 
-## 四、已知红项（都不是本轮引入的）
+## 四、已知红项
 
 | 套件 | 失败项 | 状态 |
 |---|---|---|
-| `shell` / `persistent-shell` | `*-reports-current-directory` | **macOS 既有**。`/var` 是 `/private/var` 的符号链接，断言比的是未规范化路径。已在未改动的 HEAD 上复现过一次。 |
-| `tool-package-checks` | `version-not-already-published` | **预期**。`0.1.18-alpha.1` 已发布；发版前升号即可。 |
+| `shell` / `persistent-shell` | `*-reports-current-directory` | **macOS 既有**。`/var` 是 `/private/var` 的符号链接，断言比的是未规范化路径。在未改动的 HEAD 上也能复现。 |
+| `tool-package-checks` | `version-not-already-published` | **预期**。`0.2.0-alpha.1` 已发布；下次改动前升号即可。 |
 
-其余 68 套全绿。
+其余 78 套全绿（共 82 套）。
+
+### ⚠️ CI 目前是停摆的
+
+`.github/workflows/build.yml` 会在 push 到 `main` 时跑，但 GitHub Actions
+预算被设成 $0（页面显示 `Usage blocked`），所以 **run 会立刻失败**。
+那不是代码问题。**后果：Windows 与 Linux 两个平台完全没被验证过**——
+TFM 升到 net11 之后尤其值得留意。
 
 ---
 
-## 五、这个仓库的几条硬约束（会踩的坑）
+## 五、这个仓库的几条硬约束
 
-1. **Plain 档必须逐字不变。** 46 个自检套件跑在 `TerminalTier.Plain`，
-   断言改造前的确切文本。新呈现逻辑一律限定在 `Rich`/`Narrow`。
-2. **高度判据要成对钉。** `Banner` 的高度常量是**实测值**。本轮把
-   `BottomRows` 从 2 改成 3，四档判据自动跟着加一——改版式后要重新实测。
+1. **Plain 档必须逐字不变。** 自检套件跑在 `TerminalTier.Plain`（输出被重定向时
+   一律降这一档），断言的是改造前的确切文本。新呈现逻辑一律限定在
+   `Rich`/`Narrow`，判据是 `Output.Capability.Tier`。
+2. **高度判据要成对钉。** `Banner` 的各档高度常量是**实测值**，
+   改版式后必须重新实测并更新。
 3. **不要并行跑 `all-checks.sh`。** `apicompat` 套会临时改
    `src/Dougong.Ai/ChatClientFactory.cs`。
 4. **还原文件的验收标准**是 `git diff HEAD -- <file>` 空输出，不是 `git status` 干净。
@@ -157,175 +142,59 @@ dotnet run --project spike/Dougong.Agent.Comparison -c Release --no-build -- ter
    且**留最后一列不写**（写满会触发终端自动折行，后续定位全错）。
 6. **`.gitattributes` 要求 LF。** 编辑工具写出 CRLF 后要转回 LF，
    否则 `bash scripts/*.sh` 会报 `invalid option name`。
+7. **改 TFM / 改版本号后要全仓 grep。** 见第二节末尾。
 
 ---
 
-## 六、macOS 平台差异
+## 六、macOS 与网络环境
 
 | 项 | 说明 |
 |---|---|
-| `/var` 符号链接 | 临时目录断言要规范化，否则 `shell` 套会红（见第四节） |
+| `/var` 符号链接 | 临时目录断言要规范化，否则 `shell` 套会红 |
 | 终端尺寸 | `Console.WindowHeight` 在 iTerm2 / Terminal.app / tmux 都能读 |
-| 盲文字形 | U+2800–U+28FF，macOS 自带字体支持；显示宽度实测已确认 |
 | 换行 | 比对文本时注意 `Environment.NewLine`（macOS 是 `\n`） |
 | 脚本换行 | 仓库要求 LF；Windows 检出会带 CRLF，跑前先规范化 |
+| GitHub 443 不稳 | 推送常报 `HTTP2 framing layer` 或超时，重试即可（`nuget.org` 通常正常） |
 
 ---
 
-## 七、C5 / C8：宿主契约已补（2026-11-09）
+## 七、教训：三次"做了才发现不必做"
 
-桌面端反馈把 C5、C6 从 ⬜ 改成 ⏳。核实结果：
+这几条都是踩过的，写下来免得重复：
 
-| 项 | 桌面端标 | 实际 | 结论 |
-|---|---|---|---|
-| C5 权限预设 | ⏳ | `PermissionPresets` 在 `src/Dougong.Agent/PermissionPresets.cs`，12 条检查钉着，CLI 在用 | **⏳ 成立**。只缺契约，已补 |
-| C6 AgentPreset | ⏳ | **全仓库零实现**（引擎里也没有） | **应退回 ⬜**。这是等能力，不是等契约 |
-| C8 子 agent | ⏳ | `SubagentRegistry` 在引擎，装配在 CLI 应用层 | **⏳ 成立**。已补 |
-
-### 补了什么
-
-- `src/Dougong.HostProtocol/Permission.cs`（新）：权限预设的 2 条命令 + 1 个事件
-- `src/Dougong.HostProtocol/Subagent.cs`（新）：子 agent 的 3 条命令 + 2 个事件
-- `src/Dougong.Hosting/ProtocolMapping.cs`（新）：**引擎类型 ↔ 协议形状的映射**
-- `src/Dougong.Agent/Subagent.cs`：补 `StartedAt` / `ParentTurnId` / `ToolRounds` /
-  `CurrentStatus` / `IsRunning` / `Complete()`
-- 检查：`host-protocol` 加 4 条，新增 `protocol-mapping` 套件 7 条
-
-### 为什么映射要单独一层（关键设计）
-
-`HostProtocol` 是**零依赖**包，刻意不引用 `Dougong.Agent`。所以：
-
-- 契约里不能直接用引擎类型 → 协议定义自己的形状
-- "引擎枚举 ↔ 协议枚举"这条知识**不能留在各宿主**里 → 放 `Hosting`（L2，能同时看到两者）
-- 放错地方的后果是静默的：枚举加值时两边都编译通过，只是那个值在界面上显示成错的
-
-### 协议服务端（2026-11-09 补上）
-
-`Dougong.Hosting/HostProtocolServer.cs`。**不绑定任何宿主**，三条约束照
-`Dougong.Acp` 的先例：
-
-| 维度 | 做法 |
-|---|---|
-| 传输 | 裸 `Stream`（stdio / socket / 进程内管道都行） |
-| 实现 | `IHostSessionProvider` 委托，服务端只认接口 |
-| 依赖 | 只认 Agent + HostProtocol，**不引用 Cli / Acp** |
-
-已实现 5 条命令（C5 两条 + C8 三条）。其余一律回
-`CommandFailureReason.Unsupported`，并在 `Message` 里列出当前支持范围。
-
-**这是本轮最重要的决定**：宁可"明确说不支持"，也不要"实现了但走不通"。
-静默不响应是最坏的——客户端只能等到超时，用户永远看不到原因。
-
-契约侧顺带补了两处（都是补服务端时才暴露的）：
-- `ServerEvent.RequestId`——命令与响应此前无法配对
-- `CommandFailedEvent`——失败此前没有统一的表达方式
-
-`IHostSessionProvider` 的两个方法都返回可空：**能力缺失回 `Conflict`，
-不假装成功**。宿主可以只支持其中一部分（例如纯 CLI 场景不要子 agent）。
-
-### 推送：子 agent 完成会主动通知
-
-桌面端问过"事件驱动还是轮询"。答案是**事件驱动**：
+**1. 子进程"无进程组"是个假缺口。**
+能力清单曾写着"`ShellTool` 无进程组、无升级杀"，我据此实现了
+perl `setpgrp` + 按组杀，写完也在 macOS 验过。然后做决定性实验：
 
 ```
-SubagentHandle.Changed      ← 单个句柄结束（只触发一次）
-        ↓ 注册表自动转发
-SubagentRegistry.Completed  ← 任一子 agent 结束
-        ↓ 服务端订阅（首次见到注册表时）
-subagent/updated            ← 推给客户端，不带 RequestId
+父 sh 存活，子进程用 perl setpgrp 另建进程组 → Kill(entireProcessTree) → 残留 0
 ```
 
-**为什么现在才有**：契约里一直写着 `subagent/updated`，但服务端从未发出过
-一条——引擎根本没有可订阅的通知源，`SubagentRegistry` 只有查询方法。
-这是"契约先于实现"的典型盲区。
+**`.NET` 的 `Kill(entireProcessTree)` 按父子关系遍历，能跨进程组。**
+按组杀是重复劳动，实现已全部撤销。
+**误判原因**：我拿 `(sleep 50 &) ; exit 0` 测出残留，但那个场景里命令
+自己先退出了——而真实执行器只在 `WaitForExitAsync` 抛异常时调 `KillTree`，
+那时父进程必然还活着。**把"理论漏洞"当成了"实际漏洞"。**
 
-两处容易写错、都已被检查钉住：
-- **只能触发一次**（`_completionNotified`）：重复推会让客户端在回调里取结果时
-  第二次取不到（已被第一次取走）
-- **推送不带 `RequestId`**（`PushAsync` 强制）：带了会被误认为某条命令的响应，
-  真正的状态更新反而被丢掉
+**2. 契约注释里的承诺要实测。**
+"不认识的判别器会忽略"曾经是假的（实际抛 `JsonException`），
+"穷尽 switch 编译期暴露"也是假的（`_ => throw` 让编译器认为已穷尽，
+加枚举值零警告）。前者补了 `TryParse`，后者改了措辞。
 
-### 权限广播：默认关，可选开（2026-11-09）
+**3. 检查本身会坏。**
+`verify-release.sh` 缺 `curl -L`，把已上架的包报成"未找到"，
+`--wait` 白等 10 分钟。**这类问题比被测对象坏了更误导**——
+会让人以为推送失败，然后去重推一个已占用的版本号（不可恢复）。
 
-桌面端确认**单窗口，不需要权限推送**；但 Dock 浮动窗已在其技术栈里，
-要求**预留一条可选事件**。所以做成显式订阅而不是默认广播：
-
-```
-permission/watch { enabled: true }   ← 订阅（幂等）
-permission/watch { enabled: false }  ← 退订
-        ↓ 之后 switch 成功时
-permission/listed（不带 RequestId）  ← 广播给订阅者
-```
-
-**默认不广播的理由**：单窗口自己发起切换、自己收响应就够了，
-再推一条是多余的一帧。这也保证"单窗口不付这份成本"。
-
-### 子 agent：Started 也推
-
-桌面端说"相比权限，更急的是子 agent 的异步事件"。所以补成
-**Started + Completed 成对**——只推完成的话，界面要等子 agent 跑完
-才知道它存在过，而那时它已经开始花额度了。中间的工具轮数变化不推。
-
-### C6 待设计
-
-`AgentPreset` 连引擎里都没有。要动它得先回答"AgentPreset 是什么"：
-是模型+提示词+工具集的打包？和现有的 `/permission`、模型切换是什么关系？
-**这是设计讨论，不是接线**，所以没有动。
+**共同点：这三个都不是"写错代码"，是"没验证就相信"。**
 
 ---
 
-## 八、复核（2026-11-09）抓到的东西
+## 八、还没做的
 
-对两轮实现做了逐段复核，**五个真缺陷**，都已修 + 有检查钉住：
-
-| # | 缺陷 | 后果 | 钉住它的检查 |
-|---|---|---|---|
-| 1 | 锚定模式下 `Clear()` 不清屏（它只调相对模式的 `ErasePaintedRows`，那个方法在该模式下直接 return） | 退出后底部三行留在终端上，用户回 shell 还能看到「重试中…」 | `anchored-region-clears-on-dispose`（新） |
-| 2 | `Subscribe` 的登记与 `+=` 分在两处（check-then-act） | 两个并发命令各自订阅一次，同一次完成推两条 | 代码注释 + 锁内完成 |
-| 3 | `_completionNotified` 是非原子 check-then-set | 并发 `Complete` 可能推送两次 | 改用 `Interlocked.Exchange` |
-| 4 | 服务端 `DisposeAsync` 无超时等待写锁 | 对端不读时程序退不出去，栈上只看到一句 `WaitAsync` | 2 秒上限 |
-| 5 | `MethodOf` 是手写映射表，与 `[JsonDerivedType]` 是同一知识的两个副本 | 新增命令时回报成类名，客户端认不出 | 改为 `ClientCommand.MethodOf` 从特性派生 |
-
-另外把 `Check` 的取样时机修正了一处：`RenderThroughReporter` 在 `using var region`
-作用域内取快照，而 Dispose 现在会清屏——那会让检查读到空屏（**假红**）。
-
-### 真机复核
-
-`/tmp/dgprobe2/pty-verify.py`（临时，未入库）在真实 PTY 里跑 CLI，验证两件事：
-
-1. **版式**：40×120 下活动行 / 输入行 / 状态栏三行就位（`RESULT: PASS`）
-2. **退出清理**：`/exit` 之后字节流里是 `清 38/39/40 行 → ESC[r`，顺序正确
-
-### 回合期间无法中断 —— 已修（2026-11-09）
-
-原先有两个叠在一起的缺口：
-
-1. **`runtime.RunAsync(request)` 没传取消令牌** —— 一轮跑起来就停不下。
-2. **没人订阅 `Console.CancelKeyPress`** —— 回合期间主线程在
-   `await foreach` 里，回不到 `ReadLine`，按键根本没人读。
-
-实测（修之前）：重试期间按 Ctrl+C，进程继续重试 30 多次，**唯一出路是杀进程**。
-
-修法：
-- 每轮新建一个 CTS，把 `Token` 传进 `RunAsync`
-- `Console.CancelKeyPress` 第一阶段 = 取消当前回合（`e.Cancel = true`），
-  再按一次才退出进程
-
-**为什么每轮换新 CTS 而不是 `TryReset`**：`TryReset()` 在已取消的源上
-**会失败**（返回 false 且令牌仍是取消态），而调用点没人检查返回值——
-实测后果是"取消一次之后，下一句话立刻失败"。换新实例没有这个陷阱。
-
-实测（修之后）：重试帧增量 0、出现「已取消」、进程存活、下一轮正常跑。
-
-检查：`turn-runs-with-a-cancellable-token`、`ctrl-c-aborts-turn-not-process`
-（源码级——启动真实进程发信号那条路慢且不稳，而缺陷形态就是"少传一个参数"）。
-
----
-
-## 九、还没做的
-
-1. **提交本轮改动**（用户没要求，等指示）。
-2. **升版本号**（需先问用户）。
+1. **CI 预算**（$0，见第四节）。要不要开、开多少，由用户定。
+2. **Windows / Linux 平台上 net11 未验证**（因 CI 停摆）。
 3. **窗口尺寸变化后没有重设滚动区**：`LiveRegion` 只在创建时算一次高度。
    用户中途改窗口大小，滚动区会停在旧值。已知限制，未处理。
-4. **`docs/porting-differences.md` 与本轮相关条目未更新**（如需要）。
+4. **能力清单里剩下的 ⬜/🟡 都等具体场景**——见
+   `docs/dsh-capability-progress.md` 表头的说明。没有真实需求时不要按清单硬推。
